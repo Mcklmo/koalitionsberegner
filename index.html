@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="da">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Koalitionsberegner — Folketing 2026</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #fff;
+      color: #111;
+      padding: 1.5rem;
+      max-width: 580px;
+      margin: 0 auto
+    }
+
+    @media(prefers-color-scheme:dark) {
+      body {
+        background: #1a1a1a;
+        color: #eee
+      }
+    }
+
+    h2 {
+      font-size: 20px;
+      font-weight: 500;
+      margin-bottom: 4px
+    }
+
+    .sub {
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 1.25rem
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .sub {
+        color: #aaa
+      }
+    }
+
+    .blok-label {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: #aaa;
+      margin: 1rem 0 6px;
+      padding-left: 2px
+    }
+
+    .party-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .12s;
+      border: 0.5px solid transparent;
+      margin-bottom: 4px;
+      user-select: none
+    }
+
+    .party-row:hover {
+      background: #f3f3f3
+    }
+
+    .party-row.selected {
+      background: #f3f3f3;
+      border-color: #ccc
+    }
+
+    @media(prefers-color-scheme:dark) {
+
+      .party-row:hover,
+      .party-row.selected {
+        background: #2a2a2a;
+        border-color: #444
+      }
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0
+    }
+
+    .party-name {
+      flex: 1;
+      font-size: 14px
+    }
+
+    .abbr {
+      font-size: 11px;
+      color: #aaa;
+      font-weight: 500;
+      width: 32px
+    }
+
+    .seats {
+      font-size: 14px;
+      font-weight: 500;
+      width: 28px;
+      text-align: right
+    }
+
+    .check {
+      width: 16px;
+      height: 16px;
+      border: 0.5px solid #ccc;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all .12s
+    }
+
+    .check.on {
+      background: #378ADD;
+      border-color: #378ADD
+    }
+
+    .check.on::after {
+      content: '';
+      display: block;
+      width: 5px;
+      height: 8px;
+      border: 1.5px solid #fff;
+      border-top: none;
+      border-left: none;
+      transform: rotate(40deg) translateY(-1px)
+    }
+
+    .sticky-bar {
+      position: sticky;
+      bottom: 0;
+      padding: 1rem 0 0.5rem;
+      background: #fff;
+      border-top: 0.5px solid #e0e0e0;
+      margin-top: 1rem
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .sticky-bar {
+        background: #1a1a1a;
+        border-color: #333
+      }
+    }
+
+    .progress-track {
+      height: 8px;
+      background: #eee;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 10px
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .progress-track {
+        background: #333
+      }
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width .2s, background .2s
+    }
+
+    .stats {
+      display: flex;
+      align-items: baseline;
+      gap: 8px
+    }
+
+    .total-num {
+      font-size: 28px;
+      font-weight: 500
+    }
+
+    .total-of {
+      font-size: 14px;
+      color: #666
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .total-of {
+        color: #aaa
+      }
+    }
+
+    .verdict {
+      font-size: 13px;
+      font-weight: 500;
+      padding: 3px 10px;
+      border-radius: 20px;
+      margin-left: auto
+    }
+
+    .v-no {
+      background: #f0f0f0;
+      color: #666
+    }
+
+    .v-yes {
+      background: #E6F1FB;
+      color: #185FA5
+    }
+
+    .v-over {
+      background: #EAF3DE;
+      color: #3B6D11
+    }
+
+    .reset-btn {
+      font-size: 12px;
+      color: #aaa;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px 0;
+      text-decoration: underline
+    }
+
+    .reset-btn:hover {
+      color: #111
+    }
+
+    .footer-note {
+      font-size: 11px;
+      color: #aaa
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Koalitionsberegner — Folketing 2026</h2>
+  <p class="sub">Vælg partier og se om de tilsammen opnår flertal (90+ ud af 179 mandater)</p>
+
+  <div id="party-list"></div>
+
+  <div class="sticky-bar">
+    <div class="progress-track">
+      <div class="progress-fill" id="bar" style="width:0%;background:#888"></div>
+    </div>
+    <div class="stats">
+      <span class="total-num" id="total">0</span>
+      <span class="total-of">af 179 mandater</span>
+      <span class="verdict v-no" id="verdict">Mangler 90</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+      <span class="footer-note">Flertal kræver 90 mandater · Endelig resultat, 08:26 25. marts 2026</span>
+      <button class="reset-btn" onclick="clearAll()">Ryd alle</button>
+    </div>
+  </div>
+
+  <script>
+    const parties = [
+      {
+        blok: 'Rød blok', items: [
+          { abbr: 'Ø', name: 'Enhedslisten', seats: 11, color: '#C0392B' },
+          { abbr: 'F', name: 'SF', seats: 20, color: '#E74C3C' },
+          { abbr: 'A', name: 'Socialdemokratiet', seats: 38, color: '#C0392B' },
+          { abbr: 'B', name: 'Radikale Venstre', seats: 10, color: '#9B59B6' },
+          { abbr: 'Å', name: 'Alternativet', seats: 5, color: '#27AE60' },
+        ]
+      },
+      {
+        blok: 'Midten', items: [
+          { abbr: 'M', name: 'Moderaterne', seats: 14, color: '#6A89CC' },
+        ]
+      },
+      {
+        blok: 'Blå blok', items: [
+          { abbr: 'V', name: 'Venstre', seats: 18, color: '#2980B9' },
+          { abbr: 'I', name: 'Liberal Alliance', seats: 16, color: '#3498DB' },
+          { abbr: 'O', name: 'Dansk Folkeparti', seats: 16, color: '#F39C12' },
+          { abbr: 'C', name: 'De Konservative', seats: 13, color: '#1ABC9C' },
+          { abbr: 'Æ', name: 'Danmarksdemokraterne', seats: 10, color: '#D35400' },
+          { abbr: 'Q', name: 'Borgernes Parti', seats: 4, color: '#85929E' },
+        ]
+      },
+    ];
+
+    const selected = new Set();
+
+    function render() {
+      const list = document.getElementById('party-list');
+      list.innerHTML = '';
+      parties.forEach(grp => {
+        const lbl = document.createElement('div');
+        lbl.className = 'blok-label';
+        lbl.textContent = grp.blok;
+        list.appendChild(lbl);
+        grp.items.forEach(p => {
+          const id = p.abbr;
+          const row = document.createElement('div');
+          row.className = 'party-row' + (selected.has(id) ? ' selected' : '');
+          row.onclick = () => {
+            if (selected.has(id)) selected.delete(id);
+            else selected.add(id);
+            update();
+          };
+          const chk = document.createElement('div');
+          chk.className = 'check' + (selected.has(id) ? ' on' : '');
+          const dot = document.createElement('div');
+          dot.className = 'dot';
+          dot.style.background = p.color;
+          const abbr = document.createElement('span');
+          abbr.className = 'abbr';
+          abbr.textContent = p.abbr;
+          const name = document.createElement('span');
+          name.className = 'party-name';
+          name.textContent = p.name;
+          const seats = document.createElement('span');
+          seats.className = 'seats';
+          seats.textContent = p.seats;
+          row.append(chk, dot, abbr, name, seats);
+          list.appendChild(row);
+        });
+      });
+    }
+
+    function update() {
+      let total = 0;
+      parties.forEach(g => g.items.forEach(p => { if (selected.has(p.abbr)) total += p.seats; }));
+      document.getElementById('total').textContent = total;
+      const pct = Math.min(total / 179 * 100, 100);
+      const bar = document.getElementById('bar');
+      bar.style.width = pct + '%';
+      const v = document.getElementById('verdict');
+      if (total >= 90) {
+        bar.style.background = total > 119 ? '#1D9E75' : '#378ADD';
+        v.className = 'verdict ' + (total > 119 ? 'v-over' : 'v-yes');
+        v.textContent = total > 119 ? 'Stort flertal ✓' : 'Flertal ✓ (+' + (total - 90) + ')';
+      } else {
+        bar.style.background = '#888780';
+        v.className = 'verdict v-no';
+        v.textContent = 'Mangler ' + (90 - total);
+      }
+      render();
+    }
+
+    function clearAll() { selected.clear(); update(); }
+
+    render();
+  </script>
+</body>
+
+</html>
