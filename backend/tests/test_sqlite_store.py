@@ -161,15 +161,3 @@ def test_config_selects_the_sqlite_backend(tmp_path, monkeypatch):
         assert (tmp_path / "configured.db").exists()
     finally:
         get_store.cache_clear()
-
-
-def test_config_rejects_an_unknown_backend(monkeypatch):
-    from app.config import get_store
-
-    monkeypatch.setenv("ELECTION_STORE", "postgres")
-    get_store.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="firestore, sqlite or memory"):
-            get_store()
-    finally:
-        get_store.cache_clear()

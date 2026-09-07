@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .config import get_parser, get_store, max_wait_seconds
+from .config import get_parser, get_store, max_wait_seconds, validate_configuration
 from .identity import source_url_key
 from .observability import configure_logging, io_span
 from .schema import Election
@@ -21,7 +22,22 @@ from .service import ImportRequest, ImportResult, ImportService, ImportState
 configure_logging()
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="Koalitionsberegner election store", version="1.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Fail the boot on bad configuration rather than the first request.
+
+    A container that starts, answers /healthz, and only then discovers it cannot
+    reach its store is worse than one that never starts: the rollout succeeds and
+    the breakage lands on users.
+    """
+    validate_configuration()
+    yield
+
+
+app = FastAPI(
+    title="Koalitionsberegner election store", version="1.1.0", lifespan=lifespan
+)
 
 
 @app.middleware("http")
