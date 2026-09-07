@@ -1,17 +1,37 @@
+import { isValidatedElection } from './election.js';
+
 /**
  * Coalition calculator renderer.
  *
- * Election-agnostic: every number and name it displays comes from the
- * injected election object (see election.js). Nothing here knows about any
+ * Election-agnostic: every number and name it displays comes from the injected,
+ * schema-validated election (see election.js). Nothing here knows about any
  * particular country, assembly size or majority threshold.
  */
 
+const DANISH_MONTHS = ['januar', 'februar', 'marts', 'april', 'maj', 'juni',
+  'juli', 'august', 'september', 'oktober', 'november', 'december'];
+
+/** Formats a schema-valid ISO date/date-time as e.g. "08:26 25. marts 2026". */
+function formatElectionDate(iso) {
+  const [date, time] = iso.split('T');
+  const [year, month, day] = date.split('-');
+  const dayMonthYear = `${Number(day)}. ${DANISH_MONTHS[Number(month) - 1]} ${year}`;
+  return time ? `${time.slice(0, 5)} ${dayMonthYear}` : dayMonthYear;
+}
+
+/** Two thirds of the assembly, above which a coalition counts as a large majority. */
+const supermajorityOf = (totalSeats) => Math.floor(totalSeats * 2 / 3);
+
 /**
- * @param {import('./election.js').Election} election
+ * @param {import('./election.js').Election} election A validated election.
  * @param {Object} [elements] DOM nodes to render into; defaults to the ids used by index.html.
  * @returns {{ clearAll: () => void }}
  */
 export function mountCoalitionCalculator(election, elements = {}) {
+  if (!isValidatedElection(election)) {
+    throw new TypeError('mountCoalitionCalculator requires an election from validateElection()');
+  }
+
   const el = {
     title: document.getElementById('title'),
     subtitle: document.getElementById('subtitle'),
@@ -24,15 +44,19 @@ export function mountCoalitionCalculator(election, elements = {}) {
     ...elements,
   };
 
+  const supermajoritySeats = supermajorityOf(election.totalSeats);
+
   /** Selection is keyed by position so parties with a repeated abbreviation stay distinct. */
   const selected = new Set();
   const keyOf = (blockIndex, partyIndex) => blockIndex + ':' + partyIndex;
 
   document.title = election.title;
   el.title.textContent = election.title;
-  el.subtitle.textContent = election.subtitle;
-  el.totalOf.textContent = election.totalSeatsLabel;
-  el.footerNote.textContent = election.footerNote;
+  el.subtitle.textContent = `Vælg partier og se om de tilsammen opnår flertal `
+    + `(${election.majoritySeats}+ ud af ${election.totalSeats} mandater)`;
+  el.totalOf.textContent = `af ${election.totalSeats} mandater`;
+  el.footerNote.textContent = `Flertal kræver ${election.majoritySeats} mandater `
+    + `· Endelig resultat, ${formatElectionDate(election.electionDate)}`;
 
   function render() {
     el.list.innerHTML = '';
@@ -78,7 +102,7 @@ export function mountCoalitionCalculator(election, elements = {}) {
     el.total.textContent = total;
     el.bar.style.width = Math.min(total / election.totalSeats * 100, 100) + '%';
     if (total >= election.majoritySeats) {
-      const large = total > election.supermajoritySeats;
+      const large = total > supermajoritySeats;
       el.bar.style.background = large ? '#1D9E75' : '#378ADD';
       el.verdict.className = 'verdict ' + (large ? 'v-over' : 'v-yes');
       el.verdict.textContent = large

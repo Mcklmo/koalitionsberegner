@@ -30,25 +30,21 @@
 
   <script type="module">
     import { mountCoalitionCalculator } from '../js/app.js';
+    import { createElectionProvider } from '../js/election.js';
 
-    /** @type {import('../js/election.js').ElectionProvider} */
-    const ToyProvider = {
-      getElection() {
-        return {
-          title: 'Toy election',
-          subtitle: 'Two parties, 10 seats, majority at 6',
-          footerNote: 'Manual test fixture',
-          totalSeatsLabel: 'of 10 seats',
-          totalSeats: 10,
-          majoritySeats: 6,
-          supermajoritySeats: 8,
-          blocks: [
-            { name: 'Left', parties: [{ abbr: 'L', name: 'Left Party', seats: 6, color: '#C0392B' }] },
-            { name: 'Right', parties: [{ abbr: 'R', name: 'Right Party', seats: 4, color: '#2980B9' }] },
-          ],
-        };
-      },
-    };
+    const ToyProvider = createElectionProvider(() => ({
+      nation: 'Toyland',
+      state: 'North Province',
+      electionDate: '2026-01-15',
+      title: 'Toy election',
+      sourceUrl: 'https://example.org/results',
+      totalSeats: 10,
+      majoritySeats: 6,
+      blocks: [
+        { name: 'Left', parties: [{ abbr: 'L', name: 'Left Party', seats: 6, color: '#C0392B' }] },
+        { name: 'Right', parties: [{ abbr: 'R', name: 'Right Party', seats: 4, color: '#2980B9' }] },
+      ],
+    }));
 
     const app = mountCoalitionCalculator(await ToyProvider.getElection());
     document.getElementById('reset').addEventListener('click', () => app.clearAll());

@@ -1,22 +1,17 @@
+import { createElectionProvider } from '../election.js';
+
 /**
- * The Folketing 2026 election — currently the only implementation of the
- * ElectionProvider seam described in ../election.js.
+ * The Folketing 2026 election — currently the only election source.
+ * Shaped as raw input; `createElectionProvider` validates it against the
+ * canonical schema before it can reach the renderer.
  */
-
-const TOTAL_SEATS = 179;
-const MAJORITY_SEATS = 90;
-// Two thirds of 179 rounded down; above this the coalition is called a large majority.
-const SUPERMAJORITY_SEATS = 119;
-
-/** @type {import('../election.js').Election} */
 const folketing2026 = {
+  nation: 'Danmark',
+  electionDate: '2026-03-25T08:26',
   title: 'Koalitionsberegner — Folketing 2026',
-  subtitle: `Vælg partier og se om de tilsammen opnår flertal (${MAJORITY_SEATS}+ ud af ${TOTAL_SEATS} mandater)`,
-  footerNote: `Flertal kræver ${MAJORITY_SEATS} mandater · Endelig resultat, 08:26 25. marts 2026`,
-  totalSeatsLabel: `af ${TOTAL_SEATS} mandater`,
-  totalSeats: TOTAL_SEATS,
-  majoritySeats: MAJORITY_SEATS,
-  supermajoritySeats: SUPERMAJORITY_SEATS,
+  sourceUrl: 'https://www.dst.dk/valg',
+  totalSeats: 179,
+  majoritySeats: 90,
   blocks: [
     {
       name: 'Rød blok', parties: [
@@ -54,8 +49,4 @@ const folketing2026 = {
 };
 
 /** @type {import('../election.js').ElectionProvider} */
-export const Folketing2026Provider = {
-  getElection() {
-    return folketing2026;
-  },
-};
+export const Folketing2026Provider = createElectionProvider(() => folketing2026);
