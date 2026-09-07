@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Toy election</title>
+  <!--
+    Manual test for the ElectionProvider seam (issue #5): a two-party toy
+    election rendered by the exact same js/app.js as the real page. If this
+    renders and calculates correctly, the renderer carries no Folketing-specific
+    assumptions. Serve the repo root and open /test/toy-election.html.
+  -->
+</head>
+
+<body>
+  <h2 id="title"></h2>
+  <p class="sub" id="subtitle"></p>
+  <div id="party-list"></div>
+  <div class="progress-track">
+    <div class="progress-fill" id="bar" style="width:0%;background:#888"></div>
+  </div>
+  <div class="stats">
+    <span class="total-num" id="total">0</span>
+    <span class="total-of" id="total-of"></span>
+    <span class="verdict v-no" id="verdict"></span>
+  </div>
+  <span class="footer-note" id="footer-note"></span>
+  <button class="reset-btn" id="reset">Clear all</button>
+
+  <script type="module">
+    import { mountCoalitionCalculator } from '../js/app.js';
+
+    /** @type {import('../js/election.js').ElectionProvider} */
+    const ToyProvider = {
+      getElection() {
+        return {
+          title: 'Toy election',
+          subtitle: 'Two parties, 10 seats, majority at 6',
+          footerNote: 'Manual test fixture',
+          totalSeatsLabel: 'of 10 seats',
+          totalSeats: 10,
+          majoritySeats: 6,
+          supermajoritySeats: 8,
+          blocks: [
+            { name: 'Left', parties: [{ abbr: 'L', name: 'Left Party', seats: 6, color: '#C0392B' }] },
+            { name: 'Right', parties: [{ abbr: 'R', name: 'Right Party', seats: 4, color: '#2980B9' }] },
+          ],
+        };
+      },
+    };
+
+    const app = mountCoalitionCalculator(await ToyProvider.getElection());
+    document.getElementById('reset').addEventListener('click', () => app.clearAll());
+  </script>
+</body>
+
+</html>
