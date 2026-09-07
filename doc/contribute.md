@@ -8,7 +8,7 @@ import UI expects.
 ```sh
 cd backend
 pip install -e '.[dev]'
-ELECTION_STORE=memory uvicorn app.main:app --reload   # http://localhost:8000
+ELECTION_STORE=sqlite uvicorn app.main:app --reload   # http://localhost:8000
 pytest
 ```
 
@@ -47,9 +47,10 @@ with `<meta name="api-base" content="https://…">` in `index.html` and set
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `GOOGLE_CLOUD_PROJECT` | yes | — | GCP project holding Firestore. If unset the app falls back to the in-memory store, which loses everything on restart and shares nothing between instances. |
+| `GOOGLE_CLOUD_PROJECT` | with `ELECTION_STORE=firestore` | — | GCP project holding Firestore. |
 | `FIRESTORE_DATABASE` | no | `(default)` | Named Firestore database, if not the default one. |
-| `ELECTION_STORE` | no | `firestore` | Set to `memory` to run without Firestore. |
+| `ELECTION_STORE` | no | `firestore`, or `memory` with no GCP project | `firestore` shares imports between instances; `sqlite` keeps them in a local file across restarts; `memory` forgets everything on exit. |
+| `SQLITE_PATH` | no | `./data/elections.db` | Database file for `ELECTION_STORE=sqlite`. Created with its parent directory on first use. |
 | `LLM_MODE` | no | `mock` | `mock` returns a fixed Sachsen-Anhalt result without calling Anthropic; `live` runs the real extraction agent; `off` disables importing. |
 | `ANTHROPIC_API_KEY` | with `LLM_MODE=live` | — | Anthropic API key. Store it in Secret Manager and mount it as this env var; never put it in the image or in client code. |
 | `PARSE_LEASE_SECONDS` | no | `300` | How long a parse may run before a crashed job is reclaimed. |

@@ -13,8 +13,11 @@ The import UI calls the API on the same origin, so run both from the backend:
 
 ```sh
 cd backend && pip install -e '.[dev]'
-ELECTION_STORE=memory uvicorn app.main:app --reload
+ELECTION_STORE=sqlite uvicorn app.main:app --reload
 ```
+
+`sqlite` keeps imported elections in `./data/elections.db`, so restarting does not
+re-fetch and re-extract pages you already imported. Use `memory` for a clean slate.
 
 Then open <http://localhost:8000>.
 

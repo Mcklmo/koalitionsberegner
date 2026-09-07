@@ -14,18 +14,39 @@ def _env_float(name: str, default: float) -> float:
     return default if raw is None or raw == "" else float(raw)
 
 
+DEFAULT_SQLITE_PATH = "./data/elections.db"
+
+
 @lru_cache(maxsize=1)
 def get_store() -> ElectionStore:
-    """Firestore in deployment; an in-memory store when no project is configured.
+    """Pick a storage backend.
 
-    ``ELECTION_STORE=memory`` forces the in-memory store for local runs.
+    ``ELECTION_STORE`` selects it: ``firestore`` (shared, the deployed default),
+    ``sqlite`` (a local file that survives restarts, so repeated local runs do
+    not re-fetch and re-extract the same pages), or ``memory`` (fastest, forgets
+    everything on exit). Without ``GOOGLE_CLOUD_PROJECT`` Firestore is not
+    available, so the default falls back to ``memory``.
     """
     stale_after = _env_float("PARSE_LEASE_SECONDS", DEFAULT_STALE_AFTER_SECONDS)
-    backend = os.environ.get("ELECTION_STORE", "firestore").lower()
     project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    backend = os.environ.get("ELECTION_STORE", "firestore" if project else "memory").lower()
 
-    if backend == "memory" or not project:
+    if backend == "memory":
         return InMemoryElectionStore(stale_after=stale_after)
+
+    if backend == "sqlite":
+        from .sqlite_store import SqliteElectionStore
+
+        return SqliteElectionStore(
+            os.environ.get("SQLITE_PATH", DEFAULT_SQLITE_PATH), stale_after=stale_after
+        )
+
+    if backend != "firestore":
+        raise RuntimeError(
+            f"ELECTION_STORE must be firestore, sqlite or memory, got {backend!r}"
+        )
+    if not project:
+        raise RuntimeError("ELECTION_STORE=firestore requires GOOGLE_CLOUD_PROJECT")
 
     from google.cloud import firestore
 
