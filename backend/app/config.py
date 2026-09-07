@@ -39,8 +39,26 @@ def get_store() -> ElectionStore:
 
 @lru_cache(maxsize=1)
 def get_parser() -> ElectionParser:
-    """The LLM extraction agent lands here; until then imports fail cleanly."""
-    return UnavailableParser()
+    """Wire the extraction pipeline.
+
+    ``LLM_MODE`` selects the agent: ``mock`` (the default) returns a fixed
+    result without contacting the Anthropic API; ``live`` runs the real agent
+    and requires ``ANTHROPIC_API_KEY``, mounted from GCP Secret Manager.
+    ``off`` disables importing entirely.
+    """
+    from .extractor import AnthropicExtractor, MockExtractor
+    from .fetcher import HttpPageFetcher
+    from .parser import LlmElectionParser
+
+    mode = os.environ.get("LLM_MODE", "mock").lower()
+    if mode == "off":
+        return UnavailableParser()
+    if mode == "live":
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise RuntimeError("LLM_MODE=live requires ANTHROPIC_API_KEY")
+        return LlmElectionParser(HttpPageFetcher(), AnthropicExtractor())
+    # Mock: the page is still fetched, so the whole pipeline runs except the model.
+    return LlmElectionParser(HttpPageFetcher(), MockExtractor())
 
 
 def max_wait_seconds() -> float:

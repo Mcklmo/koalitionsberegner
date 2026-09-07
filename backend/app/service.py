@@ -1,9 +1,9 @@
-"""Import orchestration: short-circuit on stored elections, single-flight on the rest.
+"""Import orchestration: short-circuit on known pages, single-flight on the rest.
 
 The store decides *what* happens (see :meth:`ElectionStore.claim`); this module
-carries it out — launching at most one parse per election hash, letting every
-other caller wait for that same parse, and recording the outcome so a failure
-leaves the hash free for a later retry.
+carries it out — running at most one extraction per page, letting every other
+caller share it, and reconciling the identity the agent inferred against what is
+already stored before anything is saved.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from enum import Enum
 
 import anyio.to_thread
 
-from .identity import election_hash
+from .identity import election_hash, source_url_key
 from .parser import ElectionParser
 from .schema import Election
 from .store import ClaimOutcome, ElectionStore, ImportRequest, JobStatus
@@ -27,10 +27,10 @@ POLL_INTERVAL_SECONDS = 0.05
 
 class ImportState(str, Enum):
     READY = "ready"        # the election is stored and returned
-    PENDING = "pending"    # a parse is running; poll or wait
-    PREVIEW = "preview"    # parsed and shown for confirmation; not saved yet
-    FAILED = "failed"      # the last parse failed; importing again retries
-    UNKNOWN = "unknown"    # nothing stored and no job for this hash
+    PENDING = "pending"    # an extraction is running; poll or wait
+    PREVIEW = "preview"    # extracted and shown for confirmation; not saved yet
+    FAILED = "failed"      # the last extraction failed; importing again retries
+    UNKNOWN = "unknown"    # nothing stored and no job for this page
 
 
 #: States a caller can stop polling on.
@@ -39,14 +39,22 @@ TERMINAL_STATES = (ImportState.READY, ImportState.PREVIEW, ImportState.FAILED, I
 
 @dataclass(frozen=True)
 class ImportResult:
-    election_hash: str
+    page_key: str
     state: ImportState
     election: Election | None = None
     """The stored election, or — in the PREVIEW state — the unsaved extraction."""
+    election_hash: str | None = None
+    """Known only once the agent has inferred the election's identity."""
     error: str | None = None
     attempt: int | None = None
     reused: bool = False
-    """True when the caller was served without triggering any parsing."""
+    """True when the caller was served without triggering any extraction."""
+    duplicate: bool = False
+    """True when this page turned out to describe an already-stored election."""
+
+
+def identity_of(election: Election) -> str:
+    return election_hash(election.nation, election.state, election.election_date)
 
 
 class ImportService:
@@ -54,90 +62,96 @@ class ImportService:
         self._store = store
         self._parser = parser
         # Holding task references keeps the event loop from garbage-collecting
-        # a parse that no request is awaiting.
+        # an extraction that no request is awaiting.
         self._tasks: set[asyncio.Task] = set()
 
     @staticmethod
-    def hash_for(request: ImportRequest) -> str:
-        return election_hash(request.nation, request.state, request.election_date)
+    def page_key_for(request: ImportRequest) -> str:
+        return source_url_key(request.source_url)
 
     async def _in_thread(self, fn, *args):
         """Firestore's client is blocking; keep it off the event loop."""
         return await anyio.to_thread.run_sync(fn, *args)
 
     async def submit(self, request: ImportRequest) -> ImportResult:
-        """Claim the hash and start a parse only if nobody else already has."""
-        key = self.hash_for(request)
+        """Claim the page and extract only if nobody else already has."""
+        key = self.page_key_for(request)
         claim = await self._in_thread(self._store.claim, key, request)
 
         if claim.outcome is ClaimOutcome.STORED:
-            # Second import of a stored election: short-circuited, nothing parsed.
-            return ImportResult(key, ImportState.READY, election=claim.election, reused=True)
+            # This page has been imported before: no fetch, no model call.
+            return ImportResult(
+                key, ImportState.READY, election=claim.election,
+                election_hash=claim.election_hash, reused=True,
+            )
 
         if claim.outcome is ClaimOutcome.ATTACHED:
             job = claim.job
             if job is not None and job.status is JobStatus.AWAITING_CONFIRMATION:
                 return ImportResult(
-                    key, ImportState.PREVIEW, election=job.result, attempt=job.attempt, reused=True
+                    key, ImportState.PREVIEW, election=job.result,
+                    election_hash=identity_of(job.result) if job.result else None,
+                    attempt=job.attempt, reused=True,
                 )
             return ImportResult(
                 key, ImportState.PENDING, attempt=job.attempt if job else None, reused=True
             )
 
-        task = asyncio.create_task(self._parse(key, request))
+        task = asyncio.create_task(self._extract(key, request))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         job = claim.job
         return ImportResult(key, ImportState.PENDING, attempt=job.attempt if job else 1)
 
-    async def _parse(self, key: str, request: ImportRequest) -> None:
+    async def _extract(self, key: str, request: ImportRequest) -> None:
         try:
             election = await self._parser.parse(request)
-        except Exception as exc:  # noqa: BLE001 - a failed parse must not kill the worker
-            log.warning("parse failed for %s: %s", key, exc)
+        except Exception as exc:  # noqa: BLE001 - a failed extraction must not kill the worker
+            log.warning("extraction failed for %s: %s", key, exc)
             await self._in_thread(self._store.fail, key, str(exc))
             return
 
-        # An election must agree with the identity it is filed under, or the same
-        # election could end up stored twice under different hashes.
-        parsed_key = election_hash(election.nation, election.state, election.election_date)
-        if parsed_key != key:
-            await self._in_thread(
-                self._store.fail,
-                key,
-                "parsed election identity does not match the requested "
-                f"nation/state/date (got {election.nation!r}, {election.state!r}, "
-                f"{election.election_date.isoformat()})",
-            )
-            return
         try:
-            # Staged, not stored: the user still has to confirm what was extracted.
+            # The agent may have identified an election we already hold — a second
+            # URL for the same results. Link the page to it instead of asking the
+            # user to confirm a duplicate.
+            existing_hash = identity_of(election)
+            existing = await self._in_thread(self._store.get_election, existing_hash)
+            if existing is not None:
+                await self._in_thread(self._store.link, key, existing_hash)
+                return
+            # Staged, not stored: the user still has to confirm the identity the
+            # agent inferred, and the numbers it read.
             await self._in_thread(self._store.stage, key, election)
         except Exception as exc:  # noqa: BLE001
             log.exception("staging %s failed", key)
             await self._in_thread(self._store.fail, key, f"could not stage result: {exc}")
 
     async def status(self, key: str) -> ImportResult:
-        election = await self._in_thread(self._store.get_election, key)
-        if election is not None:
-            return ImportResult(key, ImportState.READY, election=election)
         job = await self._in_thread(self._store.get_job, key)
+        resolved = await self._in_thread(self._store.resolve_page, key)
+        if resolved is not None:
+            election = await self._in_thread(self._store.get_election, resolved)
+            if election is not None:
+                return ImportResult(
+                    key, ImportState.READY, election=election, election_hash=resolved
+                )
         if job is None:
             return ImportResult(key, ImportState.UNKNOWN)
         if job.status is JobStatus.FAILED:
             return ImportResult(key, ImportState.FAILED, error=job.error, attempt=job.attempt)
-        if job.status is JobStatus.AWAITING_CONFIRMATION:
+        if job.status is JobStatus.AWAITING_CONFIRMATION and job.result is not None:
             return ImportResult(
-                key, ImportState.PREVIEW, election=job.result, attempt=job.attempt
+                key, ImportState.PREVIEW, election=job.result,
+                election_hash=identity_of(job.result), attempt=job.attempt,
             )
-        # A job that reports success without a stored election is still settling.
         return ImportResult(key, ImportState.PENDING, attempt=job.attempt)
 
     async def wait_for(self, key: str, timeout: float) -> ImportResult:
-        """Poll until the parse reaches a terminal state or ``timeout`` elapses.
+        """Poll until the extraction reaches a terminal state or ``timeout`` elapses.
 
-        Callers that attached to someone else's parse get that parse's result
-        here — the same election, from the same single run.
+        Callers that attached to someone else's extraction get that extraction's
+        result here — the same election, from the same single run.
         """
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
@@ -149,15 +163,29 @@ class ImportService:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     async def confirm(self, key: str) -> ImportResult:
-        """Save a previewed election. Nothing reaches storage without this."""
-        election = await self._in_thread(self._store.confirm, key)
-        if election is None:
+        """Save a previewed election under the identity the agent inferred.
+
+        Nothing reaches storage without this.
+        """
+        job = await self._in_thread(self._store.get_job, key)
+        if job is None or job.result is None:
             return await self.status(key)
-        return ImportResult(key, ImportState.READY, election=election)
+        confirmation = await self._in_thread(self._store.confirm, key, identity_of(job.result))
+        if confirmation is None:
+            return await self.status(key)
+        return ImportResult(
+            key, ImportState.READY,
+            election=confirmation.election,
+            election_hash=confirmation.election_hash,
+            duplicate=confirmation.duplicate,
+        )
 
     async def discard(self, key: str) -> bool:
-        """Reject a previewed election, freeing the hash for another attempt."""
+        """Reject a previewed election, freeing the page for another attempt."""
         return await self._in_thread(self._store.discard, key)
+
+    async def get_stored(self, election_hash: str) -> Election | None:
+        return await self._in_thread(self._store.get_election, election_hash)
 
     async def list_elections(self):
         return await self._in_thread(self._store.list_elections)

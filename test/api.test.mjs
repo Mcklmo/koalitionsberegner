@@ -65,56 +65,51 @@ test('listElections maps summaries to camelCase', async () => {
   ]);
 });
 
-test('lookup sends the metadata and omits an absent state', async () => {
+test('lookup asks about a page, since the election is not yet known', async () => {
   const { fetchImpl, calls } = fakeFetch([
-    { status: 200, body: { election_hash: 'abc', state: 'unknown', election: null } },
+    { status: 200, body: { page_key: 'p1', state: 'unknown', election: null } },
   ]);
   const result = await createApiClient({ fetch: fetchImpl }).lookup({
-    nation: 'Danmark',
-    state: null,
-    electionDate: '2026-03-25',
+    sourceUrl: 'https://www.dst.dk/valg',
   });
-  assert.match(calls[0].url, /^\/api\/elections\/lookup\?/);
-  assert.ok(!calls[0].url.includes('state='), 'an absent state is not sent');
+  assert.match(calls[0].url, /^\/api\/elections\/lookup\?source_url=/);
   assert.equal(result.status, 'unknown');
   assert.equal(result.election, null);
+  assert.equal(result.electionHash, null);
 });
 
-test('import posts snake_case and returns a validated preview', async () => {
+test('import sends only the URL and returns a validated preview', async () => {
   const { fetchImpl, calls } = fakeFetch([
-    { status: 200, body: { election_hash: 'abc', state: 'preview', election: payload, reused: false } },
+    { status: 200, body: { page_key: 'p1', election_hash: 'abc', state: 'preview', election: payload, reused: false } },
   ]);
   const result = await createApiClient({ fetch: fetchImpl }).importElection({
-    nation: 'Danmark',
-    state: null,
-    electionDate: '2026-03-25',
     sourceUrl: 'https://www.dst.dk/valg',
   });
 
   assert.equal(calls[0].method, 'POST');
-  assert.deepEqual(JSON.parse(calls[0].body), {
-    nation: 'Danmark',
-    state: null,
-    election_date: '2026-03-25',
-    source_url: 'https://www.dst.dk/valg',
-  });
+  assert.deepEqual(JSON.parse(calls[0].body), { source_url: 'https://www.dst.dk/valg' },
+    'identity is the agent\'s to infer, so none is sent');
   assert.equal(result.status, 'preview');
+  assert.equal(result.pageKey, 'p1');
+  assert.equal(result.electionHash, 'abc');
   assert.ok(isValidatedElection(result.election));
 });
 
-test('confirm posts to the confirm endpoint', async () => {
+test('confirm posts to the page it previewed', async () => {
   const { fetchImpl, calls } = fakeFetch([
-    { status: 200, body: { election_hash: 'abc', state: 'ready', election: payload } },
+    { status: 200, body: { page_key: 'p1', election_hash: 'abc', state: 'ready', election: payload, duplicate: false } },
   ]);
-  const result = await createApiClient({ fetch: fetchImpl }).confirm('abc');
-  assert.equal(calls[0].url, '/api/elections/abc/confirm');
+  const result = await createApiClient({ fetch: fetchImpl }).confirm('p1');
+  assert.equal(calls[0].url, '/api/elections/pages/p1/confirm');
   assert.equal(calls[0].method, 'POST');
   assert.equal(result.status, 'ready');
+  assert.equal(result.duplicate, false);
 });
 
 test('discarding a preview tolerates a 204 with no body', async () => {
   const { fetchImpl, calls } = fakeFetch([{ status: 204, body: null }]);
-  await createApiClient({ fetch: fetchImpl }).discardPreview('abc');
+  await createApiClient({ fetch: fetchImpl }).discardPreview('p1');
+  assert.equal(calls[0].url, '/api/elections/pages/p1/preview');
   assert.equal(calls[0].method, 'DELETE');
 });
 

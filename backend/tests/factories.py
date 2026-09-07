@@ -27,13 +27,10 @@ def make_election(**overrides) -> Election:
 
 
 def make_request(**overrides) -> ImportRequest:
-    data = {
-        "nation": "Danmark",
-        "state": None,
-        "election_date": "2026-03-25",
-        "source_url": "https://www.dst.dk/valg",
-    }
-    data.update(overrides)
+    """An import request is now just a URL; identity comes from the agent."""
+    data = {"source_url": "https://www.dst.dk/valg"}
+    # Identity kwargs are accepted so a caller can vary what the agent will infer.
+    data.update({k: v for k, v in overrides.items() if k == "source_url"})
     return ImportRequest(**data)
 
 
@@ -51,9 +48,12 @@ async def wait_until(predicate, timeout: float = 2.0) -> None:
 class CountingParser:
     """Records every call and can be held open to simulate a slow parse."""
 
-    def __init__(self, election: Election | None = None, *, fail_times: int = 0):
+    def __init__(self, election: Election | None = None, *, fail_times: int = 0,
+                 infers: Election | None = None, by_url: dict[str, Election] | None = None):
         self._fixed = election
-        self.election = election or make_election()
+        self._inferred = infers or make_election()
+        self._by_url = by_url or {}
+        self.election = election or self._inferred
         self.calls: list[ImportRequest] = []
         self.fail_times = fail_times
         self.gate = asyncio.Event()
@@ -77,9 +77,8 @@ class CountingParser:
         if self.fail_times > 0:
             self.fail_times -= 1
             raise RuntimeError("extraction failed")
+        if request.source_url in self._by_url:
+            return self._by_url[request.source_url]
         if self._fixed is not None:
             return self._fixed
-        # Echo the requested identity, as a real parser of that page would.
-        return make_election(
-            nation=request.nation, state=request.state, election_date=request.election_date
-        )
+        return self._inferred

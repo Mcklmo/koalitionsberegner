@@ -14,6 +14,7 @@ import json
 import re
 import unicodedata
 from datetime import date, datetime
+from urllib.parse import urlparse, urlunparse
 
 # Bump when the hashed representation changes, so old and new ids never collide.
 HASH_VERSION = "v1"
@@ -67,5 +68,42 @@ def election_hash(
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def normalize_source_url(url: str) -> str:
+    """Canonical form of a results URL, for keying work by page.
+
+    Only differences that cannot change what is served are normalised: scheme
+    and host casing, the default port, a trailing slash, and the fragment.
+    Query strings are kept — they routinely select which election a page shows.
+    """
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("source_url must not be empty")
+    parsed = urlparse(url.strip())
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise ValueError(f"source_url must use http or https, got {parsed.scheme or 'no scheme'!r}")
+    if not parsed.hostname:
+        raise ValueError(f"source_url is not a well-formed URL: {url!r}")
+
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname.lower()
+    default_port = 443 if scheme == "https" else 80
+    netloc = host if parsed.port in (None, default_port) else f"{host}:{parsed.port}"
+    path = parsed.path.rstrip("/") or "/"
+    return urlunparse((scheme, netloc, path, parsed.params, parsed.query, ""))
+
+
+def source_url_key(url: str) -> str:
+    """Identifier for the *page*, used to key extraction work.
+
+    Distinct from :func:`election_hash`, which identifies the *election*. The
+    election's identity is not known until the page has been read, so the two
+    cannot be the same key.
+    """
+    payload = json.dumps(
+        {"version": HASH_VERSION, "source_url": normalize_source_url(url)},
+        sort_keys=True, ensure_ascii=False, separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

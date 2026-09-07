@@ -1,9 +1,13 @@
 /**
  * Import flow and election picker.
  *
- * Drives four steps: validate the form locally, check the store for a duplicate
- * before any extraction runs, show what was extracted, and save only when the
- * user confirms. The picker feeds the selected election back to the renderer.
+ * Drives four steps: validate the URL locally, check whether that page has been
+ * imported before, show what the agent extracted — including which election it
+ * decided the page describes — and save only when the user confirms.
+ *
+ * Because the agent infers nation, region and date, the preview is where the
+ * user checks that it identified the right election. That confirmation is the
+ * only thing standing between a misread page and the store.
  */
 
 import { ApiError, ImportStatus } from './api.js';
@@ -75,6 +79,8 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
   function renderPreview(election) {
     const seats = election.blocks.flatMap((b) => b.parties);
     el.previewTitle.textContent = election.title;
+    // The identity line is the agent's inference, not the user's input — it is
+    // shown first because confirming it is the point of this step.
     el.previewMeta.textContent =
       `${election.state ? `${election.nation} — ${election.state}` : election.nation}`
       + ` · ${election.electionDate} · ${election.totalSeats} mandater`
@@ -103,23 +109,16 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
     clearPreview();
     setMessage('');
 
-    const { valid, values, errors } = validateImportForm({
-      sourceUrl: el.sourceUrl.value,
-      nation: el.nation.value,
-      state: el.state.value,
-      electionDate: el.electionDate.value,
-    });
+    const { valid, values, errors } = validateImportForm({ sourceUrl: el.sourceUrl.value });
     setFieldErrors(errors);
     if (!valid) return;
 
     try {
-      // Duplicate check first: a known election must never trigger extraction.
+      // Page check first: a page imported before must never be extracted again.
       busy(true, 'Tjekker…');
       const existing = await api.lookup(values);
       if (existing.status === ImportStatus.READY) {
-        setMessage(
-          'Dette valg er allerede importeret. Vælg det i listen ovenfor.', 'warn'
-        );
+        setMessage('Denne side er allerede importeret. Vælg valget i listen ovenfor.', 'warn');
         await refreshPicker(existing.electionHash).catch(() => {});
         return;
       }
@@ -127,6 +126,7 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
       busy(true, 'Henter…');
       const result = await api.importElection(values);
       if (result.status === ImportStatus.READY) {
+        // The agent recognised an election we already hold, under another URL.
         setMessage('Dette valg er allerede importeret.', 'warn');
         await refreshPicker(result.electionHash).catch(() => {});
         return;
@@ -141,7 +141,10 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
       }
       pending = result;
       renderPreview(result.election);
-      setMessage('Kontrollér de udtrukne tal, og gem hvis de er korrekte.', 'info');
+      setMessage(
+        'Kontrollér at valget er identificeret rigtigt, og at tallene passer, før du gemmer.',
+        'info'
+      );
     } catch (error) {
       setMessage(
         error instanceof ApiError ? error.message : `Uventet fejl: ${error.message}`, 'error'
@@ -153,13 +156,13 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
 
   async function confirm() {
     if (!pending) return;
-    const { electionHash } = pending;
+    const { pageKey } = pending;
     try {
       el.confirm.disabled = true;
-      const saved = await api.confirm(electionHash);
+      const saved = await api.confirm(pageKey);
       clearPreview();
-      await refreshPicker(electionHash).catch(() => {});
-      setMessage('Valget er gemt.', 'ok');
+      await refreshPicker(saved.electionHash).catch(() => {});
+      setMessage(saved.duplicate ? 'Valget var allerede gemt.' : 'Valget er gemt.', 'ok');
       el.form.reset();
       setFieldErrors({});
       onSelect(saved.election);
@@ -172,10 +175,10 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
 
   async function discard() {
     if (!pending) return;
-    const { electionHash } = pending;
+    const { pageKey } = pending;
     clearPreview();
     setMessage('Forkastet. Intet blev gemt.', 'info');
-    await api.discardPreview(electionHash).catch(() => {});
+    await api.discardPreview(pageKey).catch(() => {});
   }
 
   async function select() {

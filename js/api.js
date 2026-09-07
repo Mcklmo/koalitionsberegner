@@ -57,11 +57,13 @@ function toSummary(row) {
  *  with an election's `state` (its region). */
 function toResult(body) {
   return {
-    electionHash: body.election_hash,
+    pageKey: body.page_key,
+    electionHash: body.election_hash ?? null,
     status: body.status ?? body.state,
     election: body.election ? toElection(body.election) : null,
     error: body.error ?? null,
     reused: Boolean(body.reused),
+    duplicate: Boolean(body.duplicate),
   };
 }
 
@@ -98,40 +100,35 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl } = {}) {
       return (await request('/api/elections')).map(toSummary);
     },
 
-    /** Up-front duplicate check: metadata in, stored state out, nothing parsed. */
-    async lookup({ nation, state, electionDate }) {
-      const params = query({ nation, state, election_date: electionDate });
-      return toResult(await request(`/api/elections/lookup?${params}`));
+    /** Has this page been imported before? Answered without fetching it. */
+    async lookup({ sourceUrl }) {
+      return toResult(await request(`/api/elections/lookup?${query({ source_url: sourceUrl })}`));
     },
 
     async getElection(electionHash) {
       return toResult(await request(`/api/elections/${encodeURIComponent(electionHash)}`));
     },
 
-    async importElection({ nation, state, electionDate, sourceUrl }, { waitSeconds = 25 } = {}) {
+    /** The agent identifies the election; we send only where to read it. */
+    async importElection({ sourceUrl }, { waitSeconds = 25 } = {}) {
       const body = await request(`/api/elections/import?${query({ wait_seconds: waitSeconds })}`, {
         method: 'POST',
-        body: JSON.stringify({
-          nation,
-          state: state || null,
-          election_date: electionDate,
-          source_url: sourceUrl,
-        }),
+        body: JSON.stringify({ source_url: sourceUrl }),
       });
       return toResult(body);
     },
 
     /** The only path into storage. */
-    async confirm(electionHash) {
+    async confirm(pageKey) {
       return toResult(
-        await request(`/api/elections/${encodeURIComponent(electionHash)}/confirm`, {
+        await request(`/api/elections/pages/${encodeURIComponent(pageKey)}/confirm`, {
           method: 'POST',
         })
       );
     },
 
-    async discardPreview(electionHash) {
-      await request(`/api/elections/${encodeURIComponent(electionHash)}/preview`, {
+    async discardPreview(pageKey) {
+      await request(`/api/elections/pages/${encodeURIComponent(pageKey)}/preview`, {
         method: 'DELETE',
       });
     },

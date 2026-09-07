@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import get_parser, get_store, max_wait_seconds
-from .identity import election_hash
+from .identity import source_url_key
 from .schema import Election
 from .service import ImportRequest, ImportResult, ImportService, ImportState
 
@@ -37,37 +37,33 @@ def get_service() -> ImportService:
 class ImportBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    nation: str = Field(min_length=1, max_length=200)
-    state: str | None = Field(default=None, max_length=200)
-    election_date: date
     source_url: str = Field(min_length=1, max_length=2000)
 
     def to_request(self) -> ImportRequest:
-        return ImportRequest(
-            nation=self.nation,
-            state=self.state,
-            election_date=self.election_date.isoformat(),
-            source_url=self.source_url,
-        )
+        return ImportRequest(source_url=self.source_url)
 
 
 class ImportResponse(BaseModel):
-    election_hash: str
+    page_key: str
     state: ImportState
     election: Election | None = None
+    election_hash: str | None = None
     error: str | None = None
     attempt: int | None = None
     reused: bool = False
+    duplicate: bool = False
 
     @classmethod
     def of(cls, result: ImportResult) -> "ImportResponse":
         return cls(
-            election_hash=result.election_hash,
+            page_key=result.page_key,
             state=result.state,
             election=result.election,
+            election_hash=result.election_hash,
             error=result.error,
             attempt=result.attempt,
             reused=result.reused,
+            duplicate=result.duplicate,
         )
 
 
@@ -92,16 +88,18 @@ async def import_election(
     wait_seconds: float = Query(0.0, ge=0.0, description="Block for up to this long for a result."),
     service: ImportService = Depends(get_service),
 ) -> ImportResponse:
-    """Import an election, or return the stored one if it already exists.
+    """Import an election from a results URL.
 
-    Concurrent callers for the same nation/state/date never start a second
-    parse: the first claims the hash, the rest attach to that run.
+    The agent identifies which election the page reports; the caller supplies
+    nothing but the address. A page imported before is served from storage
+    without fetching or extracting anything.
     """
-    result = await service.submit(body.to_request())
+    try:
+        result = await service.submit(body.to_request())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     if result.state is ImportState.PENDING and wait_seconds > 0:
-        result = await service.wait_for(
-            result.election_hash, min(wait_seconds, max_wait_seconds())
-        )
+        result = await service.wait_for(result.page_key, min(wait_seconds, max_wait_seconds()))
     if result.state is ImportState.PENDING:
         response.status_code = status.HTTP_202_ACCEPTED
     return ImportResponse.of(result)
@@ -123,25 +121,42 @@ async def list_elections(service: ImportService = Depends(get_service)) -> list[
 
 
 @app.get("/api/elections/lookup", response_model=ImportResponse)
-async def lookup_election(
-    nation: str,
-    election_date: date,
-    state: str | None = None,
-    service: ImportService = Depends(get_service),
+async def lookup_page(
+    source_url: str, service: ImportService = Depends(get_service)
 ) -> ImportResponse:
-    """Resolve metadata to a hash and report what the store holds for it."""
-    key = election_hash(nation, state, election_date)
+    """Has this page been imported already? Answered without fetching it."""
+    try:
+        key = source_url_key(source_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return ImportResponse.of(await service.status(key))
 
 
-@app.post("/api/elections/{election_hash}/confirm", response_model=ImportResponse)
-async def confirm_election(
-    election_hash: str, service: ImportService = Depends(get_service)
+@app.get("/api/elections/pages/{page_key}", response_model=ImportResponse)
+async def get_page(
+    page_key: str,
+    response: Response,
+    wait_seconds: float = Query(0.0, ge=0.0),
+    service: ImportService = Depends(get_service),
 ) -> ImportResponse:
-    """Save a previewed election. This is the only path into storage."""
-    result = await service.confirm(election_hash)
+    result = await service.status(page_key)
+    if result.state is ImportState.PENDING and wait_seconds > 0:
+        result = await service.wait_for(page_key, min(wait_seconds, max_wait_seconds()))
     if result.state is ImportState.UNKNOWN:
-        raise HTTPException(status_code=404, detail="no preview to confirm for that hash")
+        raise HTTPException(status_code=404, detail="no import for that page")
+    if result.state is ImportState.PENDING:
+        response.status_code = status.HTTP_202_ACCEPTED
+    return ImportResponse.of(result)
+
+
+@app.post("/api/elections/pages/{page_key}/confirm", response_model=ImportResponse)
+async def confirm_election(
+    page_key: str, service: ImportService = Depends(get_service)
+) -> ImportResponse:
+    """Save a previewed election under the identity the agent inferred."""
+    result = await service.confirm(page_key)
+    if result.state is ImportState.UNKNOWN:
+        raise HTTPException(status_code=404, detail="no preview to confirm for that page")
     if result.state is not ImportState.READY:
         raise HTTPException(
             status_code=409, detail=f"nothing awaiting confirmation (state: {result.state.value})"
@@ -149,31 +164,28 @@ async def confirm_election(
     return ImportResponse.of(result)
 
 
-@app.delete("/api/elections/{election_hash}/preview", status_code=status.HTTP_204_NO_CONTENT)
+@app.delete("/api/elections/pages/{page_key}/preview", status_code=status.HTTP_204_NO_CONTENT)
 async def discard_preview(
-    election_hash: str, service: ImportService = Depends(get_service)
+    page_key: str, service: ImportService = Depends(get_service)
 ) -> Response:
-    """Reject a previewed election, leaving the hash free to import again."""
-    if not await service.discard(election_hash):
-        raise HTTPException(status_code=404, detail="no preview to discard for that hash")
+    """Reject a previewed election, leaving the page free to import again."""
+    if not await service.discard(page_key):
+        raise HTTPException(status_code=404, detail="no preview to discard for that page")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/elections/{election_hash}", response_model=ImportResponse)
 async def get_election(
-    election_hash: str,
-    response: Response,
-    wait_seconds: float = Query(0.0, ge=0.0),
-    service: ImportService = Depends(get_service),
+    election_hash: str, service: ImportService = Depends(get_service)
 ) -> ImportResponse:
-    result = await service.status(election_hash)
-    if result.state is ImportState.PENDING and wait_seconds > 0:
-        result = await service.wait_for(election_hash, min(wait_seconds, max_wait_seconds()))
-    if result.state is ImportState.UNKNOWN:
-        raise HTTPException(status_code=404, detail="no election or parse job for that hash")
-    if result.state is ImportState.PENDING:
-        response.status_code = status.HTTP_202_ACCEPTED
-    return ImportResponse.of(result)
+    """Fetch a stored election by identity, for the picker."""
+    election = await service.get_stored(election_hash)
+    if election is None:
+        raise HTTPException(status_code=404, detail="no stored election with that hash")
+    return ImportResponse(
+        page_key="", state=ImportState.READY, election=election, election_hash=election_hash
+    )
+
 
 
 # Serving the page from this app keeps the API same-origin, which is what the

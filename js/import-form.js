@@ -1,19 +1,11 @@
 /**
  * Client-side validation of the import form.
  *
- * Pure: no DOM, no network. Everything here runs before anything is submitted
- * for extraction, so an obviously malformed request never reaches the backend.
+ * The form is one field: the results URL. Nation, region and date are inferred
+ * from the page by the extraction agent, so there is nothing else to check
+ * before submitting — but a malformed URL is still worth catching here rather
+ * than after a round trip.
  */
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** Checks the date is well formed *and* a real calendar day. */
-function isRealDate(value) {
-  if (!ISO_DATE.test(value)) return false;
-  const [y, m, d] = value.split('-').map(Number);
-  const date = new Date(Date.UTC(y, m - 1, d));
-  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
-}
 
 function isHttpUrl(value) {
   let url;
@@ -26,16 +18,11 @@ function isHttpUrl(value) {
 }
 
 /**
- * @param {{sourceUrl?: string, nation?: string, state?: string, electionDate?: string}} input
- * @returns {{valid: boolean, values: object, errors: Record<string, string>}}
+ * @param {{sourceUrl?: string}} input
+ * @returns {{valid: boolean, values: {sourceUrl: string}, errors: Record<string, string>}}
  */
 export function validateImportForm(input = {}) {
-  const values = {
-    sourceUrl: (input.sourceUrl ?? '').trim(),
-    nation: (input.nation ?? '').trim(),
-    state: (input.state ?? '').trim(),
-    electionDate: (input.electionDate ?? '').trim(),
-  };
+  const values = { sourceUrl: (input.sourceUrl ?? '').trim() };
   const errors = {};
 
   if (!values.sourceUrl) {
@@ -44,16 +31,5 @@ export function validateImportForm(input = {}) {
     errors.sourceUrl = 'Adressen skal være en http- eller https-adresse.';
   }
 
-  if (!values.nation) errors.nation = 'Angiv et land.';
-  if (!values.electionDate) {
-    errors.electionDate = 'Angiv en valgdato.';
-  } else if (!isRealDate(values.electionDate)) {
-    errors.electionDate = 'Valgdatoen skal være en gyldig dato (ÅÅÅÅ-MM-DD).';
-  }
-
-  return {
-    valid: Object.keys(errors).length === 0,
-    values: { ...values, state: values.state || null },
-    errors,
-  };
+  return { valid: Object.keys(errors).length === 0, values, errors };
 }

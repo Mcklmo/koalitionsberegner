@@ -32,16 +32,9 @@ const importUi = mountImportUi({
   elements: {
     form: byId('import-form'),
     sourceUrl: byId('f-url'),
-    nation: byId('f-nation'),
-    state: byId('f-state'),
-    electionDate: byId('f-date'),
     submit: byId('f-submit'),
     message: byId('import-message'),
-    fieldErrors: {
-      sourceUrl: byId('e-url'),
-      nation: byId('e-nation'),
-      electionDate: byId('e-date'),
-    },
+    fieldErrors: { sourceUrl: byId('e-url') },
     preview: byId('preview'),
     previewTitle: byId('preview-title'),
     previewMeta: byId('preview-meta'),
