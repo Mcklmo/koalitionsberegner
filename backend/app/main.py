@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from datetime import date
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import get_parser, get_store, max_wait_seconds
@@ -12,7 +16,18 @@ from .identity import election_hash
 from .schema import Election
 from .service import ImportRequest, ImportResult, ImportService, ImportState
 
-app = FastAPI(title="Koalitionsberegner election store", version="1.0.0")
+app = FastAPI(title="Koalitionsberegner election store", version="1.1.0")
+
+# Only needed when the page is served from a different origin than this API
+# (e.g. the frontend on Cloudflare, the API on Cloud Run).
+_origins = [o for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+if _origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["content-type"],
+    )
 
 
 def get_service() -> ImportService:
@@ -119,6 +134,31 @@ async def lookup_election(
     return ImportResponse.of(await service.status(key))
 
 
+@app.post("/api/elections/{election_hash}/confirm", response_model=ImportResponse)
+async def confirm_election(
+    election_hash: str, service: ImportService = Depends(get_service)
+) -> ImportResponse:
+    """Save a previewed election. This is the only path into storage."""
+    result = await service.confirm(election_hash)
+    if result.state is ImportState.UNKNOWN:
+        raise HTTPException(status_code=404, detail="no preview to confirm for that hash")
+    if result.state is not ImportState.READY:
+        raise HTTPException(
+            status_code=409, detail=f"nothing awaiting confirmation (state: {result.state.value})"
+        )
+    return ImportResponse.of(result)
+
+
+@app.delete("/api/elections/{election_hash}/preview", status_code=status.HTTP_204_NO_CONTENT)
+async def discard_preview(
+    election_hash: str, service: ImportService = Depends(get_service)
+) -> Response:
+    """Reject a previewed election, leaving the hash free to import again."""
+    if not await service.discard(election_hash):
+        raise HTTPException(status_code=404, detail="no preview to discard for that hash")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.get("/api/elections/{election_hash}", response_model=ImportResponse)
 async def get_election(
     election_hash: str,
@@ -134,3 +174,10 @@ async def get_election(
     if result.state is ImportState.PENDING:
         response.status_code = status.HTTP_202_ACCEPTED
     return ImportResponse.of(result)
+
+
+# Serving the page from this app keeps the API same-origin, which is what the
+# frontend expects by default. Mounted last so it cannot shadow the API routes.
+FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR", Path(__file__).resolve().parents[2]))
+if (FRONTEND_DIR / "index.html").is_file():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

@@ -1,4 +1,4 @@
-"""Acceptance: cross-user reuse, single-flight parsing, and retry after failure."""
+"""Cross-user reuse, single-flight parsing, and the confirmation gate."""
 
 from __future__ import annotations
 
@@ -28,36 +28,80 @@ async def settle(service: ImportService, key: str):
     return await service.wait_for(key, timeout=2.0)
 
 
-async def test_first_import_parses_once_and_stores_the_result():
-    store, parser, service = build()
-    result = await service.submit(make_request())
-    assert result.state is ImportState.PENDING
+async def import_and_save(service: ImportService, request=None):
+    """The full happy path: submit, wait for the preview, confirm it."""
+    submitted = await service.submit(request or make_request())
+    await settle(service, submitted.election_hash)
+    return await service.confirm(submitted.election_hash)
 
-    settled = await settle(service, result.election_hash)
-    assert settled.state is ImportState.READY
-    assert settled.election == parser.election
+
+async def test_a_parsed_election_is_previewed_not_saved():
+    store, parser, service = build()
+    submitted = await service.submit(make_request())
+
+    previewed = await settle(service, submitted.election_hash)
+    assert previewed.state is ImportState.PREVIEW
+    assert previewed.election is not None, "the extraction is shown to the user"
+    assert store.get_election(submitted.election_hash) is None, "nothing saved without confirmation"
     assert parser.call_count == 1
-    assert store.get_election(result.election_hash) is not None
 
 
-async def test_second_import_of_a_stored_election_is_short_circuited():
+async def test_confirming_a_preview_saves_it():
     store, parser, service = build()
-    first = await service.submit(make_request())
-    await settle(service, first.election_hash)
+    submitted = await service.submit(make_request())
+    await settle(service, submitted.election_hash)
+
+    confirmed = await service.confirm(submitted.election_hash)
+    assert confirmed.state is ImportState.READY
+    assert store.get_election(submitted.election_hash) is not None
+    assert store.get_job(submitted.election_hash).status is JobStatus.SUCCEEDED
+
+
+async def test_discarding_a_preview_saves_nothing_and_frees_the_hash():
+    store, parser, service = build()
+    submitted = await service.submit(make_request())
+    await settle(service, submitted.election_hash)
+
+    assert await service.discard(submitted.election_hash) is True
+    assert store.get_election(submitted.election_hash) is None
+    assert (await service.status(submitted.election_hash)).state is ImportState.UNKNOWN
+
+    retry = await service.submit(make_request())
+    assert retry.reused is False, "a discarded preview leaves the hash importable"
+    await wait_until(lambda: parser.call_count == 2)
+
+
+async def test_confirming_twice_is_harmless():
+    store, _, service = build()
+    first = await import_and_save(service)
+    again = await service.confirm(first.election_hash)
+
+    assert again.state is ImportState.READY
+    assert again.election == first.election
+    assert len(store.list_elections()) == 1
+
+
+async def test_confirming_without_a_preview_reports_the_real_state():
+    _, _, service = build()
+    assert (await service.confirm("0" * 64)).state is ImportState.UNKNOWN
+
+
+async def test_second_import_of_a_saved_election_is_short_circuited():
+    store, parser, service = build()
+    first = await import_and_save(service)
 
     second = await service.submit(make_request())
+    assert second.election_hash == first.election_hash
     assert second.state is ImportState.READY
     assert second.reused is True
-    assert second.election is not None
-    assert parser.call_count == 1, "a stored election must never be parsed again"
+    assert parser.call_count == 1, "a saved election must never be parsed again"
 
 
 async def test_one_users_import_serves_every_other_user():
-    """A different user, submitting the same metadata with a different URL,
-    is served the already-parsed election rather than re-parsing."""
+    """Another user submitting the same metadata with a different URL is served
+    the already-saved election rather than re-parsing it."""
     store, parser, service = build()
-    first = await service.submit(make_request(source_url="https://example.org/results"))
-    await settle(service, first.election_hash)
+    first = await import_and_save(service, make_request(source_url="https://example.org/results"))
 
     other_user = await service.submit(
         make_request(source_url="https://mirror.example.net/other-page")
@@ -76,7 +120,6 @@ async def test_concurrent_requests_trigger_exactly_one_parse_and_share_its_resul
     submissions = await asyncio.gather(*(service.submit(make_request()) for _ in range(8)))
     key = submissions[0].election_hash
     assert {s.election_hash for s in submissions} == {key}
-    assert all(s.state is ImportState.PENDING for s in submissions)
     assert sum(1 for s in submissions if not s.reused) == 1, "exactly one caller owns the parse"
 
     await parser.started.wait()
@@ -85,9 +128,8 @@ async def test_concurrent_requests_trigger_exactly_one_parse_and_share_its_resul
     parser.release()
     results = await asyncio.gather(*(settle(service, key) for _ in submissions))
     assert parser.call_count == 1, "only one parse ran for the whole race"
-    assert all(r.state is ImportState.READY for r in results)
-    assert {id(r.election) for r in results}, "every caller received a result"
-    assert all(r.election == parser.election for r in results)
+    assert all(r.state is ImportState.PREVIEW for r in results)
+    assert all(r.election == results[0].election for r in results), "one result, shared by all"
 
 
 async def test_a_late_arrival_attaches_to_an_in_flight_parse():
@@ -104,8 +146,19 @@ async def test_a_late_arrival_attaches_to_an_in_flight_parse():
     assert parser.call_count == 1
 
     parser.release()
-    assert (await settle(service, owner.election_hash)).state is ImportState.READY
+    assert (await settle(service, owner.election_hash)).state is ImportState.PREVIEW
     assert parser.call_count == 1
+
+
+async def test_a_request_arriving_during_a_preview_sees_the_preview():
+    _, parser, service = build()
+    first = await service.submit(make_request())
+    await settle(service, first.election_hash)
+
+    second = await service.submit(make_request())
+    assert second.state is ImportState.PREVIEW
+    assert second.reused is True
+    assert parser.call_count == 1, "an unconfirmed preview must not trigger a second parse"
 
 
 async def test_a_failed_parse_does_not_poison_the_hash():
@@ -119,8 +172,7 @@ async def test_a_failed_parse_does_not_poison_the_hash():
 
     retry = await service.submit(make_request())
     assert retry.state is ImportState.PENDING, "the hash is claimable again after a failure"
-    recovered = await settle(service, retry.election_hash)
-    assert recovered.state is ImportState.READY
+    assert (await settle(service, retry.election_hash)).state is ImportState.PREVIEW
     assert parser.call_count == 2
     assert store.get_job(first.election_hash).attempt == 2
 
@@ -145,6 +197,20 @@ async def test_a_crashed_parse_is_reclaimed_once_its_lease_expires():
     await wait_until(lambda: parser.call_count == 2)
 
 
+async def test_an_abandoned_preview_is_reclaimed_once_its_lease_expires():
+    now = [1000.0]
+    store, parser, service = build(stale_after=60.0, clock=lambda: now[0])
+
+    first = await service.submit(make_request())
+    await settle(service, first.election_hash)
+    assert store.get_job(first.election_hash).status is JobStatus.AWAITING_CONFIRMATION
+
+    now[0] += 61.0
+    reclaim = await service.submit(make_request())
+    assert reclaim.reused is False, "an abandoned preview must not pin the election forever"
+    await wait_until(lambda: parser.call_count == 2)
+
+
 async def test_status_reports_unknown_for_an_unseen_hash():
     _, _, service = build()
     result = await service.status("0" * 64)
@@ -153,26 +219,14 @@ async def test_status_reports_unknown_for_an_unseen_hash():
 
 
 async def test_regional_and_national_imports_are_separate_elections():
-    parser = CountingParser()
-    store, parser, service = build(parser)
+    store, parser, service = build()
 
-    national = await service.submit(make_request())
-    regional = await service.submit(make_request(state="Nordjylland"))
+    national = await import_and_save(service, make_request())
+    regional = await import_and_save(service, make_request(state="Nordjylland"))
+
     assert national.election_hash != regional.election_hash
-
-    await settle(service, national.election_hash)
-    await settle(service, regional.election_hash)
     assert parser.call_count == 2
     assert len(store.list_elections()) == 2
-
-
-async def test_claim_outcomes_are_reported_directly_by_the_store():
-    store = InMemoryElectionStore()
-    request = make_request()
-    assert store.claim("h", request).outcome is ClaimOutcome.STARTED
-    assert store.claim("h", request).outcome is ClaimOutcome.ATTACHED
-    store.complete("h", make_election())
-    assert store.claim("h", request).outcome is ClaimOutcome.STORED
 
 
 async def test_an_election_that_contradicts_its_identity_is_rejected():
@@ -187,3 +241,16 @@ async def test_an_election_that_contradicts_its_identity_is_rejected():
     assert result.state is ImportState.FAILED
     assert "does not match" in result.error
     assert store.get_election(submitted.election_hash) is None
+
+
+async def test_claim_outcomes_are_reported_directly_by_the_store():
+    store = InMemoryElectionStore()
+    request = make_request()
+    assert store.claim("h", request).outcome is ClaimOutcome.STARTED
+    assert store.claim("h", request).outcome is ClaimOutcome.ATTACHED
+
+    store.stage("h", make_election())
+    assert store.claim("h", request).outcome is ClaimOutcome.ATTACHED, "preview is not re-parsed"
+
+    store.confirm("h")
+    assert store.claim("h", request).outcome is ClaimOutcome.STORED

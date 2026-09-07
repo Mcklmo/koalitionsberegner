@@ -28,8 +28,13 @@ POLL_INTERVAL_SECONDS = 0.05
 class ImportState(str, Enum):
     READY = "ready"        # the election is stored and returned
     PENDING = "pending"    # a parse is running; poll or wait
+    PREVIEW = "preview"    # parsed and shown for confirmation; not saved yet
     FAILED = "failed"      # the last parse failed; importing again retries
     UNKNOWN = "unknown"    # nothing stored and no job for this hash
+
+
+#: States a caller can stop polling on.
+TERMINAL_STATES = (ImportState.READY, ImportState.PREVIEW, ImportState.FAILED, ImportState.UNKNOWN)
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,7 @@ class ImportResult:
     election_hash: str
     state: ImportState
     election: Election | None = None
+    """The stored election, or — in the PREVIEW state — the unsaved extraction."""
     error: str | None = None
     attempt: int | None = None
     reused: bool = False
@@ -70,6 +76,10 @@ class ImportService:
 
         if claim.outcome is ClaimOutcome.ATTACHED:
             job = claim.job
+            if job is not None and job.status is JobStatus.AWAITING_CONFIRMATION:
+                return ImportResult(
+                    key, ImportState.PREVIEW, election=job.result, attempt=job.attempt, reused=True
+                )
             return ImportResult(
                 key, ImportState.PENDING, attempt=job.attempt if job else None, reused=True
             )
@@ -101,10 +111,11 @@ class ImportService:
             )
             return
         try:
-            await self._in_thread(self._store.complete, key, election)
+            # Staged, not stored: the user still has to confirm what was extracted.
+            await self._in_thread(self._store.stage, key, election)
         except Exception as exc:  # noqa: BLE001
-            log.exception("storing %s failed", key)
-            await self._in_thread(self._store.fail, key, f"could not store result: {exc}")
+            log.exception("staging %s failed", key)
+            await self._in_thread(self._store.fail, key, f"could not stage result: {exc}")
 
     async def status(self, key: str) -> ImportResult:
         election = await self._in_thread(self._store.get_election, key)
@@ -115,6 +126,10 @@ class ImportService:
             return ImportResult(key, ImportState.UNKNOWN)
         if job.status is JobStatus.FAILED:
             return ImportResult(key, ImportState.FAILED, error=job.error, attempt=job.attempt)
+        if job.status is JobStatus.AWAITING_CONFIRMATION:
+            return ImportResult(
+                key, ImportState.PREVIEW, election=job.result, attempt=job.attempt
+            )
         # A job that reports success without a stored election is still settling.
         return ImportResult(key, ImportState.PENDING, attempt=job.attempt)
 
@@ -127,11 +142,22 @@ class ImportService:
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
             result = await self.status(key)
-            if result.state in (ImportState.READY, ImportState.FAILED, ImportState.UNKNOWN):
+            if result.state in TERMINAL_STATES:
                 return result
             if asyncio.get_running_loop().time() >= deadline:
                 return result
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+    async def confirm(self, key: str) -> ImportResult:
+        """Save a previewed election. Nothing reaches storage without this."""
+        election = await self._in_thread(self._store.confirm, key)
+        if election is None:
+            return await self.status(key)
+        return ImportResult(key, ImportState.READY, election=election)
+
+    async def discard(self, key: str) -> bool:
+        """Reject a previewed election, freeing the hash for another attempt."""
+        return await self._in_thread(self._store.discard, key)
 
     async def list_elections(self):
         return await self._in_thread(self._store.list_elections)

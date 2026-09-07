@@ -24,8 +24,15 @@ DEFAULT_STALE_AFTER_SECONDS = 300.0
 
 class JobStatus(str, Enum):
     PENDING = "pending"
+    # Parsed, shown to the user, not yet saved. Nothing reaches the election
+    # collection until someone confirms what the extraction produced.
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+#: Statuses that mean "a parse already happened or is happening for this hash".
+LIVE_STATUSES = (JobStatus.PENDING, JobStatus.AWAITING_CONFIRMATION)
 
 
 class ClaimOutcome(str, Enum):
@@ -54,6 +61,8 @@ class Job:
     started_at: float
     attempt: int = 1
     error: str | None = None
+    result: Election | None = None
+    """The extracted election awaiting confirmation; never served as stored."""
 
 
 @dataclass(frozen=True)
@@ -82,7 +91,17 @@ class ElectionStore(Protocol):
 
     def claim(self, election_hash: str, request: ImportRequest) -> Claim: ...
 
-    def complete(self, election_hash: str, election: Election) -> None: ...
+    def stage(self, election_hash: str, election: Election) -> None:
+        """Record a parsed election as awaiting the user's confirmation."""
+        ...
+
+    def confirm(self, election_hash: str) -> Election | None:
+        """Promote a staged election into storage. Idempotent."""
+        ...
+
+    def discard(self, election_hash: str) -> bool:
+        """Throw away a staged election, freeing the hash for another attempt."""
+        ...
 
     def fail(self, election_hash: str, error: str) -> None: ...
 
@@ -95,13 +114,14 @@ def _decide(
 ) -> ClaimOutcome:
     """The claim rule, shared by every implementation so they cannot drift.
 
-    A stored election always wins. A pending job that is still fresh is joined.
-    Anything else — no job, a failed job, or a pending job past its lease — is
-    claimable, which is what keeps failures from poisoning the hash.
+    A stored election always wins. A fresh job — parsing, or parsed and waiting
+    for the user to confirm — is joined. Anything else (no job, a failed job, or
+    a job past its lease) is claimable, which is what keeps failures and
+    abandoned previews from poisoning the hash.
     """
     if election is not None:
         return ClaimOutcome.STORED
-    if job is not None and job.status is JobStatus.PENDING and now - job.started_at < stale_after:
+    if job is not None and job.status in LIVE_STATUSES and now - job.started_at < stale_after:
         return ClaimOutcome.ATTACHED
     return ClaimOutcome.STARTED
 
@@ -155,20 +175,46 @@ class InMemoryElectionStore:
             self._jobs[election_hash] = new_job
             return Claim(outcome, election_hash, job=new_job)
 
-    def complete(self, election_hash: str, election: Election) -> None:
+    def stage(self, election_hash: str, election: Election) -> None:
         with self._lock:
-            self._elections[election_hash] = StoredElection(
-                election_hash=election_hash, election=election, stored_at=self._clock()
-            )
             job = self._jobs.get(election_hash)
-            if job is not None:
-                self._jobs[election_hash] = Job(
-                    election_hash=job.election_hash,
-                    status=JobStatus.SUCCEEDED,
-                    source_url=job.source_url,
-                    started_at=job.started_at,
-                    attempt=job.attempt,
-                )
+            self._jobs[election_hash] = Job(
+                election_hash=election_hash,
+                status=JobStatus.AWAITING_CONFIRMATION,
+                source_url=job.source_url if job else "",
+                # Restart the lease so the user gets a full window to confirm.
+                started_at=self._clock(),
+                attempt=job.attempt if job else 1,
+                result=election,
+            )
+
+    def confirm(self, election_hash: str) -> Election | None:
+        with self._lock:
+            stored = self._elections.get(election_hash)
+            if stored is not None:
+                return stored.election  # already confirmed; confirming twice is harmless
+            job = self._jobs.get(election_hash)
+            if job is None or job.status is not JobStatus.AWAITING_CONFIRMATION or job.result is None:
+                return None
+            self._elections[election_hash] = StoredElection(
+                election_hash=election_hash, election=job.result, stored_at=self._clock()
+            )
+            self._jobs[election_hash] = Job(
+                election_hash=election_hash,
+                status=JobStatus.SUCCEEDED,
+                source_url=job.source_url,
+                started_at=job.started_at,
+                attempt=job.attempt,
+            )
+            return job.result
+
+    def discard(self, election_hash: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(election_hash)
+            if job is None or job.status is not JobStatus.AWAITING_CONFIRMATION:
+                return False
+            del self._jobs[election_hash]
+            return True
 
     def fail(self, election_hash: str, error: str) -> None:
         with self._lock:

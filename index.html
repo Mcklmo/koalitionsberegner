@@ -5,6 +5,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Koalitionsberegner</title>
+  <!-- Same-origin by default; set a URL here to point at a separately hosted API. -->
+  <meta name="api-base" content="">
   <style>
     * {
       box-sizing: border-box;
@@ -240,10 +242,180 @@
       font-size: 11px;
       color: #aaa
     }
+
+    .picker-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 1rem
+    }
+
+    .picker-row label {
+      font-size: 12px;
+      color: #888
+    }
+
+    select,
+    input {
+      font: inherit;
+      font-size: 13px;
+      padding: 6px 8px;
+      border: 0.5px solid #ccc;
+      border-radius: 6px;
+      background: #fff;
+      color: inherit;
+      width: 100%
+    }
+
+    @media(prefers-color-scheme:dark) {
+
+      select,
+      input {
+        background: #222;
+        border-color: #444
+      }
+    }
+
+    details.import {
+      margin-top: 1.5rem;
+      border-top: 0.5px solid #e0e0e0;
+      padding-top: 1rem
+    }
+
+    @media(prefers-color-scheme:dark) {
+      details.import {
+        border-color: #333
+      }
+    }
+
+    details.import summary {
+      font-size: 13px;
+      color: #888;
+      cursor: pointer;
+      user-select: none
+    }
+
+    .field {
+      margin-top: 10px
+    }
+
+    .field label {
+      display: block;
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 3px
+    }
+
+    .field-error {
+      font-size: 11px;
+      color: #C0392B;
+      margin-top: 3px;
+      min-height: 13px
+    }
+
+    .row-2 {
+      display: flex;
+      gap: 8px
+    }
+
+    .row-2>* {
+      flex: 1
+    }
+
+    button.primary {
+      font: inherit;
+      font-size: 13px;
+      margin-top: 12px;
+      padding: 7px 14px;
+      border: none;
+      border-radius: 6px;
+      background: #378ADD;
+      color: #fff;
+      cursor: pointer
+    }
+
+    button.primary:disabled {
+      opacity: .5;
+      cursor: default
+    }
+
+    button.secondary {
+      font: inherit;
+      font-size: 13px;
+      padding: 7px 14px;
+      border: 0.5px solid #ccc;
+      border-radius: 6px;
+      background: none;
+      color: inherit;
+      cursor: pointer
+    }
+
+    .msg {
+      font-size: 12px;
+      margin-top: 10px
+    }
+
+    .msg-error {
+      color: #C0392B
+    }
+
+    .msg-warn {
+      color: #B9770E
+    }
+
+    .msg-ok {
+      color: #1D9E75
+    }
+
+    .msg-info {
+      color: #888
+    }
+
+    .preview {
+      margin-top: 12px;
+      padding: 12px;
+      border: 0.5px solid #ccc;
+      border-radius: 8px
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .preview {
+        border-color: #444
+      }
+    }
+
+    .preview h3 {
+      font-size: 14px;
+      font-weight: 500
+    }
+
+    .preview-meta {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 8px
+    }
+
+    .preview-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      padding: 2px 0
+    }
+
+    .preview-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px
+    }
   </style>
 </head>
 
 <body>
+  <div class="picker-row" id="picker-row" hidden>
+    <label for="picker">Valg</label>
+    <select id="picker"></select>
+  </div>
+
   <h2 id="title"></h2>
   <p class="sub" id="subtitle"></p>
 
@@ -264,17 +436,49 @@
     </div>
   </div>
 
-  <script type="module">
-    import { mountCoalitionCalculator } from './js/app.js';
-    import { Folketing2026Provider } from './js/providers/folketing-2026.js';
+  <details class="import">
+    <summary>Importér et valg</summary>
 
-    // The only place an election is chosen. Swap this provider to render a
-    // different election; nothing in js/app.js changes.
-    const provider = Folketing2026Provider;
+    <form id="import-form" novalidate>
+      <div class="field">
+        <label for="f-url">Officiel resultatside (URL)</label>
+        <input id="f-url" name="sourceUrl" type="url" placeholder="https://…" autocomplete="off">
+        <div class="field-error" id="e-url"></div>
+      </div>
+      <div class="row-2">
+        <div class="field">
+          <label for="f-nation">Land</label>
+          <input id="f-nation" name="nation" type="text" autocomplete="off">
+          <div class="field-error" id="e-nation"></div>
+        </div>
+        <div class="field">
+          <label for="f-state">Region (valgfrit)</label>
+          <input id="f-state" name="state" type="text" autocomplete="off">
+          <div class="field-error"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="f-date">Valgdato</label>
+        <input id="f-date" name="electionDate" type="date">
+        <div class="field-error" id="e-date"></div>
+      </div>
+      <button class="primary" id="f-submit" type="submit">Hent valgresultat</button>
+    </form>
 
-    const app = mountCoalitionCalculator(await provider.getElection());
-    document.getElementById('reset').addEventListener('click', () => app.clearAll());
-  </script>
+    <p class="msg" id="import-message"></p>
+
+    <div class="preview" id="preview" hidden>
+      <h3 id="preview-title"></h3>
+      <div class="preview-meta" id="preview-meta"></div>
+      <div id="preview-list"></div>
+      <div class="preview-actions">
+        <button class="primary" id="preview-confirm" type="button">Gem valget</button>
+        <button class="secondary" id="preview-discard" type="button">Forkast</button>
+      </div>
+    </div>
+  </details>
+
+  <script type="module" src="./js/main.js"></script>
 </body>
 
 </html>

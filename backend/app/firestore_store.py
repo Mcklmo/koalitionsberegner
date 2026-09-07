@@ -29,6 +29,7 @@ JOBS_COLLECTION = "parse_jobs"
 
 
 def _job_from_doc(election_hash: str, data: dict) -> Job:
+    result = data.get("result")
     return Job(
         election_hash=election_hash,
         status=JobStatus(data["status"]),
@@ -36,6 +37,8 @@ def _job_from_doc(election_hash: str, data: dict) -> Job:
         started_at=float(data.get("started_at", 0.0)),
         attempt=int(data.get("attempt", 1)),
         error=data.get("error"),
+        # A staged draft is re-validated on read like anything else from storage.
+        result=Election.model_validate(result) if result else None,
     )
 
 
@@ -129,28 +132,76 @@ class FirestoreElectionStore:
 
         return _claim(self._db.transaction())
 
-    def complete(self, election_hash: str, election: Election) -> None:
-        stored_at = self._clock()
-        batch = self._db.batch()
-        batch.set(
-            self._election_ref(election_hash),
+    def stage(self, election_hash: str, election: Election) -> None:
+        self._job_ref(election_hash).set(
             {
-                "election": election.model_dump(mode="json"),
-                "stored_at": stored_at,
+                "status": JobStatus.AWAITING_CONFIRMATION.value,
+                "result": election.model_dump(mode="json"),
+                "error": None,
+                # Restart the lease so the user gets a full window to confirm.
+                "started_at": self._clock(),
             },
-        )
-        batch.set(
-            self._job_ref(election_hash),
-            {"status": JobStatus.SUCCEEDED.value, "error": None, "finished_at": stored_at},
             merge=True,
         )
-        batch.commit()
+
+    def confirm(self, election_hash: str) -> Election | None:
+        election_ref = self._election_ref(election_hash)
+        job_ref = self._job_ref(election_hash)
+        clock = self._clock
+
+        @firestore.transactional
+        def _confirm(transaction):
+            election_doc = election_ref.get(transaction=transaction)
+            if election_doc.exists:
+                # Already confirmed; confirming twice must not duplicate anything.
+                return Election.model_validate(election_doc.to_dict()["election"])
+
+            job_doc = job_ref.get(transaction=transaction)
+            if not job_doc.exists:
+                return None
+            job = _job_from_doc(election_hash, job_doc.to_dict())
+            if job.status is not JobStatus.AWAITING_CONFIRMATION or job.result is None:
+                return None
+
+            stored_at = clock()
+            transaction.set(
+                election_ref,
+                {"election": job.result.model_dump(mode="json"), "stored_at": stored_at},
+            )
+            transaction.set(
+                job_ref,
+                {
+                    "status": JobStatus.SUCCEEDED.value,
+                    "result": None,
+                    "finished_at": stored_at,
+                },
+                merge=True,
+            )
+            return job.result
+
+        return _confirm(self._db.transaction())
+
+    def discard(self, election_hash: str) -> bool:
+        job_ref = self._job_ref(election_hash)
+
+        @firestore.transactional
+        def _discard(transaction):
+            job_doc = job_ref.get(transaction=transaction)
+            if not job_doc.exists:
+                return False
+            if JobStatus(job_doc.to_dict()["status"]) is not JobStatus.AWAITING_CONFIRMATION:
+                return False
+            transaction.delete(job_ref)
+            return True
+
+        return _discard(self._db.transaction())
 
     def fail(self, election_hash: str, error: str) -> None:
         self._job_ref(election_hash).set(
             {
                 "status": JobStatus.FAILED.value,
                 "error": error[:1000],
+                "result": None,
                 "finished_at": self._clock(),
             },
             merge=True,

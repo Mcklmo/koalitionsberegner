@@ -1,30 +1,34 @@
 # Koalitionsberegner
 
-Static coalition-seat calculator. Pick parties, see whether they reach a majority.
+Coalition-seat calculator. Pick parties, see whether they reach a majority.
+Elections can be imported from an official results URL and shared between users.
 
-The renderer (`js/app.js`) is election-agnostic; the data comes from an injected
-provider (`js/providers/folketing-2026.js`) and must pass the canonical schema
-validator in `js/election.js` before it can be rendered.
+The renderer (`js/app.js`) is election-agnostic; elections come from an injected
+provider and must pass the canonical schema validator in `js/election.js` before
+being rendered. The backend (`backend/`) stores imported elections.
 
 ## Run locally
 
-Needs a server — the page uses ES modules, so `file://` won't work.
+The import UI calls the API on the same origin, so run both from the backend:
 
 ```sh
-python3 -m http.server 8000    # then open http://localhost:8000
+cd backend && pip install -e '.[dev]'
+ELECTION_STORE=memory uvicorn app.main:app --reload
 ```
 
-Or, closer to production:
+Then open <http://localhost:8000>.
+
+Frontend only — the bundled Folketing 2026 election renders, import is disabled:
 
 ```sh
-npx wrangler dev
+python3 -m http.server 8000   # or: npx wrangler dev
 ```
-
-`http://localhost:8000/test/toy-election.html` renders a two-party toy election
-through the same renderer — a manual check that the provider seam holds.
 
 ## Test
 
 ```sh
-node --test test/election.test.mjs
+node --test test/*.test.mjs   # frontend
+cd backend && pytest          # backend
 ```
+
+See [doc/contribute.md](doc/contribute.md) for cloud setup and environment variables.
