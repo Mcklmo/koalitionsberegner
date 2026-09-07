@@ -85,6 +85,25 @@ def test_control_characters_are_rejected():
     assert "control characters" in reject(title="Koalitions" + chr(7) + "beregner")
 
 
+@pytest.mark.parametrize(
+    "char, why",
+    [
+        ("\u202e", "right-to-left override"),
+        ("\u2066", "directional isolate"),
+        ("\u200b", "zero-width space"),
+        ("\ufeff", "zero-width no-break space"),
+        ("\u00ad", "soft hyphen"),
+    ],
+)
+def test_invisible_and_direction_changing_characters_are_rejected(char, why):
+    """They survive textContent and change what the label reads as — see #10."""
+    assert "direction-changing" in reject(title=f"Koalitions{char}beregner"), why
+
+
+def test_joiners_real_scripts_need_are_still_allowed():
+    assert make_election(nation="\u0645\u200c\u0644\u06cc").nation == "\u0645\u200c\u0644\u06cc"
+
+
 def test_survives_the_storage_round_trip():
     """FirestoreElectionStore writes model_dump(mode="json") and reads it back
     through model_validate, so that round trip must be lossless under strict mode."""

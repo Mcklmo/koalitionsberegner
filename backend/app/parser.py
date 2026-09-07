@@ -57,7 +57,7 @@ class LlmElectionParser:
         except ParseError:
             raise
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, never rendered
-            raise ParseError(f"extraction failed: {exc}") from None
+            raise ParseError(f"extraction failed: {_clip(str(exc))}") from None
 
         if not any(block.parties for block in extracted.blocks):
             raise ParseError("no election results could be found on that page")
@@ -96,9 +96,20 @@ class LlmElectionParser:
             raise ParseError(f"the extracted results are not valid: {_summarise(exc)}") from None
 
 
+#: Errors are shown to the user, and validation messages quote the value that
+#: failed — which came from an untrusted page. Inert in the DOM either way, but
+#: a page should not be able to write an essay into our error surface.
+MAX_PROBLEM_CHARS = 200
+
+
+def _clip(text: str, limit: int = MAX_PROBLEM_CHARS) -> str:
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "\u2026"
+
+
 def _summarise(error: ValidationError, limit: int = 3) -> str:
     problems = [
-        (".".join(str(p) for p in item["loc"]) or "election") + ": " + item["msg"]
+        _clip((".".join(str(p) for p in item["loc"]) or "election") + ": " + item["msg"])
         for item in error.errors()[:limit]
     ]
     more = len(error.errors()) - len(problems)

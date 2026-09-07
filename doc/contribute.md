@@ -19,6 +19,11 @@ python3 -m http.server 8000   # or: npx wrangler dev
 node --test test/*.test.mjs
 ```
 
+Before changing anything in the import path — the fetcher, the extraction
+prompt, the schema, or how extracted strings are rendered — read
+[threat-model.md](threat-model.md). It says which of those pieces is load-bearing
+against a hostile results page, and which test holds each claim up.
+
 ### Cloud setup (deployment only)
 
 1. A GCP project with the **Firestore** and **Cloud Run** APIs enabled.
