@@ -56,6 +56,7 @@ with `<meta name="api-base" content="https://…">` in `index.html` and set
 | `IMPORT_MAX_WAIT_SECONDS` | no | `25` | Ceiling on `?wait_seconds=` long-polling. |
 | `ALLOWED_ORIGINS` | no | — | Comma-separated origins allowed to call the API, when the page is hosted elsewhere. Unset means same-origin only. |
 | `FRONTEND_DIR` | no | repo root | Directory holding `index.html`; served at `/` when present. |
+| `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
 | `PORT` | no | `8080` | Set by Cloud Run. |
 
 Credentials come from Application Default Credentials — the attached service account

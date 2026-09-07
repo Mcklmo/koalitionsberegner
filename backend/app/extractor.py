@@ -14,11 +14,15 @@ inferred identity is no longer able to provide on its own.
 
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .observability import io_span
 from .store import ImportRequest
+
+log = logging.getLogger(__name__)
 
 MODEL = "claude-opus-5"
 MAX_TOKENS = 16_000
@@ -123,19 +127,32 @@ class AnthropicExtractor:
     async def extract(self, page_text: str, request: ImportRequest) -> ExtractedElection:
         from .parser import ParseError
 
-        response = await self._get_client().messages.parse(
-            model=self._model,
-            max_tokens=MAX_TOKENS,
-            thinking={"type": "adaptive"},
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": build_user_message(page_text, request)}],
-            output_format=ExtractedElection,
-        )
-        if response.stop_reason == "refusal":
-            raise ParseError("the model declined to process this page")
-        if response.parsed_output is None:
-            raise ParseError("the model returned no structured result")
-        return response.parsed_output
+        # Sizes only: the page and the model's answer never reach the log.
+        with io_span(
+            log, "anthropic", "extract", model=self._model, page_chars=len(page_text)
+        ) as span:
+            response = await self._get_client().messages.parse(
+                model=self._model,
+                max_tokens=MAX_TOKENS,
+                thinking={"type": "adaptive"},
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": build_user_message(page_text, request)}],
+                output_format=ExtractedElection,
+            )
+            span["stop_reason"] = getattr(response, "stop_reason", None)
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                span["input_tokens"] = getattr(usage, "input_tokens", None)
+                span["output_tokens"] = getattr(usage, "output_tokens", None)
+
+            if response.stop_reason == "refusal":
+                raise ParseError("the model declined to process this page")
+            if response.parsed_output is None:
+                raise ParseError("the model returned no structured result")
+            parsed = response.parsed_output
+            span["parties"] = sum(len(b.parties) for b in parsed.blocks)
+            span["total_seats"] = parsed.total_seats
+        return parsed
 
 
 # --- Mock ------------------------------------------------------------------
@@ -178,4 +195,7 @@ class MockExtractor:
 
     async def extract(self, page_text: str, request: ImportRequest) -> ExtractedElection:
         self.calls.append((page_text, request))
+        with io_span(log, "anthropic", "extract", model="mock", page_chars=len(page_text)) as span:
+            span["parties"] = sum(len(b.parties) for b in self.result.blocks)
+            span["total_seats"] = self.result.total_seats
         return self.result

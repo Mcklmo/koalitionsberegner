@@ -8,12 +8,17 @@ user pasted, and has no way to ask for another.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urlparse, urlunparse
 
 import httpx
+
+from .observability import io_span
+
+log = logging.getLogger(__name__)
 
 MAX_BYTES = 5_000_000
 MAX_TEXT_CHARS = 400_000
@@ -124,16 +129,23 @@ class HttpPageFetcher:
         owns_client = self._client is None
         try:
             current = url
-            for _ in range(MAX_REDIRECTS + 1):
+            for hop in range(MAX_REDIRECTS + 1):
                 current = _assert_public_url(current)
-                response = await client.get(current)
-                if response.is_redirect:
-                    location = response.headers.get("location")
-                    if not location:
-                        raise FetchError("the server sent a redirect with no destination")
-                    current = str(response.url.join(location))
-                    continue
-                return FetchedPage(url=current, text=_read(response))
+                with io_span(log, "page", "get", url=current, hop=hop) as span:
+                    response = await client.get(current)
+                    span["status"] = response.status_code
+                    span["bytes"] = len(response.content)
+                    span["type"] = response.headers.get("content-type", "").split(";")[0]
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise FetchError("the server sent a redirect with no destination")
+                        span["redirect_to"] = location
+                        current = str(response.url.join(location))
+                        continue
+                    text = _read(response)
+                    span["chars"] = len(text)
+                return FetchedPage(url=current, text=text)
             raise FetchError("too many redirects")
         except httpx.HTTPError as exc:
             raise FetchError(f"could not fetch the page: {exc}") from None

@@ -16,6 +16,7 @@ from enum import Enum
 import anyio.to_thread
 
 from .identity import election_hash, source_url_key
+from .observability import io_span, scrub
 from .parser import ElectionParser
 from .schema import Election
 from .store import ClaimOutcome, ElectionStore, ImportRequest, JobStatus
@@ -77,6 +78,12 @@ class ImportService:
         """Claim the page and extract only if nobody else already has."""
         key = self.page_key_for(request)
         claim = await self._in_thread(self._store.claim, key, request)
+        # One line per state transition, so the decision is visible whichever
+        # store backend is in use (Firestore logs its own wire-level spans).
+        log.info(
+            "claim page=%s outcome=%s url=%s",
+            key[:12], claim.outcome.value, scrub(request.source_url),
+        )
 
         if claim.outcome is ClaimOutcome.STORED:
             # This page has been imported before: no fetch, no model call.
@@ -105,10 +112,16 @@ class ImportService:
 
     async def _extract(self, key: str, request: ImportRequest) -> None:
         try:
-            election = await self._parser.parse(request)
+            # One span covering the whole outward attempt: fetch plus agent.
+            with io_span(
+                log, "extraction", "run", page=key[:12], url=request.source_url
+            ) as span:
+                election = await self._parser.parse(request)
+                span["identity"] = identity_of(election)[:12]
+                span["total_seats"] = election.total_seats
         except Exception as exc:  # noqa: BLE001 - a failed extraction must not kill the worker
-            log.warning("extraction failed for %s: %s", key, exc)
             await self._in_thread(self._store.fail, key, str(exc))
+            log.info("failed page=%s reason=%s", key[:12], scrub(exc))
             return
 
         try:
@@ -118,11 +131,18 @@ class ImportService:
             existing_hash = identity_of(election)
             existing = await self._in_thread(self._store.get_election, existing_hash)
             if existing is not None:
+                log.info(
+                    "extraction matched a stored election page=%s hash=%s",
+                    key[:12], existing_hash[:12],
+                )
                 await self._in_thread(self._store.link, key, existing_hash)
                 return
             # Staged, not stored: the user still has to confirm the identity the
             # agent inferred, and the numbers it read.
             await self._in_thread(self._store.stage, key, election)
+            log.info(
+                "staged page=%s hash=%s awaiting confirmation", key[:12], existing_hash[:12]
+            )
         except Exception as exc:  # noqa: BLE001
             log.exception("staging %s failed", key)
             await self._in_thread(self._store.fail, key, f"could not stage result: {exc}")
@@ -172,7 +192,13 @@ class ImportService:
             return await self.status(key)
         confirmation = await self._in_thread(self._store.confirm, key, identity_of(job.result))
         if confirmation is None:
+            log.info("confirm page=%s rejected nothing-staged", key[:12])
             return await self.status(key)
+        log.info(
+            "confirm page=%s hash=%s %s",
+            key[:12], confirmation.election_hash[:12],
+            "duplicate" if confirmation.duplicate else "stored",
+        )
         return ImportResult(
             key, ImportState.READY,
             election=confirmation.election,
@@ -182,7 +208,9 @@ class ImportService:
 
     async def discard(self, key: str) -> bool:
         """Reject a previewed election, freeing the page for another attempt."""
-        return await self._in_thread(self._store.discard, key)
+        discarded = await self._in_thread(self._store.discard, key)
+        log.info("discard page=%s discarded=%s", key[:12], discarded)
+        return discarded
 
     async def get_stored(self, election_hash: str) -> Election | None:
         return await self._in_thread(self._store.get_election, election_hash)

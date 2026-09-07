@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import date
 from pathlib import Path
@@ -13,10 +14,23 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import get_parser, get_store, max_wait_seconds
 from .identity import source_url_key
+from .observability import configure_logging, io_span
 from .schema import Election
 from .service import ImportRequest, ImportResult, ImportService, ImportState
 
+configure_logging()
+log = logging.getLogger(__name__)
+
 app = FastAPI(title="Koalitionsberegner election store", version="1.1.0")
+
+
+@app.middleware("http")
+async def log_requests(request, call_next):
+    """One pair of lines per inbound request — the other side of every span below."""
+    with io_span(log, "http", "request", method=request.method, path=request.url.path) as span:
+        response = await call_next(request)
+        span["status"] = response.status_code
+        return response
 
 # Only needed when the page is served from a different origin than this API
 # (e.g. the frontend on Cloudflare, the API on Cloud Run).

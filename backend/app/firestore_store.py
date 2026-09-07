@@ -11,10 +11,12 @@ page key, and a page-to-election index.
 
 from __future__ import annotations
 
+import logging
 import time
 
 from google.cloud import firestore
 
+from .observability import io_span
 from .schema import Election
 from .store import (
     DEFAULT_STALE_AFTER_SECONDS,
@@ -27,6 +29,8 @@ from .store import (
     StoredElection,
     _decide,
 )
+
+log = logging.getLogger(__name__)
 
 ELECTIONS_COLLECTION = "elections"
 JOBS_COLLECTION = "extraction_jobs"
@@ -69,32 +73,42 @@ class FirestoreElectionStore:
         return self._db.collection(PAGES_COLLECTION).document(page_key)
 
     def get_election(self, election_hash: str) -> Election | None:
-        snapshot = self._election_ref(election_hash).get()
-        if not snapshot.exists:
-            return None
-        # Re-validate on read: storage is not trusted to have preserved the schema.
-        return Election.model_validate(snapshot.to_dict()["election"])
+        with io_span(log, "firestore", "get_election", hash=election_hash[:12]) as span:
+            snapshot = self._election_ref(election_hash).get()
+            span["found"] = snapshot.exists
+            if not snapshot.exists:
+                return None
+            # Re-validate on read: storage is not trusted to have preserved the schema.
+            return Election.model_validate(snapshot.to_dict()["election"])
 
     def list_elections(self) -> list[StoredElection]:
-        stored = []
-        for snapshot in self._db.collection(ELECTIONS_COLLECTION).stream():
-            data = snapshot.to_dict()
-            stored.append(
-                StoredElection(
-                    election_hash=snapshot.id,
-                    election=Election.model_validate(data["election"]),
-                    stored_at=float(data.get("stored_at", 0.0)),
+        with io_span(log, "firestore", "list_elections") as span:
+            stored = []
+            for snapshot in self._db.collection(ELECTIONS_COLLECTION).stream():
+                data = snapshot.to_dict()
+                stored.append(
+                    StoredElection(
+                        election_hash=snapshot.id,
+                        election=Election.model_validate(data["election"]),
+                        stored_at=float(data.get("stored_at", 0.0)),
+                    )
                 )
-            )
-        return sorted(stored, key=lambda s: s.stored_at)
+            span["count"] = len(stored)
+            return sorted(stored, key=lambda s: s.stored_at)
 
     def get_job(self, page_key: str) -> Job | None:
-        snapshot = self._job_ref(page_key).get()
-        return _job_from_doc(page_key, snapshot.to_dict()) if snapshot.exists else None
+        with io_span(log, "firestore", "get_job", page=page_key[:12]) as span:
+            snapshot = self._job_ref(page_key).get()
+            job = _job_from_doc(page_key, snapshot.to_dict()) if snapshot.exists else None
+            span["status"] = job.status.value if job else "absent"
+            return job
 
     def resolve_page(self, page_key: str) -> str | None:
-        snapshot = self._page_ref(page_key).get()
-        return snapshot.to_dict().get("election_hash") if snapshot.exists else None
+        with io_span(log, "firestore", "resolve_page", page=page_key[:12]) as span:
+            snapshot = self._page_ref(page_key).get()
+            resolved = snapshot.to_dict().get("election_hash") if snapshot.exists else None
+            span["hash"] = resolved[:12] if resolved else "unresolved"
+            return resolved
 
     def claim(self, page_key: str, request: ImportRequest) -> Claim:
         job_ref = self._job_ref(page_key)
@@ -144,19 +158,25 @@ class FirestoreElectionStore:
             )
             return Claim(outcome, page_key, job=new_job)
 
-        return _claim(db.transaction())
+        with io_span(log, "firestore", "claim", page=page_key[:12]) as span:
+            claim = _claim(db.transaction())
+            span["outcome"] = claim.outcome.value
+            span["attempt"] = claim.job.attempt if claim.job else None
+            return claim
 
     def stage(self, page_key: str, election: Election) -> None:
-        self._job_ref(page_key).set(
-            {
-                "status": JobStatus.AWAITING_CONFIRMATION.value,
-                "result": election.model_dump(mode="json"),
-                "error": None,
-                # Restart the lease so the user gets a full window to confirm.
-                "started_at": self._clock(),
-            },
-            merge=True,
-        )
+        with io_span(log, "firestore", "stage", page=page_key[:12],
+                     total_seats=election.total_seats):
+            self._job_ref(page_key).set(
+                {
+                    "status": JobStatus.AWAITING_CONFIRMATION.value,
+                    "result": election.model_dump(mode="json"),
+                    "error": None,
+                    # Restart the lease so the user gets a full window to confirm.
+                    "started_at": self._clock(),
+                },
+                merge=True,
+            )
 
     def confirm(self, page_key: str, election_hash: str) -> Confirmation | None:
         election_ref = self._election_ref(election_hash)
@@ -197,20 +217,31 @@ class FirestoreElectionStore:
             )
             return Confirmation(election_hash, already or job.result, duplicate=duplicate)
 
-        return _confirm(self._db.transaction())
+        with io_span(log, "firestore", "confirm", page=page_key[:12],
+                     hash=election_hash[:12]) as span:
+            confirmation = _confirm(self._db.transaction())
+            span["result"] = "none" if confirmation is None else (
+                "duplicate" if confirmation.duplicate else "stored"
+            )
+            return confirmation
 
     def link(self, page_key: str, election_hash: str) -> None:
-        if not self._election_ref(election_hash).get().exists:
-            return
-        linked_at = self._clock()
-        batch = self._db.batch()
-        batch.set(self._page_ref(page_key), {"election_hash": election_hash, "linked_at": linked_at})
-        batch.set(
-            self._job_ref(page_key),
-            {"status": JobStatus.SUCCEEDED.value, "result": None, "finished_at": linked_at},
-            merge=True,
-        )
-        batch.commit()
+        with io_span(log, "firestore", "link", page=page_key[:12],
+                     hash=election_hash[:12]) as span:
+            if not self._election_ref(election_hash).get().exists:
+                span["linked"] = False
+                return
+            linked_at = self._clock()
+            batch = self._db.batch()
+            batch.set(self._page_ref(page_key),
+                      {"election_hash": election_hash, "linked_at": linked_at})
+            batch.set(
+                self._job_ref(page_key),
+                {"status": JobStatus.SUCCEEDED.value, "result": None, "finished_at": linked_at},
+                merge=True,
+            )
+            batch.commit()
+            span["linked"] = True
 
     def discard(self, page_key: str) -> bool:
         job_ref = self._job_ref(page_key)
@@ -225,15 +256,19 @@ class FirestoreElectionStore:
             transaction.delete(job_ref)
             return True
 
-        return _discard(self._db.transaction())
+        with io_span(log, "firestore", "discard", page=page_key[:12]) as span:
+            discarded = _discard(self._db.transaction())
+            span["discarded"] = discarded
+            return discarded
 
     def fail(self, page_key: str, error: str) -> None:
-        self._job_ref(page_key).set(
-            {
-                "status": JobStatus.FAILED.value,
-                "error": error[:1000],
-                "result": None,
-                "finished_at": self._clock(),
-            },
-            merge=True,
-        )
+        with io_span(log, "firestore", "fail", page=page_key[:12], reason=error):
+            self._job_ref(page_key).set(
+                {
+                    "status": JobStatus.FAILED.value,
+                    "error": error[:1000],
+                    "result": None,
+                    "finished_at": self._clock(),
+                },
+                merge=True,
+            )
