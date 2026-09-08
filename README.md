@@ -59,6 +59,14 @@ Frontend only — the bundled Folketing 2026 election renders, import is disable
 python3 -m http.server 8000   # or: npx wrangler dev
 ```
 
+## Run with live LLM
+
+```sh
+cd backend
+source ../.env
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY LLM_MODE=live ELECTION_STORE=sqlite uv run uvicorn app.main:app --reload                                                                                              
+```
+
 ## Test
 
 ```sh
