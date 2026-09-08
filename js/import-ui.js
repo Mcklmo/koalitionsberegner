@@ -8,6 +8,10 @@
  * Because the agent infers nation, region and date, the preview is where the
  * user checks that it identified the right election. That confirmation is the
  * only thing standing between a misread page and the store.
+ *
+ * Importing is also the part that is sold. This module shows what the account
+ * allows but never decides it: the form is disabled as a courtesy, and the
+ * server refuses regardless — the two can disagree only in the safe direction.
  */
 
 import { ApiError, ImportStatus } from './api.js';
@@ -15,11 +19,20 @@ import { validateImportForm } from './import-form.js';
 
 const LOCAL_VALUE = 'local';
 
-export function mountImportUi({ api, elements, onSelect, bundled }) {
+/** Why the server turned an import down, in the page's own words. */
+const REFUSALS = {
+  401: 'Log ind for at importere valg.',
+  402: 'Import kræver et abonnement. Vælg en plan ovenfor.',
+  429: 'Denne måneds importer er brugt op. Kvoten fornys ved månedsskiftet.',
+};
+
+export function mountImportUi({ api, elements, onSelect, bundled, onImported = () => {} }) {
   const el = elements;
   /** The election currently held for confirmation, if any. */
   let pending = null;
   let summaries = [];
+  /** What the server last said this account may do; null when signed out. */
+  let account = null;
 
   const show = (node, visible) => {
     node.hidden = !visible;
@@ -37,8 +50,28 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
   }
 
   function busy(isBusy, label) {
-    el.submit.disabled = isBusy;
+    el.submit.disabled = isBusy || !allowed();
     el.submit.textContent = isBusy ? label : 'Hent valgresultat';
+  }
+
+  /** Whether importing is worth offering. The server still decides. */
+  function allowed() {
+    return account === null ? false : account.mayImport;
+  }
+
+  /** The standing note under the form: why importing is or is not available. */
+  function renderAvailability() {
+    if (account === null) {
+      el.availability.textContent = REFUSALS[401];
+    } else if (account.unlimited) {
+      el.availability.textContent = '';
+    } else if (!account.mayImport) {
+      el.availability.textContent = account.limit > 0 ? REFUSALS[429] : REFUSALS[402];
+    } else {
+      const noun = account.remaining === 1 ? 'import' : 'importer';
+      el.availability.textContent = `${account.remaining} ${noun} tilbage denne måned.`;
+    }
+    el.submit.disabled = !allowed();
   }
 
   function optionLabel(summary) {
@@ -141,17 +174,24 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
       }
       pending = result;
       renderPreview(result.election);
+      // The extraction has now been charged for, so the allowance has moved.
+      await onImported();
       setMessage(
         'Kontrollér at valget er identificeret rigtigt, og at tallene passer, før du gemmer.',
         'info'
       );
     } catch (error) {
-      setMessage(
-        error instanceof ApiError ? error.message : `Uventet fejl: ${error.message}`, 'error'
-      );
+      setMessage(refusal(error), 'error');
+      // A refusal usually means the allowance moved; take the server's word for it.
+      if (error instanceof ApiError && REFUSALS[error.status]) await onImported();
     } finally {
       busy(false);
     }
+  }
+
+  function refusal(error) {
+    if (!(error instanceof ApiError)) return `Uventet fejl: ${error.message}`;
+    return REFUSALS[error.status] ?? error.message;
   }
 
   async function confirm() {
@@ -201,8 +241,19 @@ export function mountImportUi({ api, elements, onSelect, bundled }) {
   el.picker.addEventListener('change', select);
 
   return {
+    /**
+     * Follow the signed-in account: what may be imported, and which elections
+     * are visible, both change when somebody signs in or out.
+     */
+    async setAccount(next) {
+      account = next;
+      renderAvailability();
+      await refreshPicker(el.picker.value || undefined).catch(() => {});
+    },
+
     /** Populate the picker; failures leave the bundled election in place. */
     async start() {
+      renderAvailability();
       try {
         await refreshPicker();
       } catch {

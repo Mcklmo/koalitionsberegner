@@ -42,7 +42,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS elections (
     election_hash TEXT PRIMARY KEY,
     election      TEXT NOT NULL,
-    stored_at     REAL NOT NULL
+    stored_at     REAL NOT NULL,
+    selected      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS jobs (
     page_key   TEXT PRIMARY KEY,
@@ -59,6 +60,16 @@ CREATE TABLE IF NOT EXISTS pages (
     linked_at     REAL NOT NULL
 );
 """
+
+
+def _stored_from_row(row: sqlite3.Row) -> StoredElection:
+    return StoredElection(
+        election_hash=row["election_hash"],
+        # Re-validate on read: storage is not trusted to have preserved the schema.
+        election=Election.model_validate(json.loads(row["election"])),
+        stored_at=float(row["stored_at"]),
+        selected=bool(row["selected"]),
+    )
 
 
 def _job_from_row(row: sqlite3.Row) -> Job:
@@ -89,7 +100,23 @@ class SqliteElectionStore:
         self._clock = clock
         self._local = threading.local()
         with io_span(log, "sqlite", "migrate", path=self._path):
-            self._connect().executescript(SCHEMA)
+            conn = self._connect()
+            conn.executescript(SCHEMA)
+            self._add_missing_columns(conn)
+
+    @staticmethod
+    def _add_missing_columns(conn: sqlite3.Connection) -> None:
+        """Bring a database created by an earlier version up to date.
+
+        ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a
+        column added later has to be added here or every read of it fails.
+        """
+        for table, column, definition in (
+            ("elections", "selected", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     # --- connection handling ----------------------------------------------
 
@@ -141,20 +168,33 @@ class SqliteElectionStore:
             span["found"] = election is not None
             return election
 
-    def list_elections(self) -> list[StoredElection]:
-        with io_span(log, "sqlite", "list_elections") as span:
+    def get_stored(self, election_hash: str) -> StoredElection | None:
+        with io_span(log, "sqlite", "get_stored", hash=election_hash[:12]) as span:
+            row = self._connect().execute(
+                "SELECT * FROM elections WHERE election_hash = ?", (election_hash,)
+            ).fetchone()
+            span["found"] = row is not None
+            return _stored_from_row(row) if row else None
+
+    def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]:
+        with io_span(log, "sqlite", "list_elections", selected_only=selected_only) as span:
+            where = " WHERE selected = 1" if selected_only else ""
             rows = self._connect().execute(
-                "SELECT election_hash, election, stored_at FROM elections ORDER BY stored_at"
+                f"SELECT * FROM elections{where} ORDER BY stored_at"
             ).fetchall()
             span["count"] = len(rows)
-            return [
-                StoredElection(
-                    election_hash=row["election_hash"],
-                    election=Election.model_validate(json.loads(row["election"])),
-                    stored_at=float(row["stored_at"]),
-                )
-                for row in rows
-            ]
+            return [_stored_from_row(row) for row in rows]
+
+    def set_selected(self, election_hash: str, selected: bool) -> bool:
+        with io_span(log, "sqlite", "set_selected", hash=election_hash[:12],
+                     selected=selected) as span:
+            with self._write() as conn:
+                changed = conn.execute(
+                    "UPDATE elections SET selected = ? WHERE election_hash = ?",
+                    (1 if selected else 0, election_hash),
+                ).rowcount
+                span["found"] = bool(changed)
+                return bool(changed)
 
     def get_job(self, page_key: str) -> Job | None:
         with io_span(log, "sqlite", "get_job", page=page_key[:12]) as span:
@@ -262,8 +302,8 @@ class SqliteElectionStore:
                 duplicate = already is not None
                 if not duplicate:
                     conn.execute(
-                        "INSERT INTO elections (election_hash, election, stored_at)"
-                        " VALUES (?, ?, ?)",
+                        "INSERT INTO elections (election_hash, election, stored_at, selected)"
+                        " VALUES (?, ?, ?, 0)",
                         (election_hash, json.dumps(job.result.model_dump(mode="json")), now),
                     )
                 conn.execute(

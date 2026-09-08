@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { ApiError } from '../js/api.js';
 import { mountImportUi } from '../js/import-ui.js';
 import { validateElection } from '../js/election.js';
 
@@ -42,13 +43,18 @@ function node(tag = 'div') {
   };
 }
 
-function harness({ api, selected = [] }) {
+const SUBSCRIBER = {
+  tier: 'basic', limit: 10, remaining: 7, used: 3, unlimited: false, mayImport: true,
+};
+
+function harness({ api, selected = [], account = SUBSCRIBER } = {}) {
   globalThis.document = { createElement: node };
   const el = {
     form: node('form'),
     sourceUrl: node('input'),
     submit: node('button'),
     message: node(),
+    availability: node(),
     fieldErrors: { sourceUrl: node() },
     preview: node(),
     previewTitle: node(),
@@ -59,8 +65,18 @@ function harness({ api, selected = [] }) {
     picker: node('select'),
     pickerRow: node(),
   };
-  const ui = mountImportUi({ api, elements: el, bundled, onSelect: (e) => selected.push(e) });
-  return { el, ui, selected };
+  const imported = [];
+  const ui = mountImportUi({
+    api,
+    elements: el,
+    bundled,
+    onSelect: (e) => selected.push(e),
+    onImported: () => imported.push(true),
+  });
+  // Most cases are about the import flow, not the paywall, so the harness
+  // starts from an account that may import unless a test says otherwise.
+  if (account !== undefined) ui.setAccount(account);
+  return { el, ui, selected, imported };
 }
 
 function fillValidForm(el) {
@@ -237,4 +253,95 @@ test('an unreachable backend leaves the bundled election usable', async () => {
 
   assert.match(el.message.textContent, /kan ikke nås/);
   assert.equal(el.pickerRow.hidden, true, 'no picker when there is nothing to pick');
+});
+
+
+// --- what the account is allowed to do -------------------------------------
+
+test('a signed-out visitor is told to sign in and cannot submit', async () => {
+  const { api, calls } = fakeApi();
+  const { el, ui } = harness({ api, account: undefined });
+
+  await ui.setAccount(null);
+
+  assert.equal(el.submit.disabled, true);
+  assert.match(el.availability.textContent, /Log ind/);
+  assert.equal(calls.importElection, 0);
+});
+
+test('a free account is pointed at a subscription rather than at a dead form', async () => {
+  const { api } = fakeApi();
+  const { el, ui } = harness({ api });
+
+  await ui.setAccount({ tier: 'free', limit: 0, remaining: 0, unlimited: false, mayImport: false });
+
+  assert.equal(el.submit.disabled, true);
+  assert.match(el.availability.textContent, /kræver et abonnement/);
+});
+
+test('a subscriber with a spent quota is told when it comes back', async () => {
+  const { api } = fakeApi();
+  const { el, ui } = harness({ api });
+
+  await ui.setAccount({ tier: 'basic', limit: 10, remaining: 0, unlimited: false, mayImport: false });
+
+  assert.equal(el.submit.disabled, true);
+  assert.match(el.availability.textContent, /brugt op/);
+});
+
+test('a subscriber sees what is left and can submit', async () => {
+  const { api } = fakeApi();
+  const { el } = harness({ api });
+
+  assert.equal(el.submit.disabled, false);
+  assert.match(el.availability.textContent, /7 importer tilbage/);
+});
+
+test('with gating off nothing is said about allowances', async () => {
+  const { api } = fakeApi();
+  const { el, ui } = harness({ api });
+
+  await ui.setAccount({ tier: 'free', limit: -1, remaining: -1, unlimited: true, mayImport: true });
+
+  assert.equal(el.submit.disabled, false);
+  assert.equal(el.availability.textContent, '');
+});
+
+test('an import that started an extraction refreshes the allowance', async () => {
+  const { api } = fakeApi();
+  const { el, imported } = harness({ api });
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.equal(imported.length, 1, 'the extraction was charged for; re-read the account');
+});
+
+test('a refusal from the server is shown in the page language and re-reads the account', async () => {
+  const { api } = fakeApi();
+  api.importElection = async () => {
+    throw new ApiError("this month's 10 imports are used up", 429);
+  };
+  const { el, imported } = harness({ api });
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.match(el.message.textContent, /brugt op/);
+  assert.equal(el.message.className, 'msg msg-error');
+  assert.equal(imported.length, 1);
+});
+
+test('signing in reloads the picker, because a visitor saw only the selection', async () => {
+  const { api, calls } = fakeApi({
+    summaries: [{ electionHash: 'a', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179 }],
+  });
+  const { ui, el } = harness({ api, account: undefined });
+  await ui.start();
+  const before = calls.listElections;
+
+  await ui.setAccount(SUBSCRIBER);
+
+  assert.equal(calls.listElections, before + 1);
+  assert.deepEqual(el.picker.children.map((o) => o.value), ['local', 'a']);
 });

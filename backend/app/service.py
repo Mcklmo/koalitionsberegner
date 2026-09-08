@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -19,7 +20,7 @@ from .identity import election_hash, source_url_key
 from .observability import io_span, scrub
 from .parser import ElectionParser
 from .schema import Election
-from .store import ClaimOutcome, ElectionStore, ImportRequest, JobStatus
+from .store import ClaimOutcome, ElectionStore, ImportRequest, JobStatus, StoredElection
 
 log = logging.getLogger(__name__)
 
@@ -74,8 +75,16 @@ class ImportService:
         """Firestore's client is blocking; keep it off the event loop."""
         return await anyio.to_thread.run_sync(fn, *args)
 
-    async def submit(self, request: ImportRequest) -> ImportResult:
-        """Claim the page and extract only if nobody else already has."""
+    async def submit(
+        self, request: ImportRequest, *, on_parse_failed: Callable[[], None] | None = None
+    ) -> ImportResult:
+        """Claim the page and extract only if nobody else already has.
+
+        ``on_parse_failed`` runs if this call's own extraction fails. It exists
+        so a caller that paid for the attempt can be refunded: a page that could
+        not be read produced nothing, and charging for it would make an unlucky
+        URL cost the same as a stored one.
+        """
         key = self.page_key_for(request)
         claim = await self._in_thread(self._store.claim, key, request)
         # One line per state transition, so the decision is visible whichever
@@ -104,13 +113,25 @@ class ImportService:
                 key, ImportState.PENDING, attempt=job.attempt if job else None, reused=True
             )
 
-        task = asyncio.create_task(self._extract(key, request))
+        task = asyncio.create_task(self._extract(key, request, on_parse_failed))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         job = claim.job
         return ImportResult(key, ImportState.PENDING, attempt=job.attempt if job else 1)
 
-    async def _extract(self, key: str, request: ImportRequest) -> None:
+    async def _extract(
+        self, key: str, request: ImportRequest, on_parse_failed: Callable[[], None] | None = None
+    ) -> None:
+        async def failed(error: str) -> None:
+            # Refund first: a caller polling for the outcome must never see the
+            # failure while still being charged for it.
+            if on_parse_failed is not None:
+                try:
+                    await self._in_thread(on_parse_failed)
+                except Exception:  # noqa: BLE001 - a refund must not mask the failure
+                    log.exception("could not run the failure hook for %s", key[:12])
+            await self._in_thread(self._store.fail, key, error)
+
         try:
             # One span covering the whole outward attempt: fetch plus agent.
             with io_span(
@@ -120,7 +141,7 @@ class ImportService:
                 span["identity"] = identity_of(election)[:12]
                 span["total_seats"] = election.total_seats
         except Exception as exc:  # noqa: BLE001 - a failed extraction must not kill the worker
-            await self._in_thread(self._store.fail, key, str(exc))
+            await failed(str(exc))
             log.info("failed page=%s reason=%s", key[:12], scrub(exc))
             return
 
@@ -145,7 +166,7 @@ class ImportService:
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("staging %s failed", key)
-            await self._in_thread(self._store.fail, key, f"could not stage result: {exc}")
+            await failed(f"could not stage result: {exc}")
 
     async def status(self, key: str) -> ImportResult:
         job = await self._in_thread(self._store.get_job, key)
@@ -212,8 +233,17 @@ class ImportService:
         log.info("discard page=%s discarded=%s", key[:12], discarded)
         return discarded
 
-    async def get_stored(self, election_hash: str) -> Election | None:
-        return await self._in_thread(self._store.get_election, election_hash)
+    async def get_stored(self, election_hash: str) -> StoredElection | None:
+        """The stored election and its curation flag; callers decide who may see it."""
+        return await self._in_thread(self._store.get_stored, election_hash)
 
-    async def list_elections(self):
-        return await self._in_thread(self._store.list_elections)
+    async def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]:
+        return await self._in_thread(
+            lambda: self._store.list_elections(selected_only=selected_only)
+        )
+
+    async def set_selected(self, election_hash: str, selected: bool) -> bool:
+        """Curate an election into, or out of, what signed-out visitors see."""
+        changed = await self._in_thread(self._store.set_selected, election_hash, selected)
+        log.info("selected hash=%s value=%s found=%s", election_hash[:12], selected, changed)
+        return changed

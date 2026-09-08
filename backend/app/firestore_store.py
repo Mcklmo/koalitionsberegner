@@ -37,6 +37,16 @@ JOBS_COLLECTION = "extraction_jobs"
 PAGES_COLLECTION = "pages"
 
 
+def _stored_from_doc(election_hash: str, data: dict) -> StoredElection:
+    return StoredElection(
+        election_hash=election_hash,
+        # Re-validate on read: storage is not trusted to have preserved the schema.
+        election=Election.model_validate(data["election"]),
+        stored_at=float(data.get("stored_at", 0.0)),
+        selected=bool(data.get("selected", False)),
+    )
+
+
 def _job_from_doc(page_key: str, data: dict) -> Job:
     result = data.get("result")
     return Job(
@@ -81,20 +91,40 @@ class FirestoreElectionStore:
             # Re-validate on read: storage is not trusted to have preserved the schema.
             return Election.model_validate(snapshot.to_dict()["election"])
 
-    def list_elections(self) -> list[StoredElection]:
-        with io_span(log, "firestore", "list_elections") as span:
-            stored = []
-            for snapshot in self._db.collection(ELECTIONS_COLLECTION).stream():
-                data = snapshot.to_dict()
-                stored.append(
-                    StoredElection(
-                        election_hash=snapshot.id,
-                        election=Election.model_validate(data["election"]),
-                        stored_at=float(data.get("stored_at", 0.0)),
-                    )
-                )
+    def get_stored(self, election_hash: str) -> StoredElection | None:
+        with io_span(log, "firestore", "get_stored", hash=election_hash[:12]) as span:
+            snapshot = self._election_ref(election_hash).get()
+            span["found"] = snapshot.exists
+            if not snapshot.exists:
+                return None
+            return _stored_from_doc(election_hash, snapshot.to_dict())
+
+    def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]:
+        with io_span(log, "firestore", "list_elections", selected_only=selected_only) as span:
+            collection = self._db.collection(ELECTIONS_COLLECTION)
+            # Filtering server-side keeps a signed-out visitor from costing a
+            # read of every election in the store.
+            query = (
+                collection.where(filter=firestore.FieldFilter("selected", "==", True))
+                if selected_only
+                else collection
+            )
+            stored = [
+                _stored_from_doc(snapshot.id, snapshot.to_dict()) for snapshot in query.stream()
+            ]
             span["count"] = len(stored)
             return sorted(stored, key=lambda s: s.stored_at)
+
+    def set_selected(self, election_hash: str, selected: bool) -> bool:
+        with io_span(log, "firestore", "set_selected", hash=election_hash[:12],
+                     selected=selected) as span:
+            ref = self._election_ref(election_hash)
+            if not ref.get().exists:
+                span["found"] = False
+                return False
+            ref.set({"selected": selected}, merge=True)
+            span["found"] = True
+            return True
 
     def get_job(self, page_key: str) -> Job | None:
         with io_span(log, "firestore", "get_job", page=page_key[:12]) as span:
@@ -207,7 +237,11 @@ class FirestoreElectionStore:
             if not duplicate:
                 transaction.set(
                     election_ref,
-                    {"election": job.result.model_dump(mode="json"), "stored_at": stored_at},
+                    {
+                        "election": job.result.model_dump(mode="json"),
+                        "stored_at": stored_at,
+                        "selected": False,
+                    },
                 )
             transaction.set(page_ref, {"election_hash": election_hash, "linked_at": stored_at})
             transaction.set(

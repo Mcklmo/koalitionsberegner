@@ -407,6 +407,81 @@
       gap: 8px;
       margin-top: 10px
     }
+
+    details.account {
+      margin-top: 1.5rem;
+      border-top: 0.5px solid #e0e0e0;
+      padding-top: 1rem
+    }
+
+    @media(prefers-color-scheme:dark) {
+      details.account {
+        border-color: #333
+      }
+    }
+
+    details.account summary {
+      font-size: 13px;
+      color: #888;
+      cursor: pointer;
+      user-select: none
+    }
+
+    .account-line {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-top: 10px
+    }
+
+    .account-email {
+      font-size: 13px;
+      flex: 1;
+      overflow-wrap: anywhere
+    }
+
+    .tier-badge {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 20px;
+      background: #E6F1FB;
+      color: #185FA5
+    }
+
+    .quota {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px
+    }
+
+    .upgrades {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px
+    }
+
+    .link-btn {
+      font: inherit;
+      font-size: 12px;
+      color: #888;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px 0;
+      text-decoration: underline
+    }
+
+    .link-btn:hover {
+      color: #111
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .link-btn:hover {
+        color: #eee
+      }
+    }
   </style>
 </head>
 
@@ -436,6 +511,48 @@
     </div>
   </div>
 
+  <details class="account" id="account" hidden>
+    <summary>Konto og abonnement</summary>
+
+    <div id="account-signed-out" hidden>
+      <form id="auth-form" novalidate>
+        <div class="field">
+          <label for="f-email">E-mail</label>
+          <input id="f-email" name="email" type="email" autocomplete="email">
+          <div class="field-error" id="e-email"></div>
+        </div>
+        <div class="field">
+          <label for="f-password">Adgangskode</label>
+          <input id="f-password" name="password" type="password" autocomplete="current-password">
+          <div class="field-error" id="e-password"></div>
+        </div>
+        <div class="preview-actions">
+          <button class="primary" id="auth-signin" type="submit">Log ind</button>
+          <button class="secondary" id="auth-signup" type="button">Opret konto</button>
+        </div>
+      </form>
+      <p class="footer-note">Det er gratis at oprette en konto. Abonnement kræves kun for at
+        importere nye valg.</p>
+    </div>
+
+    <div id="account-signed-in" hidden>
+      <div class="account-line">
+        <span class="account-email" id="account-email"></span>
+        <span class="tier-badge" id="account-tier"></span>
+      </div>
+      <p class="quota" id="account-quota"></p>
+      <div id="upgrade-row" hidden>
+        <div class="upgrades" id="upgrades"></div>
+      </div>
+      <div class="account-line">
+        <button class="link-btn" id="account-manage" type="button" hidden>Administrér abonnement</button>
+        <button class="link-btn" id="account-signout" type="button">Log ud</button>
+      </div>
+    </div>
+
+    <p class="msg" id="account-message"></p>
+  </details>
+
   <details class="import">
     <summary>Importér et valg</summary>
 
@@ -447,6 +564,7 @@
       </div>
       <p class="footer-note">Land, region og valgdato aflæses automatisk fra siden.</p>
       <button class="primary" id="f-submit" type="submit">Hent valgresultat</button>
+      <p class="quota" id="import-availability"></p>
     </form>
 
     <p class="msg" id="import-message"></p>

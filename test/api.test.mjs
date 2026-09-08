@@ -22,7 +22,7 @@ function fakeFetch(responses) {
   const calls = [];
   const queue = [...responses];
   const fetchImpl = async (url, options = {}) => {
-    calls.push({ url, method: options.method ?? 'GET', body: options.body });
+    calls.push({ url, method: options.method ?? 'GET', body: options.body, headers: options.headers ?? {} });
     const next = queue.shift();
     if (!next) throw new Error(`unexpected request to ${url}`);
     return {
@@ -61,7 +61,7 @@ test('listElections maps summaries to camelCase', async () => {
   ]);
   const listed = await createApiClient({ fetch: fetchImpl }).listElections();
   assert.deepEqual(listed, [
-    { electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179 },
+    { electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179, selected: false },
   ]);
 });
 
@@ -138,4 +138,146 @@ test('hashes are escaped into the path', async () => {
   const { fetchImpl, calls } = fakeFetch([{ status: 404, body: { detail: 'no' } }]);
   await createApiClient({ fetch: fetchImpl }).getElection('../admin').catch(() => {});
   assert.equal(calls[0].url, '/api/elections/..%2Fadmin');
+});
+
+
+// --- carrying the caller's identity ----------------------------------------
+
+test('a signed-in caller sends their ID token', async () => {
+  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }]);
+  const api = createApiClient({ fetch: fetchImpl, getToken: async () => 'id-token-1' });
+
+  await api.listElections();
+
+  assert.equal(calls[0].headers.authorization, 'Bearer id-token-1');
+  assert.equal(calls[0].headers['content-type'], 'application/json');
+});
+
+test('a signed-out caller sends no credential and is still served', async () => {
+  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }]);
+  const api = createApiClient({ fetch: fetchImpl, getToken: async () => null });
+
+  await api.listElections();
+
+  assert.equal(calls[0].headers.authorization, undefined, 'a visitor is a legitimate caller');
+});
+
+test('a session that cannot produce a token falls back to the visitor view', async () => {
+  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }]);
+  const api = createApiClient({
+    fetch: fetchImpl,
+    getToken: async () => {
+      throw new Error('refresh token rejected');
+    },
+  });
+
+  await api.listElections();
+
+  assert.equal(calls[0].headers.authorization, undefined);
+});
+
+test('the token is read per request, not captured once', async () => {
+  const tokens = ['first', 'second'];
+  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }, { status: 200, body: [] }]);
+  const api = createApiClient({ fetch: fetchImpl, getToken: async () => tokens.shift() });
+
+  await api.listElections();
+  await api.listElections();
+
+  assert.deepEqual(calls.map((c) => c.headers.authorization), ['Bearer first', 'Bearer second']);
+});
+
+// --- the account and config endpoints --------------------------------------
+
+test('the public config is mapped to camelCase', async () => {
+  const { fetchImpl } = fakeFetch([
+    {
+      status: 200,
+      body: {
+        auth_required: true,
+        firebase: { apiKey: 'AIza', projectId: 'demo' },
+        billing_enabled: true,
+        tiers: [{ tier: 'basic', monthly_imports: 10, purchasable: true }],
+      },
+    },
+  ]);
+
+  const config = await createApiClient({ fetch: fetchImpl }).getConfig();
+
+  assert.equal(config.authRequired, true);
+  assert.equal(config.firebase.apiKey, 'AIza');
+  assert.deepEqual(config.tiers, [{ tier: 'basic', monthlyImports: 10, purchasable: true }]);
+});
+
+test('the account reports the tier and what is left', async () => {
+  const { fetchImpl, calls } = fakeFetch([
+    {
+      status: 200,
+      body: {
+        uid: 'u1', email: 'a@example.org', tier: 'basic', admin: false, period: '2026-09',
+        used: 3, limit: 10, remaining: 7, may_import: true,
+        subscription_status: 'active', billing_enabled: true,
+      },
+    },
+  ]);
+
+  const account = await createApiClient({ fetch: fetchImpl }).getAccount();
+
+  assert.equal(calls[0].url, '/api/me');
+  assert.equal(account.tier, 'basic');
+  assert.equal(account.remaining, 7);
+  assert.equal(account.mayImport, true);
+  assert.equal(account.unlimited, false);
+  assert.equal(account.subscriptionStatus, 'active');
+});
+
+test('a negative limit reads as no tier at all', async () => {
+  const { fetchImpl } = fakeFetch([
+    {
+      status: 200,
+      body: { uid: 'local', email: null, tier: 'free', admin: true, period: '2026-09', used: 0, limit: -1, remaining: -1, may_import: true },
+    },
+  ]);
+
+  const account = await createApiClient({ fetch: fetchImpl }).getAccount();
+
+  assert.equal(account.unlimited, true);
+  assert.equal(account.mayImport, true);
+});
+
+test('curation is a PUT carrying the new flag', async () => {
+  const { fetchImpl, calls } = fakeFetch([
+    { status: 200, body: { election_hash: 'abc', nation: 'Danmark', state: null, election_date: '2026-03-25', title: 'T', total_seats: 179, selected: true } },
+  ]);
+
+  const summary = await createApiClient({ fetch: fetchImpl }).setSelected('abc', true);
+
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].url, '/api/elections/abc/selected');
+  assert.deepEqual(JSON.parse(calls[0].body), { selected: true });
+  assert.equal(summary.selected, true);
+});
+
+test('starting a checkout returns the URL to send the user to', async () => {
+  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: { url: 'https://checkout.test/x' } }]);
+
+  const url = await createApiClient({ fetch: fetchImpl }).startCheckout('premium');
+
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].url, '/api/billing/checkout');
+  assert.deepEqual(JSON.parse(calls[0].body), { tier: 'premium' });
+  assert.equal(url, 'https://checkout.test/x');
+});
+
+test('a refused import surfaces the status the page needs to explain it', async () => {
+  const { fetchImpl } = fakeFetch([{ status: 402, body: { detail: 'subscribe to import new ones' } }]);
+
+  await assert.rejects(
+    () => createApiClient({ fetch: fetchImpl }).importElection({ sourceUrl: 'https://www.dst.dk/valg' }),
+    (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.status, 402);
+      return true;
+    }
+  );
 });

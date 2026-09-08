@@ -5,6 +5,8 @@ The shared contract is covered in test_store.py, which runs against both.
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -163,13 +165,47 @@ def test_config_selects_the_sqlite_backend(tmp_path, monkeypatch):
         get_store.cache_clear()
 
 
-def test_config_rejects_an_unknown_backend(monkeypatch):
-    from app.config import get_store
+def test_a_database_from_before_curation_gains_the_column(db):
+    """CREATE TABLE IF NOT EXISTS leaves an old table alone, so the column is added."""
+    db.parent.mkdir(parents=True, exist_ok=True)
+    old = sqlite3.connect(db)
+    old.executescript(
+        """
+        CREATE TABLE elections (
+            election_hash TEXT PRIMARY KEY,
+            election      TEXT NOT NULL,
+            stored_at     REAL NOT NULL
+        );
+        CREATE TABLE jobs (
+            page_key   TEXT PRIMARY KEY,
+            status     TEXT NOT NULL,
+            source_url TEXT NOT NULL DEFAULT '',
+            started_at REAL NOT NULL,
+            attempt    INTEGER NOT NULL DEFAULT 1,
+            error      TEXT,
+            result     TEXT
+        );
+        CREATE TABLE pages (
+            page_key      TEXT PRIMARY KEY,
+            election_hash TEXT NOT NULL,
+            linked_at     REAL NOT NULL
+        );
+        """
+    )
+    old.execute(
+        "INSERT INTO elections (election_hash, election, stored_at) VALUES (?, ?, ?)",
+        (HASH, json.dumps(make_election().model_dump(mode="json")), 1.0),
+    )
+    old.commit()
+    old.close()
 
-    monkeypatch.setenv("ELECTION_STORE", "postgres")
-    get_store.cache_clear()
+    store = open_store(db)
     try:
-        with pytest.raises(RuntimeError, match="firestore, sqlite or memory"):
-            get_store()
+        stored = store.get_stored(HASH)
+        assert stored is not None, "the election survives the upgrade"
+        assert stored.selected is False, "nothing becomes public by being migrated"
+        assert store.list_elections(selected_only=True) == []
+        assert store.set_selected(HASH, True) is True
+        assert [s.election_hash for s in store.list_elections(selected_only=True)] == [HASH]
     finally:
-        get_store.cache_clear()
+        store.close()

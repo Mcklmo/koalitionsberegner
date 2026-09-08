@@ -14,7 +14,7 @@ extraction at all.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from threading import Lock
 from typing import Protocol
@@ -88,6 +88,8 @@ class StoredElection:
     election_hash: str
     election: Election
     stored_at: float
+    selected: bool = False
+    """Curated for the front page: the only elections a visitor sees signed out."""
 
 
 class ElectionStore(Protocol):
@@ -95,7 +97,15 @@ class ElectionStore(Protocol):
 
     def get_election(self, election_hash: str) -> Election | None: ...
 
-    def list_elections(self) -> list[StoredElection]: ...
+    def get_stored(self, election_hash: str) -> StoredElection | None:
+        """The election plus its curation flag, for callers that must check it."""
+        ...
+
+    def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]: ...
+
+    def set_selected(self, election_hash: str, selected: bool) -> bool:
+        """Mark an election visible to signed-out visitors. False if unknown."""
+        ...
 
     def get_job(self, page_key: str) -> Job | None: ...
 
@@ -165,9 +175,22 @@ class InMemoryElectionStore:
             stored = self._elections.get(election_hash)
             return stored.election if stored else None
 
-    def list_elections(self) -> list[StoredElection]:
+    def get_stored(self, election_hash: str) -> StoredElection | None:
         with self._lock:
-            return sorted(self._elections.values(), key=lambda s: s.stored_at)
+            return self._elections.get(election_hash)
+
+    def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]:
+        with self._lock:
+            stored = [s for s in self._elections.values() if s.selected or not selected_only]
+            return sorted(stored, key=lambda s: s.stored_at)
+
+    def set_selected(self, election_hash: str, selected: bool) -> bool:
+        with self._lock:
+            stored = self._elections.get(election_hash)
+            if stored is None:
+                return False
+            self._elections[election_hash] = replace(stored, selected=selected)
+            return True
 
     def get_job(self, page_key: str) -> Job | None:
         with self._lock:
