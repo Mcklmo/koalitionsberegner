@@ -150,10 +150,18 @@ class FakeStripe:
                 return {"id": "bps_1", "url": "https://portal.stripe.test/bps_1"}
 
         class Client:
+            # Shaped like the real SDK: resources hang off the ``v1`` namespace,
+            # which is where StripeBilling reaches for them.
             def __init__(self, api_key):
                 self.api_key = api_key
-                self.checkout = type("C", (), {"sessions": Sessions})()
-                self.billing_portal = type("B", (), {"sessions": PortalSessions})()
+                self.v1 = type(
+                    "V1",
+                    (),
+                    {
+                        "checkout": type("C", (), {"sessions": Sessions})(),
+                        "billing_portal": type("B", (), {"sessions": PortalSessions})(),
+                    },
+                )()
 
         class Webhook:
             @staticmethod
@@ -260,6 +268,21 @@ def test_billing_needs_a_key_and_at_least_one_price():
         StripeBilling("", prices={Tier.BASIC: BASIC_PRICE}, stripe=FakeStripe())
     with pytest.raises(ValueError):
         StripeBilling("sk_test", prices={Tier.BASIC: ""}, stripe=FakeStripe())
+
+
+def test_the_fake_is_shaped_like_the_real_sdk():
+    """The fake above is only worth anything if Stripe really looks like that.
+
+    Without this, a rename or a deprecation on Stripe's side shows up in
+    production rather than here — which is exactly what a hand-written double
+    is prone to hiding.
+    """
+    stripe = pytest.importorskip("stripe")
+
+    client = stripe.StripeClient("sk_test_dummy").v1
+    assert callable(client.checkout.sessions.create)
+    assert callable(client.billing_portal.sessions.create)
+    assert callable(stripe.Webhook.construct_event)
 
 
 def test_without_stripe_nothing_is_for_sale():

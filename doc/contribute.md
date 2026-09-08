@@ -7,10 +7,18 @@ import UI expects.
 
 ```sh
 cd backend
-pip install -e '.[dev]'
-ELECTION_STORE=sqlite uvicorn app.main:app --reload   # http://localhost:8000
-pytest
+uv run uvicorn app.main:app --reload   # http://localhost:8000
+uv run pytest
 ```
+
+`uv run` resolves the environment from `uv.lock` before running, so the first
+command doubles as the install step and nobody drifts onto a different version
+of anything. `ELECTION_STORE=sqlite` keeps imported elections across restarts.
+
+Dependencies are edited through uv rather than by hand, so the lockfile stays in
+step — `uv add httpx`, `uv add --dev pytest`, `uv remove …`. After changing
+`pyproject.toml` directly, run `uv lock` and commit the result: the Dockerfile
+builds with `--locked` and fails if the two disagree.
 
 Frontend on its own (bundled election only, no import):
 
@@ -36,7 +44,7 @@ as the bearer token — `uid`, `uid:email`, or `uid:email:admin`:
 
 ```sh
 ELECTION_STORE=sqlite AUTH_MODE=stub BASIC_MONTHLY_IMPORTS=2 \
-  uvicorn app.main:app --reload
+  uv run uvicorn app.main:app --reload
 
 curl localhost:8000/api/me -H 'Authorization: Bearer u1:a@example.org'
 curl -X PUT localhost:8000/api/elections/HASH/selected \

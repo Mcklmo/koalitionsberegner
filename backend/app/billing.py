@@ -191,7 +191,10 @@ class StripeBilling:
         self._price_tiers = {price: tier for tier, price in self._prices.items()}
         self._webhook_secret = webhook_secret
         self._stripe = stripe or self._import_stripe()
-        self._client = self._stripe.StripeClient(api_key)
+        # The v1 namespace, not the flat one: the flat accessors still work but
+        # are deprecated, and the whole point of pinning a floor is not to build
+        # on something already on its way out.
+        self._client = self._stripe.StripeClient(api_key).v1
 
     @staticmethod
     def _import_stripe():

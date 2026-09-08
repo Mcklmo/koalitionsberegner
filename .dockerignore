@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+# uv environments: the image builds its own from the lockfile
+.venv/
+venv/

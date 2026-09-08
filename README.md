@@ -39,9 +39,14 @@ free — which is the point of a shared store. A failed extraction is refunded.
 The import UI calls the API on the same origin, so run both from the backend:
 
 ```sh
-cd backend && pip install -e '.[dev]'
-ELECTION_STORE=sqlite uvicorn app.main:app --reload
+cd backend
+ELECTION_STORE=sqlite uv run uvicorn app.main:app --reload
 ```
+
+`uv run` builds the environment from `backend/uv.lock` on first use, so there is
+no install step to remember and no way to end up on different versions than
+everyone else. [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
+if you have not.
 
 `sqlite` keeps imported elections in `./data/elections.db`, so restarting does not
 re-fetch and re-extract pages you already imported. Use `memory` for a clean slate.
@@ -57,8 +62,8 @@ python3 -m http.server 8000   # or: npx wrangler dev
 ## Test
 
 ```sh
-node --test test/*.test.mjs   # frontend
-cd backend && pytest          # backend
+node --test test/*.test.mjs      # frontend
+cd backend && uv run pytest      # backend
 ```
 
 The adversarial results pages in `test/adversarial/` drive the import pipeline's

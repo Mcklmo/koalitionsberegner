@@ -11,5 +11,9 @@ build/
 data/
 *.db
 
+# uv creates .venv; uv.lock is committed on purpose
+.venv/
+venv/
+
 # agent worktrees
 .claude/worktrees/
