@@ -4,6 +4,10 @@ Same contract, same rules: allowlisted fields only, seats summing to the
 declared total, a majority consistent with the assembly size, real dates,
 absolute http(s) URLs and hex-only colours. Anything a parser produces must
 pass through here before it is stored or served.
+
+This is the hard gate on the extraction agent's output (see
+``doc/threat-model.md``): whatever a page talked the model into saying, only
+these fields, of these types, within these bounds, get past it.
 """
 
 from __future__ import annotations
@@ -22,6 +26,11 @@ MAX_SEATS = 100_000
 
 HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+# Invisible and direction-changing characters. They survive ``textContent``
+# intact, so a name carrying U+202E renders reversed — a party label can be made
+# to read as another party's. ZWJ/ZWNJ are deliberately not here: real scripts
+# need them. Mirrored by CONFUSABLE_CHARS in ``js/election.js``.
+_CONFUSABLE_CHARS = re.compile(r"[\u00ad\u200b\u200e\u200f\u202a-\u202e\u2028\u2029\u2066-\u2069\ufeff]")
 
 
 def clean_text(value: str, *, field: str) -> str:
@@ -30,6 +39,8 @@ def clean_text(value: str, *, field: str) -> str:
         raise ValueError(f"{field} must be a string")
     if _CONTROL_CHARS.search(value):
         raise ValueError(f"{field} must not contain control characters")
+    if _CONFUSABLE_CHARS.search(value):
+        raise ValueError(f"{field} must not contain invisible or direction-changing characters")
     text = unicodedata.normalize("NFC", value).strip()
     if not text:
         raise ValueError(f"{field} must not be empty")

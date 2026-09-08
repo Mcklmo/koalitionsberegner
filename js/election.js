@@ -2,8 +2,10 @@
  * Canonical election schema and its validator.
  *
  * This is the contract between the renderer and every election source —
- * today a hardcoded provider, later the LLM extraction agent. Nothing reaches
- * the renderer without passing `validateElection`.
+ * a hardcoded provider or the LLM extraction agent. Nothing reaches the
+ * renderer without passing `validateElection`, which is the client-side half of
+ * the output gate described in `doc/threat-model.md`: an allowlist of fields,
+ * checked types and bounds, and text that is safe to put in the DOM.
  *
  * @typedef {Object} Party
  * @property {string} name    Full party name.
@@ -51,6 +53,11 @@ const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?$/;
 // Control characters are rejected outright: extracted text goes straight into the DOM.
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
+// Invisible and direction-changing characters survive `textContent` intact, so a
+// name carrying U+202E renders reversed and can be made to read as another
+// party's. ZWJ/ZWNJ (U+200C/U+200D) are allowed: real scripts need them.
+// Mirrors `_CONFUSABLE_CHARS` in `backend/app/schema.py`.
+const CONFUSABLE_CHARS = /[\u00AD\u200B\u200E\u200F\u202A-\u202E\u2028\u2029\u2066-\u2069\uFEFF]/;
 
 const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -74,6 +81,9 @@ function checkText(errors, path, value) {
   if (value.trim() === '') return errors.push(`${path}: must not be empty`), false;
   if (value.length > MAX_TEXT) return errors.push(`${path}: must be at most ${MAX_TEXT} characters`), false;
   if (CONTROL_CHARS.test(value)) return errors.push(`${path}: must not contain control characters`), false;
+  if (CONFUSABLE_CHARS.test(value)) {
+    return errors.push(`${path}: must not contain invisible or direction-changing characters`), false;
+  }
   return true;
 }
 

