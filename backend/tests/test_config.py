@@ -19,6 +19,7 @@ def clean_config():
         config.get_store,
         config.get_parser,
         config.get_accounts,
+        config.get_password_store,
         config.get_verifier,
         config.get_quota_policy,
         config.get_billing,
@@ -129,13 +130,53 @@ def test_auth_is_on_by_default_once_there_is_a_project(monkeypatch, clean_config
 def test_a_stub_verifier_is_never_reached_by_accident(monkeypatch, clean_config, caplog):
     """It trusts whatever the caller types, so choosing it must be deliberate and loud."""
     from app.config import get_verifier
-    from app.auth import StubTokenVerifier
+    from app.auth import StubCredentials
 
     caplog.set_level(logging.WARNING, logger="app")
     monkeypatch.setenv("AUTH_MODE", "stub")
 
-    assert isinstance(get_verifier(), StubTokenVerifier)
+    assert isinstance(get_verifier().store, StubCredentials)
     assert any("local use only" in r.getMessage() for r in caplog.records)
+
+
+def test_sqlite_auth_wires_a_credential_store_and_the_shared_rules(
+    monkeypatch, clean_config, tmp_path
+):
+    """The point of the mode: gating with no Firebase project behind it."""
+    from app.config import get_password_store, get_verifier
+    from app.sqlite_auth import SqliteCredentialStore
+
+    monkeypatch.setenv("ELECTION_STORE", "sqlite")
+    monkeypatch.setenv("AUTH_MODE", "sqlite")
+    monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "elections.db"))
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@example.org")
+
+    verifier = get_verifier()
+
+    assert isinstance(verifier.store, SqliteCredentialStore)
+    assert verifier.store is get_password_store(), "one store, not one per caller"
+    assert verifier.anonymous() is None, "sqlite gates like Firebase does"
+    assert verifier.provider == "password"
+
+    # The admin allowlist is the same rule the Firebase mode applies, applied
+    # to an identity that never went near Google.
+    session = verifier.store.register("boss@example.org", "a-good-password")
+    assert verifier.verify(session.token).admin is True
+
+
+def test_sqlite_auth_warns_when_the_accounts_it_signs_in_are_not_persisted(
+    monkeypatch, clean_config, tmp_path, caplog
+):
+    from app.config import get_verifier
+
+    caplog.set_level(logging.WARNING, logger="app")
+    monkeypatch.setenv("ELECTION_STORE", "memory")
+    monkeypatch.setenv("AUTH_MODE", "sqlite")
+    monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "elections.db"))
+
+    get_verifier()
+
+    assert any("accounts do not" in r.getMessage() for r in caplog.records)
 
 
 def test_quota_limits_come_from_the_environment(monkeypatch, clean_config):

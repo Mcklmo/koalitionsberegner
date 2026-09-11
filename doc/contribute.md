@@ -32,38 +32,130 @@ prompt, the schema, or how extracted strings are rendered — read
 [threat-model.md](threat-model.md). It says which of those pieces is load-bearing
 against a hostile results page, and which test holds each claim up.
 
-### Working on accounts, tiers and quotas
+### Modes
 
-`AUTH_MODE=off` — the default without a Firebase project — means *no gating at
-all*: every request is a local developer with no quota, so the import flow
-behaves as it did before accounts existed. That is deliberate, so the rest of
-the app stays workable without a Firebase project.
+Four independent switches decide what the backend talks to. Each defaults to
+whatever a bare checkout can actually do, so `uv run uvicorn app.main:app` with
+no environment set at all starts and works: in memory, ungated, with a mocked
+extraction agent. Nothing here needs a cloud account until you want one.
 
-To exercise the gated behaviour, run with `AUTH_MODE=stub` and send the identity
-as the bearer token — `uid`, `uid:email`, or `uid:email:admin`:
+The one coupling worth knowing: **accounts live wherever the elections do**.
+`ELECTION_STORE` picks the database for both, so `sqlite` gives you real
+accounts, tiers and quotas — persisted across restarts — with no Firestore
+anywhere. `AUTH_MODE` is a separate question, about who a request *is*.
+
+| Setting | What it does | Needs |
+| --- | --- | --- |
+| `ELECTION_STORE=firestore` | Elections and accounts shared between instances. Default with a GCP project. | `GOOGLE_CLOUD_PROJECT`; `FIRESTORE_DATABASE` if not `(default)` |
+| `ELECTION_STORE=sqlite` | One local file. Survives restarts, so you do not re-fetch and re-extract pages you already imported. | `SQLITE_PATH` (optional; defaults to `./data/elections.db`) |
+| `ELECTION_STORE=memory` | Forgets everything on exit. Default with no GCP project. | — |
+| `AUTH_MODE=firebase` | Verifies real Firebase ID tokens against Google's certificates. Default once a project id is set. | `FIREBASE_PROJECT_ID` (falls back to `GOOGLE_CLOUD_PROJECT`); `FIREBASE_API_KEY` for browser sign-in |
+| `AUTH_MODE=sqlite` | Real gating with no identity provider: this app holds the passwords and issues its own session tokens, in the same file as everything else. Sign-in works in the browser. | `SQLITE_PATH` (optional); pair it with `ELECTION_STORE=sqlite` |
+| `AUTH_MODE=stub` | The bearer token *is* the identity — `uid`, `uid:email`, `uid:email:admin`. Nothing is verified. Exercises signed-in state, quota accounting and admin curation; the browser cannot mint these tokens, so drive the API with `curl`. | — |
+| `AUTH_MODE=off` | No gating at all: every request is one admin developer with no quota. Default with no project id. | — |
+| `LLM_MODE=mock` | Fetches the page, then returns a fixed Sachsen-Anhalt result instead of calling a model. The default, and the whole pipeline except the model. | — |
+| `LLM_MODE=live` | Runs the real extraction agent. | `ANTHROPIC_API_KEY` |
+| `LLM_MODE=off` | Importing is refused outright. | — |
+| Billing on | Subscriptions are for sale; Stripe is the only thing that grants a tier. | `STRIPE_API_KEY`, `STRIPE_PRICE_BASIC` and/or `STRIPE_PRICE_PREMIUM`, `STRIPE_WEBHOOK_SECRET`, `PUBLIC_BASE_URL` |
+| Billing off | Free accounts work, nothing is for sale. The default. | — |
+
+Each variable named here is described in full under
+[Environment variables](#environment-variables) below.
+
+`firebase` and `sqlite` differ only in where the credential comes from. The
+rules applied to it afterwards are one object either way — a subject is
+mandatory, `ADMIN_EMAILS` is what grants curation rights — so behaviour you
+verify under `sqlite` is the behaviour a Firebase deployment has. The seam is
+`app.auth.StoreBackedVerifier`: a credential store plus
+`app.auth.PrincipalRules`, wired in `app.config.get_verifier`. Adding a third
+backend means writing a store, not another verifier.
+
+One sharp edge shared by `sqlite` and `stub`: the account they create is on the
+free tier, and free imports nothing. `POST /api/imports` answers `402` until a
+subscription raises the tier, and the only thing that raises a tier is a Stripe
+webhook — there is deliberately no endpoint that grants one. So those are the
+modes for watching the gate *refuse*, and for admin curation; `off` is the mode
+for driving a successful import; a successful *paid* import needs Stripe test
+mode, below.
+
+Billing is the one switch with no mode variable: it follows `STRIPE_API_KEY`.
+Half-configured billing is refused at startup rather than silently disabled, and
+so is any unrecognised value of the other three — a misspelled `LLM_MODE` must
+not quietly serve mock election data. `app.config.validate_configuration` builds
+every configured dependency during startup so a typo stops the boot instead of
+surfacing on the first real request.
+
+Three combinations cover most local work:
 
 ```sh
-ELECTION_STORE=sqlite AUTH_MODE=stub BASIC_MONTHLY_IMPORTS=2 \
-  uv run uvicorn app.main:app --reload
+cd backend
 
-curl localhost:8000/api/me -H 'Authorization: Bearer u1:a@example.org'
+# Nothing to configure. Memory store, no gating, mocked agent.
+uv run uvicorn app.main:app --reload
+
+# Real accounts and gating, persisted, no cloud anything: sign up in the page
+# itself. Imports are then refused with 402 — that is the free tier working,
+# not a misconfiguration.
+ELECTION_STORE=sqlite AUTH_MODE=sqlite uv run uvicorn app.main:app --reload
+
+# The real extraction agent against a real results page.
+ELECTION_STORE=sqlite LLM_MODE=live ANTHROPIC_API_KEY=… \
+  uv run uvicorn app.main:app --reload
+```
+
+### Working on accounts, tiers and quotas
+
+Take the `sqlite` + `sqlite` line from [Modes](#modes) above. The sign-in panel
+works as it does in a deployment — sign up in the page, or from the shell:
+
+```sh
+curl -X POST localhost:8000/api/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email": "boss@example.org", "password": "hunter22"}'   # → {"token": …}
+
+curl localhost:8000/api/me -H "Authorization: Bearer $TOKEN"
 curl -X PUT localhost:8000/api/elections/HASH/selected \
-  -H 'Authorization: Bearer boss:b@example.org:admin' \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' -d '{"selected": true}'
 ```
 
-The stub verifies nothing — it believes whatever the caller types — so
+`/api/auth/register`, `/api/auth/login` and `/api/auth/logout` exist only in
+this mode; every other mode answers `404`, because there is no account here to
+create. The token is an opaque session, stored as its SHA-256 and revoked by
+signing out; the password is stored as a salted scrypt hash and never leaves the
+process in any other form. Everything behind it is the same machinery Firebase
+sign-ins reach: the account row, its tier and the quota counter all live in
+`./data/elections.db`. `ADMIN_EMAILS=boss@example.org` makes the curation call
+above work, exactly as it would against a Firebase project.
+
+For a quick identity with no sign-up at all, `AUTH_MODE=stub` takes the identity
+straight out of the bearer token — `uid`, `uid:email`, or `uid:email:admin`:
+
+```sh
+curl localhost:8000/api/me -H 'Authorization: Bearer u1:a@example.org'
+```
+
+It verifies nothing — it believes whatever the caller types — so
 `app.config.get_verifier` logs a warning whenever it is selected and never
 chooses it by default. The browser cannot mint stub tokens, so the sign-in panel
-stays hidden; drive the API with `curl` instead.
+stays hidden there; drive the API with `curl` instead.
+
+The curation call above needs an election to curate, which neither gated mode
+can import on a free account. Every mode reads the same file, so import one
+under `AUTH_MODE=off` first, then restart with gating on and curate it.
 
 There is deliberately no endpoint that grants a tier: Stripe is the only thing
 that changes one, and a way around that would be a way around paying. To try the
-paid flow end to end, use Stripe test mode and forward its webhooks:
+paid flow end to end — including an import that is actually allowed — use Stripe
+test mode and forward its webhooks:
 
 ```sh
 stripe listen --forward-to localhost:8000/api/billing/webhook
 ```
+
+`BASIC_MONTHLY_IMPORTS=2` is worth setting alongside it: the allowance is then
+small enough to spend, so the `429` at the end of a month is reachable in a
+minute rather than ten.
 
 ### Cloud setup (deployment only)
 
@@ -111,9 +203,17 @@ with `<meta name="api-base" content="https://…">` in `index.html` and set
    `admin` claim on the Firebase user. Administrators are the only callers that
    can curate which elections signed-out visitors see.
 
+A deployment that does not want a Firebase project at all can run
+`AUTH_MODE=sqlite` instead of steps 1–3: the accounts, passwords and sessions
+then live in `SQLITE_PATH`, and `/api/auth/register`, `/api/auth/login` and
+`/api/auth/logout` become real endpoints that the page signs in against. Know
+what it does not do before choosing it — the sessions are in a file, so it is
+one instance only, and there is no password reset, no email verification, and
+no rate limiting on the sign-in endpoint. Put it behind something that has
+those, or use Firebase, which does.
+
 Stripe is optional: with no `STRIPE_API_KEY` the app starts, serves free
-accounts, and sells nothing. Half-configured billing is refused at startup
-rather than silently disabled.
+accounts, and sells nothing.
 
 ### Environment variables
 
@@ -122,17 +222,17 @@ rather than silently disabled.
 | `GOOGLE_CLOUD_PROJECT` | with `ELECTION_STORE=firestore` | — | GCP project holding Firestore. |
 | `FIRESTORE_DATABASE` | no | `(default)` | Named Firestore database, if not the default one. |
 | `ELECTION_STORE` | no | `firestore`, or `memory` with no GCP project | `firestore` shares imports between instances; `sqlite` keeps them in a local file across restarts; `memory` forgets everything on exit. |
-| `SQLITE_PATH` | no | `./data/elections.db` | Database file for `ELECTION_STORE=sqlite`. Created with its parent directory on first use. |
+| `SQLITE_PATH` | no | `./data/elections.db` | Database file for `ELECTION_STORE=sqlite`, and for the accounts and sessions of `AUTH_MODE=sqlite`. Created with its parent directory on first use. |
 | `LLM_MODE` | no | `mock` | `mock` returns a fixed Sachsen-Anhalt result without calling Anthropic; `live` runs the real extraction agent; `off` disables importing. |
 | `ANTHROPIC_API_KEY` | with `LLM_MODE=live` | — | Anthropic API key. Store it in Secret Manager and mount it as this env var; never put it in the image or in client code. |
 | `PARSE_LEASE_SECONDS` | no | `300` | How long a parse may run before a crashed job is reclaimed. |
 | `IMPORT_MAX_WAIT_SECONDS` | no | `25` | Ceiling on `?wait_seconds=` long-polling. |
 | `ALLOWED_ORIGINS` | no | — | Comma-separated origins allowed to call the API, when the page is hosted elsewhere. Unset means same-origin only. |
 | `FRONTEND_DIR` | no | repo root | Directory holding `index.html`; served at `/` when present. |
-| `AUTH_MODE` | no | `firebase` with a project, else `off` | `firebase` verifies real Firebase ID tokens; `off` disables gating entirely for local runs; `stub` trusts the token's text and is for local testing only. |
+| `AUTH_MODE` | no | `firebase` with a project, else `off` | Which credential store is behind the same gating rules: `firebase` verifies real Firebase ID tokens; `sqlite` holds passwords and sessions in `SQLITE_PATH` itself; `off` disables gating entirely for local runs; `stub` trusts the token's text and is for local testing only. |
 | `FIREBASE_PROJECT_ID` | with `AUTH_MODE=firebase` | `GOOGLE_CLOUD_PROJECT` | The project whose ID tokens are accepted. A token minted for another project is refused. |
 | `FIREBASE_API_KEY` | for browser sign-in | — | The project's public Web API key, served to the page by `/api/config`. Not a secret. |
-| `ADMIN_EMAILS` | no | — | Comma-separated addresses allowed to curate the selection visible to signed-out visitors. A custom `admin` claim works too. |
+| `ADMIN_EMAILS` | no | — | Comma-separated addresses allowed to curate the selection visible to signed-out visitors. Applied whatever signed the credential; with Firebase a custom `admin` claim works too. |
 | `BASIC_MONTHLY_IMPORTS` | no | `10` | Imports a Basic subscriber gets per calendar month. |
 | `PREMIUM_MONTHLY_IMPORTS` | no | `200` | Imports a Premium subscriber gets per calendar month. |
 | `STRIPE_API_KEY` | for subscriptions | — | Stripe secret key. Unset means nothing is for sale; free accounts still work. |

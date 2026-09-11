@@ -25,13 +25,24 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from .accounts import AccountStore, QuotaPolicy, Tier, UserAccount, billing_period
-from .auth import InvalidToken, Principal, TokenVerifier, bearer_token
+from .auth import (
+    BadCredentials,
+    EmailTaken,
+    InvalidToken,
+    PasswordCredentialStore,
+    Principal,
+    Session,
+    SignUpRefused,
+    TokenVerifier,
+    bearer_token,
+)
 from .billing import Billing, BillingUnavailable
 from .config import (
     firebase_web_config,
     get_accounts,
     get_billing,
     get_parser,
+    get_password_store,
     get_quota_policy,
     get_store,
     get_verifier,
@@ -101,6 +112,11 @@ def get_account_store() -> AccountStore:
 
 def get_token_verifier() -> TokenVerifier:
     return get_verifier()
+
+
+def get_password_credentials() -> PasswordCredentialStore | None:
+    """The store that owns passwords, in the modes where this app owns them."""
+    return get_password_store()
 
 
 def get_billing_provider() -> Billing:
@@ -211,6 +227,8 @@ class PublicConfig(BaseModel):
 
     auth_required: bool
     """False when gating is off, so the page can skip the whole sign-in flow."""
+    auth_provider: str
+    """Which sign-in flow the page should run: ``firebase``, ``password``, ``none``."""
     firebase: dict[str, str]
     billing_enabled: bool
     tiers: list[TierInfo]
@@ -228,6 +246,22 @@ class AccountResponse(BaseModel):
     may_import: bool
     subscription_status: str | None = None
     billing_enabled: bool = False
+
+
+class CredentialsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class SessionResponse(BaseModel):
+    """A session token, returned once. The server keeps only its hash."""
+
+    token: str
+    uid: str
+    email: str
+    expires_at: float
 
 
 class CheckoutBody(BaseModel):
@@ -292,6 +326,9 @@ def public_config(
         # Asked of the verifier rather than the environment: it is the thing
         # that decides, and with gating off it hands out an identity to everyone.
         auth_required=verifier.anonymous() is None,
+        # Also the verifier's answer rather than the environment's: it is the
+        # thing that knows what would satisfy it.
+        auth_provider=verifier.provider,
         firebase=firebase_web_config(),
         billing_enabled=billing.enabled,
         tiers=[
@@ -519,6 +556,80 @@ async def get_election(
         election=stored.election,
         election_hash=election_hash,
     )
+
+
+# --- sign-in, where this app is the one holding the passwords ---------------
+#
+# Only ``AUTH_MODE=sqlite`` reaches past the guard below. With Firebase the
+# browser signs in against Google's endpoints and these three answer 404, which
+# is the honest response: there is no account here to create.
+
+def _session_response(session: Session) -> SessionResponse:
+    return SessionResponse(
+        token=session.token,
+        uid=session.uid,
+        email=session.email,
+        expires_at=session.expires_at,
+    )
+
+
+def require_password_store(
+    store: PasswordCredentialStore | None = Depends(get_password_credentials),
+) -> PasswordCredentialStore:
+    if store is None:
+        raise HTTPException(404, detail="this server does not manage sign-in itself")
+    return store
+
+
+@app.post(
+    "/api/auth/register",
+    response_model=SessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register(
+    body: CredentialsBody,
+    store: PasswordCredentialStore = Depends(require_password_store),
+) -> SessionResponse:
+    """Create an account and sign it in.
+
+    The account this opens is a free one, exactly as a Firebase sign-up is:
+    registering buys nothing, and the tier still only moves when Stripe says so.
+    """
+    try:
+        session = await run_in_threadpool(store.register, body.email, body.password)
+    except EmailTaken as exc:
+        raise HTTPException(409, detail=str(exc)) from None
+    except SignUpRefused as exc:
+        raise HTTPException(422, detail=str(exc)) from None
+    log.info("registered uid=%s", session.uid[:12])
+    return _session_response(session)
+
+
+@app.post("/api/auth/login", response_model=SessionResponse)
+async def login(
+    body: CredentialsBody,
+    store: PasswordCredentialStore = Depends(require_password_store),
+) -> SessionResponse:
+    try:
+        session = await run_in_threadpool(store.sign_in, body.email, body.password)
+    except BadCredentials as exc:
+        # One message for a wrong address and a wrong password alike: which of
+        # the two was wrong is not something a caller is entitled to learn.
+        raise HTTPException(401, detail=str(exc), headers=UNAUTHENTICATED) from None
+    return _session_response(session)
+
+
+@app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    authorization: str | None = Header(default=None),
+    store: PasswordCredentialStore = Depends(require_password_store),
+) -> Response:
+    """End the session this request carries. Unauthenticated on purpose — a
+    token that is already worthless still deserves to be deleted."""
+    token = bearer_token(authorization)
+    if token:
+        await run_in_threadpool(store.sign_out, token)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- billing ----------------------------------------------------------------

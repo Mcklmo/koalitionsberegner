@@ -14,7 +14,15 @@ import os
 from functools import lru_cache
 
 from .accounts import DEFAULT_MONTHLY_IMPORTS, AccountStore, InMemoryAccountStore, QuotaPolicy, Tier
-from .auth import DisabledVerifier, FirebaseTokenVerifier, StubTokenVerifier, TokenVerifier
+from .auth import (
+    DisabledVerifier,
+    FirebaseCredentials,
+    PasswordCredentialStore,
+    PrincipalRules,
+    StoreBackedVerifier,
+    StubCredentials,
+    TokenVerifier,
+)
 from .billing import Billing, DisabledBilling, StripeBilling
 from .parser import ElectionParser, UnavailableParser
 from .store import DEFAULT_STALE_AFTER_SECONDS, ElectionStore, InMemoryElectionStore
@@ -24,7 +32,7 @@ log = logging.getLogger(__name__)
 #: Every recognised value, so an unknown one can name the alternatives.
 STORE_BACKENDS = ("firestore", "sqlite", "memory")
 LLM_MODES = ("mock", "live", "off")
-AUTH_MODES = ("firebase", "stub", "off")
+AUTH_MODES = ("firebase", "sqlite", "stub", "off")
 
 DEFAULT_SQLITE_PATH = "./data/elections.db"
 
@@ -93,6 +101,9 @@ def auth_mode() -> str:
     ``off`` is not "anonymous everywhere" — it is "no gating at all", so the app
     behaves exactly as it did before accounts existed. It must never be the
     mode in a deployment, which is why the default follows the project id.
+
+    ``sqlite`` is the third real option: the same gating, with the passwords and
+    sessions in the local database instead of a Firebase project.
     """
     return _env_choice(
         "AUTH_MODE", AUTH_MODES, "firebase" if firebase_project_id() else "off"
@@ -186,27 +197,65 @@ def get_accounts() -> AccountStore:
 
 
 @lru_cache(maxsize=1)
-def get_verifier() -> TokenVerifier:
-    """Wire token verification.
+def get_password_store() -> PasswordCredentialStore | None:
+    """The store that owns passwords itself, when one is configured.
 
-    ``AUTH_MODE`` selects it: ``firebase`` verifies real ID tokens against
-    Google's certificates; ``stub`` trusts the token's text and exists only so
-    the gated behaviour can be exercised without a Firebase project; ``off``
-    disables gating entirely for local runs.
+    Only ``AUTH_MODE=sqlite`` has one. Firebase keeps the passwords and the
+    sign-in endpoints are Google's, so there is nothing here to register
+    against — which is what makes ``/api/auth/*`` answer 404 in that mode.
+    """
+    if auth_mode() != "sqlite":
+        return None
+
+    from .sqlite_auth import SqliteCredentialStore
+
+    return SqliteCredentialStore(os.environ.get("SQLITE_PATH", DEFAULT_SQLITE_PATH))
+
+
+@lru_cache(maxsize=1)
+def get_verifier() -> TokenVerifier:
+    """Wire token verification: a credential store, plus the rules.
+
+    ``AUTH_MODE`` selects the store — ``firebase`` verifies real ID tokens
+    against Google's certificates, ``sqlite`` resolves sessions this app issued
+    itself, ``stub`` trusts the token's text and exists only so the gated
+    behaviour can be exercised without either. ``off`` disables gating entirely
+    for local runs and so has no store at all.
+
+    The rules that turn a resolved credential into a principal — a subject is
+    mandatory, ``ADMIN_EMAILS`` grants curation rights — are the same object in
+    every mode, so they cannot drift apart per backend.
     """
     mode = auth_mode()
     if mode == "off":
         return DisabledVerifier()
+
+    rules = PrincipalRules.of(admin_emails())
+
     if mode == "stub":
         # Loud, because a deployment reaching this line is trusting whatever a
         # caller types into the Authorization header.
         log.warning("AUTH_MODE=stub: identities are unverified — local use only")
-        return StubTokenVerifier()
+        return StoreBackedVerifier(StubCredentials(), rules)
+
+    if mode == "sqlite":
+        store = get_password_store()
+        if store is None:  # unreachable: this mode is what builds it
+            raise ConfigError("AUTH_MODE=sqlite could not open its credential store")
+        if _store_backend() != "sqlite":
+            # Sessions would survive a restart while the accounts they belong
+            # to did not, so a signed-in user would keep landing on a new
+            # free account. Legal, but never what anybody wants.
+            log.warning(
+                "AUTH_MODE=sqlite with ELECTION_STORE=%s: sign-ins persist but accounts do not",
+                _store_backend(),
+            )
+        return StoreBackedVerifier(store, rules)
 
     project = firebase_project_id()
     if not project:
         raise ConfigError("AUTH_MODE=firebase requires FIREBASE_PROJECT_ID")
-    return FirebaseTokenVerifier(project, admin_emails=admin_emails())
+    return StoreBackedVerifier(FirebaseCredentials(project), rules)
 
 
 def admin_emails() -> frozenset[str]:
@@ -301,6 +350,7 @@ def validate_configuration() -> dict[str, str]:
     get_store()
     get_parser()
     get_accounts()
+    get_password_store()
     get_verifier()
     get_quota_policy()
     get_billing()

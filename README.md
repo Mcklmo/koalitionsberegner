@@ -25,7 +25,8 @@ server fetch a page and run the extraction agent.
 | Basic subscriber | every stored election | a fixed number per month |
 | Premium subscriber | every stored election | a larger number per month |
 
-Accounts are free (Firebase Authentication); subscriptions are Stripe, and a
+Accounts are free (Firebase Authentication, or a local SQLite store when there
+is no Firebase project); subscriptions are Stripe, and a
 tier only ever changes when Stripe says so over a signed webhook. Quotas reset
 by calendar month with nothing scheduled — a counter labelled with a past month
 simply reads as zero.
@@ -50,6 +51,9 @@ if you have not.
 
 `sqlite` keeps imported elections in `./data/elections.db`, so restarting does not
 re-fetch and re-extract pages you already imported. Use `memory` for a clean slate.
+It also holds accounts, so tiers and quotas can be exercised locally with no
+Firestore — see [Modes](doc/contribute.md#modes) for every switch, what it needs,
+and the three combinations worth knowing.
 
 Then open <http://localhost:8000>.
 

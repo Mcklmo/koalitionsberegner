@@ -1,19 +1,26 @@
-"""Who is calling: Firebase ID token verification.
+"""Who is calling: turning a bearer token back into a :class:`Principal`.
 
-The browser signs in against Firebase and sends the resulting ID token as a
-bearer token; this module turns that token into a :class:`Principal` or refuses
-it. Nothing downstream ever reads an identity out of the request body, so a
-caller cannot claim to be somebody else by saying so.
+Two things happen to every credential, and they are deliberately separate:
 
-Verification is done locally against Google's public signing certificates
-rather than by calling an identity service per request. The certificates are
-cached for as long as Google's ``Cache-Control`` says they are good for, so a
-verified request costs no network at all.
+* a **credential store** says which account a token belongs to
+  (:class:`CredentialStore`) — that is where the mechanism lives, whether it is
+  a Firebase ID token verified against Google's certificates or a session row
+  in SQLite;
+* the **rules** then decide what that account may claim
+  (:class:`PrincipalRules`) — a subject is mandatory, an email is folded so
+  allowlists match, and administrator-ness comes from the token or from
+  ``ADMIN_EMAILS``, never from anything the user can set on themselves.
 
-``AUTH_MODE`` picks the verifier — see :func:`app.config.get_verifier`. The
-``off`` mode used for local runs has no notion of a visitor: every request is
-the developer, unlimited and admin, which is why gating is invisible until it
-is switched on.
+:class:`StoreBackedVerifier` is the only thing that joins them, so a new store
+cannot accidentally bring its own interpretation of the rules with it, and the
+rules cannot grow a dependency on any one store. Nothing downstream ever reads
+an identity out of the request body, so a caller cannot claim to be somebody
+else by saying so.
+
+``AUTH_MODE`` picks the store — see :func:`app.config.get_verifier`. The ``off``
+mode used for local runs has no notion of a visitor: every request is the
+developer, unlimited and admin, which is why gating is invisible until it is
+switched on.
 """
 
 from __future__ import annotations
@@ -59,6 +66,21 @@ class Principal:
     """Set only when auth is switched off, so local runs are never quota-limited."""
 
 
+@dataclass(frozen=True)
+class Credential:
+    """What a store found behind a token, before any rule has been applied.
+
+    Deliberately dumb: a subject, whatever the store knows about the address,
+    and whether the *store itself* says this is an administrator (a Firebase
+    custom claim; a local store has no such notion). Everything else — folding,
+    validation, the admin allowlist — belongs to :class:`PrincipalRules`.
+    """
+
+    subject: str
+    email: str | None = None
+    admin: bool = False
+
+
 def bearer_token(header: str | None) -> str | None:
     """The token out of an ``Authorization: Bearer …`` header, if there is one."""
     if not header:
@@ -69,7 +91,31 @@ def bearer_token(header: str | None) -> str | None:
     return parts[1].strip()
 
 
+def normalize_email(value: object) -> str | None:
+    """Fold an address so an allowlist comparison means what it looks like."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lower()
+
+
+class CredentialStore(Protocol):
+    """Where a token is turned back into the account it was issued to.
+
+    The one thing every store must get right: raise :class:`InvalidToken` for
+    anything it cannot vouch for. Returning a :class:`Credential` is a claim
+    that this token really was issued to this subject.
+    """
+
+    #: Which sign-in flow the browser should run: ``firebase``, ``password`` or
+    #: ``none`` when the page cannot obtain a token by itself.
+    provider: str
+
+    def resolve(self, token: str) -> Credential: ...
+
+
 class TokenVerifier(Protocol):
+    provider: str
+
     def verify(self, token: str) -> Principal:
         """Return who signed this token, or raise :class:`InvalidToken`."""
         ...
@@ -77,6 +123,62 @@ class TokenVerifier(Protocol):
     def anonymous(self) -> Principal | None:
         """Who a request carrying no credentials is. ``None`` means a visitor."""
         ...
+
+
+@dataclass(frozen=True)
+class PrincipalRules:
+    """What a resolved credential is allowed to claim. One copy, every store.
+
+    Administrator-ness has exactly two sources: a claim the store vouches for
+    (set out of band — a Firebase custom claim is not something a user can mint
+    for themselves) and a configured allowlist of addresses. A store cannot
+    grant it by returning a different shape of credential.
+    """
+
+    admin_emails: frozenset[str] = frozenset()
+
+    @classmethod
+    def of(cls, admin_emails: frozenset[str] = frozenset()) -> "PrincipalRules":
+        return cls(frozenset(e.strip().lower() for e in admin_emails if e.strip()))
+
+    def principal(self, credential: Credential) -> Principal:
+        uid = credential.subject.strip() if isinstance(credential.subject, str) else ""
+        if not uid:
+            raise InvalidToken("token carries no subject")
+        email = normalize_email(credential.email)
+        return Principal(
+            uid=uid,
+            email=email,
+            admin=credential.admin or (email is not None and email in self.admin_emails),
+        )
+
+
+class StoreBackedVerifier:
+    """A :class:`TokenVerifier` assembled from a store and the shared rules.
+
+    The whole point of this class is that it is boring: everything mechanism-
+    specific is in the injected store, everything policy-specific is in the
+    injected rules, and swapping Firebase for SQLite changes neither.
+    """
+
+    def __init__(self, store: CredentialStore, rules: PrincipalRules | None = None):
+        self._store = store
+        self._rules = rules or PrincipalRules()
+
+    @property
+    def provider(self) -> str:
+        return self._store.provider
+
+    @property
+    def store(self) -> CredentialStore:
+        return self._store
+
+    def anonymous(self) -> Principal | None:
+        # Every real store gates: no credential means a signed-out visitor.
+        return None
+
+    def verify(self, token: str) -> Principal:
+        return self._rules.principal(self._store.resolve(token))
 
 
 class _CertificateCache:
@@ -122,8 +224,13 @@ def _max_age(cache_control: str | None) -> float:
     return MIN_CERT_TTL_SECONDS
 
 
-class FirebaseTokenVerifier:
-    """Verifies Firebase ID tokens for one project.
+class FirebaseCredentials:
+    """``AUTH_MODE=firebase``: Firebase ID tokens, verified for one project.
+
+    Verification is done locally against Google's public signing certificates
+    rather than by calling an identity service per request. The certificates are
+    cached for as long as Google's ``Cache-Control`` says they are good for, so
+    a verified request costs no network at all.
 
     Three things make a token ours: it is signed by a current Google
     certificate, its audience is this project, and its issuer is this project's
@@ -131,23 +238,14 @@ class FirebaseTokenVerifier:
     token minted for a *different* Firebase project.
     """
 
-    def __init__(
-        self,
-        project_id: str,
-        *,
-        admin_emails: frozenset[str] = frozenset(),
-        certs_url: str = FIREBASE_CERTS_URL,
-        certs=None,
-    ):
+    provider = "firebase"
+
+    def __init__(self, project_id: str, *, certs_url: str = FIREBASE_CERTS_URL, certs=None):
         if not project_id:
             raise ValueError("Firebase verification needs a project id")
         self._project_id = project_id
         self._issuer = f"https://securetoken.google.com/{project_id}"
-        self._admin_emails = frozenset(e.strip().lower() for e in admin_emails if e.strip())
         self._certs = certs or _CertificateCache(certs_url)
-
-    def anonymous(self) -> Principal | None:
-        return None
 
     def _claims(self, token: str, *, force_refresh: bool) -> dict:
         from google.auth import jwt
@@ -159,7 +257,7 @@ class FirebaseTokenVerifier:
             clock_skew_in_seconds=CLOCK_SKEW_SECONDS,
         )
 
-    def verify(self, token: str) -> Principal:
+    def resolve(self, token: str) -> Credential:
         try:
             claims = self._claims(token, force_refresh=False)
         except ValueError as exc:
@@ -178,22 +276,17 @@ class FirebaseTokenVerifier:
 
         if claims.get("iss") != self._issuer:
             raise InvalidToken("token was issued for a different project")
-        uid = claims.get("sub") or ""
-        if not isinstance(uid, str) or not uid.strip():
-            raise InvalidToken("token carries no subject")
-
-        email = claims.get("email")
-        email = email.strip().lower() if isinstance(email, str) and email.strip() else None
-        return Principal(
-            uid=uid.strip(),
-            email=email,
-            # A custom claim set out of band, or a configured allowlist. Never
-            # anything the user can set on themselves.
-            admin=bool(claims.get("admin")) or (email is not None and email in self._admin_emails),
+        subject = claims.get("sub")
+        return Credential(
+            subject=subject if isinstance(subject, str) else "",
+            email=claims.get("email"),
+            # A custom claim set out of band. Never anything the user can set
+            # on themselves.
+            admin=bool(claims.get("admin")),
         )
 
 
-class StubTokenVerifier:
+class StubCredentials:
     """``AUTH_MODE=stub``: the token *is* the identity, no signature involved.
 
     For exercising the gated behaviour locally and in tests without a Firebase
@@ -202,19 +295,15 @@ class StubTokenVerifier:
     keeping it out of the deployed default.
     """
 
-    def anonymous(self) -> Principal | None:
-        return None
+    #: The browser cannot mint these, so the page offers no sign-in flow.
+    provider = "none"
 
-    def verify(self, token: str) -> Principal:
+    def resolve(self, token: str) -> Credential:
         uid, _, rest = token.partition(":")
         if not uid.strip():
             raise InvalidToken("stub token must start with a uid")
         email, _, role = rest.partition(":")
-        return Principal(
-            uid=uid.strip(),
-            email=email.strip().lower() or None,
-            admin=role.strip() == "admin",
-        )
+        return Credential(subject=uid, email=email, admin=role.strip() == "admin")
 
 
 #: The identity every request carries when auth is switched off.
@@ -227,11 +316,88 @@ class DisabledVerifier:
     """``AUTH_MODE=off``: no gating at all, for running the app without Firebase.
 
     Every request — with or without a header — is the local developer, so the
-    app behaves exactly as it did before accounts existed.
+    app behaves exactly as it did before accounts existed. It is a verifier
+    rather than a store because it never looks at the token: there is nothing
+    to resolve and no rule to apply.
     """
+
+    provider = "none"
 
     def anonymous(self) -> Principal | None:
         return LOCAL_PRINCIPAL
 
     def verify(self, token: str) -> Principal:
         return LOCAL_PRINCIPAL
+
+
+# --- stores that hold passwords themselves ----------------------------------
+#
+# Firebase keeps the passwords and hands the browser a token; a self-hosted run
+# has nowhere to send the user, so the store below issues its own sessions.
+# Everything a *caller* needs is declared here rather than in the SQLite module,
+# so the API layer never imports one particular implementation.
+
+#: Exactly what Firebase enforces, so the page can state one rule and be right
+#: in either mode rather than guessing which backend is behind it.
+MIN_PASSWORD_LENGTH = 6
+MAX_PASSWORD_LENGTH = 1024
+
+
+class SignUpRefused(Exception):
+    """The address or the password is not something we will accept."""
+
+
+class EmailTaken(SignUpRefused):
+    """Somebody already registered that address."""
+
+
+class BadCredentials(Exception):
+    """That address and password pair does not open anything."""
+
+
+@dataclass(frozen=True)
+class Session:
+    """A freshly issued session. ``token`` is shown once and never stored raw."""
+
+    token: str
+    uid: str
+    email: str
+    expires_at: float
+
+
+class PasswordCredentialStore(Protocol):
+    """A :class:`CredentialStore` that also registers and signs people in."""
+
+    provider: str
+
+    def resolve(self, token: str) -> Credential: ...
+
+    def register(self, email: str, password: str) -> Session:
+        """Create an account and sign it in. Raises :class:`SignUpRefused`."""
+        ...
+
+    def sign_in(self, email: str, password: str) -> Session:
+        """Open a session. Raises :class:`BadCredentials`."""
+        ...
+
+    def sign_out(self, token: str) -> None:
+        """End this session. Unknown tokens are not an error — they are gone."""
+        ...
+
+
+def checked_signup(email: str, password: str) -> tuple[str, str]:
+    """The rules a new account must satisfy, wherever it is being stored.
+
+    Here rather than in the store for the same reason :class:`PrincipalRules`
+    is: a second implementation must not get to have a different opinion about
+    what an acceptable password is.
+    """
+    address = normalize_email(email)
+    if address is None or "@" not in address or "." not in address.rpartition("@")[2]:
+        raise SignUpRefused("that does not look like an email address")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise SignUpRefused(f"the password must be at least {MIN_PASSWORD_LENGTH} characters")
+    if len(password) > MAX_PASSWORD_LENGTH:
+        # Not a policy — a hash of unbounded input is a free way to burn CPU.
+        raise SignUpRefused("that password is unreasonably long")
+    return address, password

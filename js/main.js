@@ -11,6 +11,7 @@ import { createApiClient } from './api.js';
 import { mountAccountUi } from './account-ui.js';
 import { mountCoalitionCalculator } from './app.js';
 import { createAuth } from './auth.js';
+import { createPasswordAuth } from './password-auth.js';
 import { mountImportUi } from './import-ui.js';
 import { Folketing2026Provider } from './providers/folketing-2026.js';
 
@@ -43,12 +44,17 @@ byId('reset').addEventListener('click', () => calculator?.clearAll());
 // import; the bundled election still works, which is the point of the fallback.
 const config = await api.getConfig().catch(() => ({
   authRequired: false,
+  authProvider: 'none',
   firebase: {},
   billingEnabled: false,
   tiers: [],
 }));
 
-auth = createAuth({ apiKey: config.firebase.apiKey });
+// The backend says which flow it can satisfy; the panel and the API client are
+// handed one of these and never learn which.
+auth = config.authProvider === 'password'
+  ? createPasswordAuth({ api })
+  : createAuth({ apiKey: config.firebase.apiKey });
 
 const importUi = mountImportUi({
   api,

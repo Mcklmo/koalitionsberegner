@@ -5,6 +5,11 @@ certificate stands in for Google's, so the signature check is the production
 one rather than a stub. That matters because the failures worth catching are
 the ones that still *look* like valid tokens: signed by the wrong key, minted
 for a different Firebase project, or expired.
+
+Two layers are under test and the split is the point: a *store* says which
+account a token belongs to, and :class:`~app.auth.PrincipalRules` decides what
+that account may claim. The rules tests below use a store made of a dict,
+because they must hold for every store — including ones that do not exist yet.
 """
 
 from __future__ import annotations
@@ -22,11 +27,14 @@ from google.auth import crypt, jwt
 
 from app.auth import (
     MIN_CERT_TTL_SECONDS,
+    Credential,
     DisabledVerifier,
-    FirebaseTokenVerifier,
+    FirebaseCredentials,
     InvalidToken,
     Principal,
-    StubTokenVerifier,
+    PrincipalRules,
+    StoreBackedVerifier,
+    StubCredentials,
     _CertificateCache,
     _max_age,
     bearer_token,
@@ -95,8 +103,12 @@ class FakeCerts:
         return self.mapping
 
 
-def verifier(certs=None, **kwargs) -> FirebaseTokenVerifier:
-    return FirebaseTokenVerifier(PROJECT, certs=certs or FakeCerts(), **kwargs)
+def verifier(certs=None, admin_emails=frozenset()) -> StoreBackedVerifier:
+    """The production wiring: the Firebase store, behind the shared rules."""
+    return StoreBackedVerifier(
+        FirebaseCredentials(PROJECT, certs=certs or FakeCerts()),
+        PrincipalRules.of(admin_emails),
+    )
 
 
 # --- the Authorization header ----------------------------------------------
@@ -193,7 +205,7 @@ def test_a_certificate_fetch_failure_is_a_refusal_not_a_crash():
 
 def test_firebase_verification_needs_a_project():
     with pytest.raises(ValueError):
-        FirebaseTokenVerifier("")
+        FirebaseCredentials("")
 
 
 def test_a_request_with_no_credential_is_a_visitor():
@@ -244,7 +256,56 @@ def test_a_short_lifetime_is_raised_to_the_floor():
     assert cache._expires_at >= MIN_CERT_TTL_SECONDS
 
 
-# --- the non-production verifiers ------------------------------------------
+# --- the rules, which hold whatever the store is ---------------------------
+
+class DictStore:
+    """A credential store made of a dict — the smallest thing that is one."""
+
+    provider = "password"
+
+    def __init__(self, **credentials: Credential):
+        self.credentials = credentials
+
+    def resolve(self, token: str) -> Credential:
+        if token not in self.credentials:
+            raise InvalidToken("no such session")
+        return self.credentials[token]
+
+
+def test_the_rules_are_the_same_ones_whatever_store_resolved_the_token():
+    """The reason the split exists: a second store cannot relax the first's rules."""
+    rules = PrincipalRules.of(frozenset({"boss@example.org"}))
+    from_firebase = rules.principal(Credential(subject="u1", email="Boss@Example.ORG"))
+    from_elsewhere = StoreBackedVerifier(
+        DictStore(tok=Credential(subject="u1", email="Boss@Example.ORG")), rules
+    ).verify("tok")
+
+    assert from_firebase == from_elsewhere
+    assert from_firebase.admin is True, "the allowlist does not care who issued the token"
+    assert from_firebase.email == "boss@example.org", "folded once, in the rules"
+
+
+def test_a_store_cannot_hand_out_an_identity_without_a_subject():
+    with pytest.raises(InvalidToken, match="no subject"):
+        StoreBackedVerifier(DictStore(tok=Credential(subject="  "))).verify("tok")
+
+
+def test_an_unknown_token_is_refused_rather_than_treated_as_a_visitor():
+    store = StoreBackedVerifier(DictStore())
+    with pytest.raises(InvalidToken):
+        store.verify("tok")
+    assert store.anonymous() is None
+
+
+def test_the_page_is_told_which_sign_in_flow_to_run():
+    """`/api/config` reads this off the verifier, so the two cannot disagree."""
+    assert verifier().provider == "firebase"
+    assert StoreBackedVerifier(DictStore()).provider == "password"
+    assert StoreBackedVerifier(StubCredentials()).provider == "none"
+    assert DisabledVerifier().provider == "none"
+
+
+# --- the non-production store ----------------------------------------------
 
 @pytest.mark.parametrize(
     "token, expected",
@@ -255,13 +316,13 @@ def test_a_short_lifetime_is_raised_to_the_floor():
         ("u1::admin", Principal(uid="u1", admin=True)),
     ],
 )
-def test_the_stub_verifier_reads_the_identity_straight_out_of_the_token(token, expected):
-    assert StubTokenVerifier().verify(token) == expected
+def test_the_stub_store_reads_the_identity_straight_out_of_the_token(token, expected):
+    assert StoreBackedVerifier(StubCredentials()).verify(token) == expected
 
 
-def test_the_stub_verifier_still_needs_a_uid():
+def test_the_stub_store_still_needs_a_uid():
     with pytest.raises(InvalidToken):
-        StubTokenVerifier().verify(":a@example.org")
+        StoreBackedVerifier(StubCredentials()).verify(":a@example.org")
 
 
 def test_with_auth_off_every_request_is_the_local_developer():

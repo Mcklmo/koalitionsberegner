@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.accounts import InMemoryAccountStore, QuotaPolicy, Tier, billing_period
-from app.auth import StubTokenVerifier
+from app.auth import StoreBackedVerifier, StubCredentials
 from app.billing import BillingEvent, CheckoutSession, DisabledBilling
 from app.service import ImportService
 from app.store import InMemoryElectionStore
@@ -80,7 +80,7 @@ def billing():
 def client(parser, store, accounts, policy, billing):
     overrides = main.app.dependency_overrides
     overrides[main.get_service] = lambda: ImportService(store, parser)
-    overrides[main.get_token_verifier] = StubTokenVerifier
+    overrides[main.get_token_verifier] = lambda: StoreBackedVerifier(StubCredentials())
     overrides[main.get_account_store] = lambda: accounts
     overrides[main.get_policy] = lambda: policy
     overrides[main.get_billing_provider] = lambda: billing

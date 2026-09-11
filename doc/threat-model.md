@@ -213,6 +213,11 @@ These are known and deliberately not addressed here:
 - **No authentication or rate limiting.** Anyone who can reach the API can
   import, and imports are visible to everyone. Cost is bounded by the caps in
   T2 and by single-flight extraction, not by identity.
+- **`AUTH_MODE=sqlite` does not slow guessing down.** Where this app holds the
+  passwords itself, nothing limits how fast sign-ins may be attempted; the
+  scrypt cost of one attempt is the whole of the defence, and there is no
+  lockout. A deployment reachable from the internet belongs behind something
+  that rate-limits, or on Firebase, which does it for you.
 - **The page can vary per request.** The page we fetched is the page we
   extracted; nothing guarantees a later visitor sees the same thing.
 

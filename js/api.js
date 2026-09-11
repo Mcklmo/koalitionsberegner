@@ -82,6 +82,9 @@ function toAccount(body) {
 function toConfig(body) {
   return {
     authRequired: Boolean(body.auth_required),
+    // Which sign-in flow to run: 'firebase', 'password' (this backend holds the
+    // passwords itself), or 'none' when the page cannot obtain a token at all.
+    authProvider: body.auth_provider ?? 'none',
     firebase: body.firebase ?? {},
     billingEnabled: Boolean(body.billing_enabled),
     tiers: (body.tiers ?? []).map((row) => ({
@@ -89,6 +92,16 @@ function toConfig(body) {
       monthlyImports: row.monthly_imports,
       purchasable: Boolean(row.purchasable),
     })),
+  };
+}
+
+/** A session issued by this backend, when it is the one holding the passwords. */
+function toSession(body) {
+  return {
+    token: body.token,
+    uid: body.uid,
+    email: body.email ?? null,
+    expiresAt: body.expires_at,
   };
 }
 
@@ -151,6 +164,30 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {
     /** Public settings: how to sign in, and what is for sale. */
     async getConfig() {
       return toConfig(await request('/api/config'));
+    },
+
+    /** Create an account here and sign it in. Only the password provider has these. */
+    async register({ email, password }) {
+      return toSession(
+        await request('/api/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({ email, password }),
+        })
+      );
+    },
+
+    async login({ email, password }) {
+      return toSession(
+        await request('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ email, password }),
+        })
+      );
+    },
+
+    /** End the session this client is carrying, server-side as well as here. */
+    async logout() {
+      await request('/api/auth/logout', { method: 'POST' });
     },
 
     /** The signed-in caller's tier and allowance. Requires a token. */
