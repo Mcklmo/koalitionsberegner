@@ -163,13 +163,16 @@ test('invisible and direction-changing characters are rejected, joiners are not'
 test('the import preview shows an adversarial extraction as text', async () => {
   const el = {
     form: node('form'),
-    sourceUrl: node('input'),
+    year: node('input'),
+    nation: node('input'),
+    subnation: node('input'),
     submit: node('button'),
     message: node(),
-    fieldErrors: { sourceUrl: node() },
+    fieldErrors: { year: node(), nation: node() },
     preview: node(),
     previewTitle: node(),
     previewMeta: node(),
+    previewSource: node(),
     previewList: node(),
     confirm: node('button'),
     discard: node('button'),
@@ -179,17 +182,18 @@ test('the import preview shows an adversarial extraction as text', async () => {
   globalThis.document = { createElement: node };
   const api = {
     async listElections() { return []; },
-    async lookup() { return { pageKey: 'p1', status: 'unknown', election: null, electionHash: null }; },
+    async lookup() { return { requestKey: 'p1', status: 'unknown', election: null, electionHash: null }; },
     async importElection() {
-      return { pageKey: 'p1', status: 'preview', election: markupElection, electionHash: 'h' };
+      return { requestKey: 'p1', status: 'preview', election: markupElection, electionHash: 'h' };
     },
-    async confirm() { return { pageKey: 'p1', status: 'ready', election: markupElection, electionHash: 'h' }; },
+    async confirm() { return { requestKey: 'p1', status: 'ready', election: markupElection, electionHash: 'h' }; },
     async discardPreview() {},
     async getElection() { return { status: 'ready', election: markupElection }; },
   };
   mountImportUi({ api, elements: el, bundled: markupElection, onSelect() {} });
 
-  el.sourceUrl.value = 'https://markupland.example/result';
+  el.year.value = '2026';
+  el.nation.value = 'Markupland';
   await el.form.dispatch('submit');
 
   assert.equal(el.preview.hidden, false, 'the user sees it before anything is saved');
@@ -200,13 +204,16 @@ test('the import preview shows an adversarial extraction as text', async () => {
 test('an error message from the backend is shown as text, never as markup', async () => {
   const el = {
     form: node('form'),
-    sourceUrl: node('input'),
+    year: node('input'),
+    nation: node('input'),
+    subnation: node('input'),
     submit: node('button'),
     message: node(),
-    fieldErrors: { sourceUrl: node() },
+    fieldErrors: { year: node(), nation: node() },
     preview: node(),
     previewTitle: node(),
     previewMeta: node(),
+    previewSource: node(),
     previewList: node(),
     confirm: node('button'),
     discard: node('button'),
@@ -217,15 +224,16 @@ test('an error message from the backend is shown as text, never as markup', asyn
   const failure = "the extracted results are not valid: title: <img src=x onerror='alert(1)'>";
   const api = {
     async listElections() { return []; },
-    async lookup() { return { pageKey: 'p1', status: 'unknown', election: null, electionHash: null }; },
-    async importElection() { return { pageKey: 'p1', status: 'failed', error: failure, election: null }; },
+    async lookup() { return { requestKey: 'p1', status: 'unknown', election: null, electionHash: null }; },
+    async importElection() { return { requestKey: 'p1', status: 'failed', error: failure, election: null }; },
     async confirm() { throw new Error('not reached'); },
     async discardPreview() {},
     async getElection() { throw new Error('not reached'); },
   };
   mountImportUi({ api, elements: el, bundled: markupElection, onSelect() {} });
 
-  el.sourceUrl.value = 'https://markupland.example/result';
+  el.year.value = '2026';
+  el.nation.value = 'Markupland';
   await el.form.dispatch('submit');
 
   assert.ok(el.message.textContent.includes(failure));

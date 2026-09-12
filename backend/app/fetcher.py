@@ -1,8 +1,10 @@
-"""Server-side fetching of the pasted results URL.
+"""Server-side fetching of a candidate results page.
 
 The backend fetches the page itself and hands the text to the model as data.
-The model never browses: it gets exactly one document, from exactly the URL the
-user pasted, and has no way to ask for another.
+The extraction agent never browses: it gets one document at a time and has no
+way to ask for another. Which documents those are comes from
+:mod:`app.resolver` and :mod:`app.search`, and every address either of them
+produces is checked here before anything is requested.
 """
 
 from __future__ import annotations
@@ -95,8 +97,10 @@ def html_to_text(html: str) -> str:
 def _assert_public_url(url: str) -> str:
     """Reject anything that is not a public http(s) address.
 
-    Without this the pasted URL is a server-side request forgery primitive:
-    ``http://169.254.169.254/`` would hand the model instance metadata.
+    Without this a candidate URL is a server-side request forgery primitive:
+    ``http://169.254.169.254/`` would hand the model instance metadata. The
+    addresses come from a model that read search results, which is exactly the
+    reason this is enforced here rather than trusted upstream.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -168,5 +172,5 @@ def _read(response: httpx.Response) -> str:
         raise FetchError("the page has no readable text")
     if len(text) > MAX_TEXT_CHARS:
         # Never silently truncate: a cut-off page yields a plausible but wrong result.
-        raise FetchError("the page is too large to import; link the results table directly")
+        raise FetchError("the page is too large to import: it has more text than can be read")
     return text

@@ -27,10 +27,9 @@ def make_election(**overrides) -> Election:
 
 
 def make_request(**overrides) -> ImportRequest:
-    """An import request is now just a URL; identity comes from the agent."""
-    data = {"source_url": "https://www.dst.dk/valg"}
-    # Identity kwargs are accepted so a caller can vary what the agent will infer.
-    data.update({k: v for k, v in overrides.items() if k == "source_url"})
+    """An import request: a year and a place, spelled however the user spelled it."""
+    data = {"year": 2026, "nation": "Danmark", "subnation": None}
+    data.update(overrides)
     return ImportRequest(**data)
 
 
@@ -49,10 +48,10 @@ class CountingParser:
     """Records every call and can be held open to simulate a slow parse."""
 
     def __init__(self, election: Election | None = None, *, fail_times: int = 0,
-                 infers: Election | None = None, by_url: dict[str, Election] | None = None):
+                 infers: Election | None = None, by_year: dict[int, Election] | None = None):
         self._fixed = election
         self._inferred = infers or make_election()
-        self._by_url = by_url or {}
+        self._by_year = by_year or {}
         self.election = election or self._inferred
         self.calls: list[ImportRequest] = []
         self.fail_times = fail_times
@@ -77,8 +76,25 @@ class CountingParser:
         if self.fail_times > 0:
             self.fail_times -= 1
             raise RuntimeError("extraction failed")
-        if request.source_url in self._by_url:
-            return self._by_url[request.source_url]
+        if request.year in self._by_year:
+            return self._by_year[request.year]
         if self._fixed is not None:
             return self._fixed
         return self._inferred
+
+
+class FixedExtractor:
+    """An extraction agent that returns one answer, identity included.
+
+    Unlike ``MockExtractor``, it does not echo the requested election back —
+    which is what makes it the tool for testing what happens when a page
+    reports something other than what was asked for.
+    """
+
+    def __init__(self, result):
+        self.result = result
+        self.pages: list = []
+
+    async def extract(self, page, wanted):
+        self.pages.append(page)
+        return self.result

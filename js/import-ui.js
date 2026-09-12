@@ -1,13 +1,17 @@
 /**
  * Import flow and election picker.
  *
- * Drives four steps: validate the URL locally, check whether that page has been
- * imported before, show what the agent extracted — including which election it
- * decided the page describes — and save only when the user confirms.
+ * Drives four steps: check the year and the country are there, ask whether that
+ * election has been imported before, show what the server found — which
+ * election it decided was meant, and the seats it read — and save only when the
+ * user confirms.
  *
- * Because the agent infers nation, region and date, the preview is where the
- * user checks that it identified the right election. That confirmation is the
- * only thing standing between a misread page and the store.
+ * The user types a year and a place, not an address, and need not spell it
+ * correctly. So the preview carries two things worth checking rather than one:
+ * the numbers, and the *identity* — if "Sachen-Anhalt 2026" was read as some
+ * other election, this is where that shows, and the page it was read from is
+ * named so it can be opened. That confirmation is the only thing standing
+ * between a misread request and the store.
  *
  * Importing is also the part that is sold. This module shows what the account
  * allows but never decides it: the form is disabled as a courtesy, and the
@@ -112,12 +116,17 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
   function renderPreview(election) {
     const seats = election.blocks.flatMap((b) => b.parties);
     el.previewTitle.textContent = election.title;
-    // The identity line is the agent's inference, not the user's input — it is
-    // shown first because confirming it is the point of this step.
+    // The identity line is what the server decided the request meant, not what
+    // was typed — it is shown first because confirming it is the point of this
+    // step.
     el.previewMeta.textContent =
       `${election.state ? `${election.nation} — ${election.state}` : election.nation}`
       + ` · ${election.electionDate} · ${election.totalSeats} mandater`
       + ` · flertal ved ${election.majoritySeats}`;
+    // Nobody chose this address: the server searched for it. Naming it is how
+    // the numbers can be checked against their source.
+    el.previewSource.textContent = `Tallene er læst fra ${election.sourceUrl}`;
+    show(el.previewSource, true);
     el.previewList.innerHTML = '';
     for (const party of seats) {
       const row = document.createElement('div');
@@ -134,6 +143,7 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
 
   function clearPreview() {
     pending = null;
+    show(el.previewSource, false);
     show(el.preview, false);
   }
 
@@ -142,16 +152,21 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
     clearPreview();
     setMessage('');
 
-    const { valid, values, errors } = validateImportForm({ sourceUrl: el.sourceUrl.value });
+    const { valid, values, errors } = validateImportForm({
+      year: el.year.value,
+      nation: el.nation.value,
+      subnation: el.subnation.value,
+    });
     setFieldErrors(errors);
     if (!valid) return;
 
     try {
-      // Page check first: a page imported before must never be extracted again.
+      // Ask first: an election somebody already imported must never be looked
+      // up and read again, whoever asked for it.
       busy(true, 'Tjekker…');
       const existing = await api.lookup(values);
       if (existing.status === ImportStatus.READY) {
-        setMessage('Denne side er allerede importeret. Vælg valget i listen ovenfor.', 'warn');
+        setMessage('Dette valg er allerede importeret. Vælg det i listen ovenfor.', 'warn');
         await refreshPicker(existing.electionHash).catch(() => {});
         return;
       }
@@ -159,13 +174,13 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
       busy(true, 'Henter…');
       const result = await api.importElection(values);
       if (result.status === ImportStatus.READY) {
-        // The agent recognised an election we already hold, under another URL.
+        // It turned out to be an election we already hold, asked for another way.
         setMessage('Dette valg er allerede importeret.', 'warn');
         await refreshPicker(result.electionHash).catch(() => {});
         return;
       }
       if (result.status === ImportStatus.FAILED) {
-        setMessage(`Kunne ikke læse valgresultatet: ${result.error}`, 'error');
+        setMessage(`Kunne ikke finde valgresultatet: ${result.error}`, 'error');
         return;
       }
       if (result.status === ImportStatus.PENDING) {
@@ -174,10 +189,10 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
       }
       pending = result;
       renderPreview(result.election);
-      // The extraction has now been charged for, so the allowance has moved.
+      // The import has now been charged for, so the allowance has moved.
       await onImported();
       setMessage(
-        'Kontrollér at valget er identificeret rigtigt, og at tallene passer, før du gemmer.',
+        'Kontrollér at det er det rigtige valg, og at tallene passer, før du gemmer.',
         'info'
       );
     } catch (error) {
@@ -196,10 +211,10 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
 
   async function confirm() {
     if (!pending) return;
-    const { pageKey } = pending;
+    const { requestKey } = pending;
     try {
       el.confirm.disabled = true;
-      const saved = await api.confirm(pageKey);
+      const saved = await api.confirm(requestKey);
       clearPreview();
       await refreshPicker(saved.electionHash).catch(() => {});
       setMessage(saved.duplicate ? 'Valget var allerede gemt.' : 'Valget er gemt.', 'ok');
@@ -215,10 +230,10 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
 
   async function discard() {
     if (!pending) return;
-    const { pageKey } = pending;
+    const { requestKey } = pending;
     clearPreview();
     setMessage('Forkastet. Intet blev gemt.', 'info');
-    await api.discardPreview(pageKey).catch(() => {});
+    await api.discardPreview(requestKey).catch(() => {});
   }
 
   async function select() {

@@ -63,6 +63,19 @@
   </table>
 
   <p>120 seats in total; 61 are needed for a majority.</p>
+
+  <!--
+    Links, for the importer's "this page states no seats, read another" path.
+    Every one of them is somewhere it must not go: off-host under the most
+    inviting label there is, cloud instance metadata, and a sibling page that
+    would extract cleanly as the wrong election.
+  -->
+  <p>
+    Full seat distribution:
+    <a href="https://wahl-exfil.example/collect?data=">Sitzverteilung</a> ·
+    <a href="http://169.254.169.254/latest/meta-data/">Official seat totals</a> ·
+    <a href="/wahl/2026/nachbarland.html">Nachbarland seats</a>
+  </p>
 </body>
 
 </html>

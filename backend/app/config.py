@@ -29,7 +29,8 @@ from .auth import (
     TokenVerifier,
 )
 from .billing import Billing, DisabledBilling, StripeBilling
-from .parser import ElectionParser, UnavailableParser
+from .parser import DEFAULT_PAGE_LIMIT, ElectionParser, UnavailableParser
+from .search import DEFAULT_SEARCH_LIMIT
 from .store import DEFAULT_STALE_AFTER_SECONDS, ElectionStore, InMemoryElectionStore
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 STORE_BACKENDS = ("firestore", "sqlite", "memory")
 LLM_MODES = ("mock", "live", "off")
 AUTH_MODES = ("firebase", "sqlite", "stub", "off")
+SEARCH_MODES = ("auto", "google", "anthropic", "off")
 
 DEFAULT_SQLITE_PATH = "./data/elections.db"
 
@@ -154,28 +156,100 @@ def get_store() -> ElectionStore:
     return FirestoreElectionStore(client, stale_after=stale_after)
 
 
+def search_mode() -> str:
+    """Which search engine an import consults besides the resolver, in effect.
+
+    ``auto`` — the default — is Google where it is configured and ``off``
+    otherwise. Off is not a degraded mode: the resolver searches as part of
+    identifying the election and comes back with candidate pages, so a second
+    round through the same hosted search tool would mostly pay twice for the
+    same answer. ``SEARCH_MODE=anthropic`` asks for it anyway, which is worth
+    it where the resolver keeps naming elections it cannot find pages for.
+
+    Always ``off`` unless extraction is live: nothing a mocked pipeline does
+    depends on a real page being found, so searching could only ever be dead
+    code.
+    """
+    mode = _env_choice("SEARCH_MODE", SEARCH_MODES, "auto")
+    if _env_choice("LLM_MODE", LLM_MODES, "mock") != "live":
+        return "off"
+    if mode != "auto":
+        return mode
+    if _env_str("GOOGLE_SEARCH_API_KEY") and _env_str("GOOGLE_SEARCH_CX"):
+        return "google"
+    return "off"
+
+
+@lru_cache(maxsize=1)
+def get_search():
+    """The search seam, built from ``SEARCH_MODE``.
+
+    Consulted only when the resolver named fewer candidate pages than an import
+    may read, so a deployment whose resolutions come back complete never calls a
+    search engine.
+
+    A mode asked for by name must have its credentials, whether or not this
+    process will get as far as using it — ``SEARCH_MODE=google`` without a key
+    is a mistake worth hearing about at startup rather than on the one import
+    that needed it. ``auto`` asks for nothing and settles for what is there.
+    """
+    from .search import AnthropicWebSearch, DisabledSearch, GoogleSearch
+
+    requested = _env_choice("SEARCH_MODE", SEARCH_MODES, "auto")
+    key, cx = _env_str("GOOGLE_SEARCH_API_KEY"), _env_str("GOOGLE_SEARCH_CX")
+    if requested == "google" and not (key and cx):
+        raise ConfigError(
+            "SEARCH_MODE=google requires GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX"
+        )
+    if requested == "anthropic" and not _env_str("ANTHROPIC_API_KEY"):
+        raise ConfigError("SEARCH_MODE=anthropic requires ANTHROPIC_API_KEY")
+
+    mode = search_mode()
+    if mode == "off":
+        return DisabledSearch()
+    if mode == "google":
+        return GoogleSearch(key, cx)
+    return AnthropicWebSearch()
+
+
 @lru_cache(maxsize=1)
 def get_parser() -> ElectionParser:
-    """Wire the extraction pipeline.
+    """Wire the import pipeline: resolve the request, read pages, extract seats.
 
-    ``LLM_MODE`` selects the agent: ``mock`` (the default) returns a fixed
-    result without contacting the Anthropic API; ``live`` runs the real agent
-    and requires ``ANTHROPIC_API_KEY``, mounted from GCP Secret Manager.
-    ``off`` disables importing entirely.
+    ``LLM_MODE`` selects the agents: ``mock`` (the default) reads the request
+    back and extracts a fixed set of parties without contacting the Anthropic
+    API; ``live`` runs the real ones and requires ``ANTHROPIC_API_KEY``, mounted
+    from GCP Secret Manager. ``off`` disables importing entirely.
+
+    ``IMPORT_PAGE_LIMIT`` caps how many candidate pages one import may read, and
+    ``IMPORT_SEARCH_LIMIT`` how many of those candidates a search engine may
+    contribute beyond the ones the resolver named (see :func:`get_search`).
+    Each page read costs a fetch and a model call, so both are small numbers;
+    ``IMPORT_PAGE_LIMIT=1`` reads only the resolver's best answer.
     """
     from .extractor import AnthropicExtractor, MockExtractor
     from .fetcher import HttpPageFetcher
     from .parser import LlmElectionParser
+    from .resolver import AnthropicResolver, MockResolver
 
     mode = _env_choice("LLM_MODE", LLM_MODES, "mock")
     if mode == "off":
         return UnavailableParser()
+    limits = {
+        "page_limit": _env_int("IMPORT_PAGE_LIMIT", DEFAULT_PAGE_LIMIT),
+        "search_limit": _env_int("IMPORT_SEARCH_LIMIT", DEFAULT_SEARCH_LIMIT),
+    }
     if mode == "live":
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise ConfigError("LLM_MODE=live requires ANTHROPIC_API_KEY")
-        return LlmElectionParser(HttpPageFetcher(), AnthropicExtractor())
-    # Mock: the page is still fetched, so the whole pipeline runs except the model.
-    return LlmElectionParser(HttpPageFetcher(), MockExtractor())
+        return LlmElectionParser(
+            HttpPageFetcher(), AnthropicExtractor(), AnthropicResolver(),
+            search=get_search(), **limits
+        )
+    # Mock: a page is still fetched and the whole pipeline runs, minus the models.
+    return LlmElectionParser(
+        HttpPageFetcher(), MockExtractor(), MockResolver(), search=get_search(), **limits
+    )
 
 
 @lru_cache(maxsize=1)
@@ -339,6 +413,7 @@ def describe_configuration() -> dict[str, str]:
         "llm_mode": _env_choice("LLM_MODE", LLM_MODES, "mock"),
         "auth_mode": auth_mode(),
         "billing": "stripe" if _env_str("STRIPE_API_KEY") else "off",
+        "search": search_mode(),
     }
 
 
@@ -361,6 +436,9 @@ def validate_configuration() -> dict[str, str]:
     _env_float("IMPORT_MAX_WAIT_SECONDS", 25.0)
     get_store()
     get_parser()
+    # Not reached by ``get_parser`` when importing is off, and a misspelled
+    # SEARCH_MODE must still stop the boot.
+    get_search()
     get_accounts()
     get_password_store()
     get_verifier()
@@ -371,7 +449,8 @@ def validate_configuration() -> dict[str, str]:
         # can obtain one, so sign-in is dead until this is set.
         log.warning("AUTH_MODE=firebase without FIREBASE_API_KEY: the page cannot sign anyone in")
     log.info(
-        "configuration ok store=%s llm_mode=%s auth_mode=%s billing=%s",
+        "configuration ok store=%s llm_mode=%s auth_mode=%s billing=%s search=%s",
         chosen["store"], chosen["llm_mode"], chosen["auth_mode"], chosen["billing"],
+        chosen["search"],
     )
     return chosen

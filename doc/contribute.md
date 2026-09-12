@@ -13,19 +13,39 @@ uv run pytest
 
 `uv run` resolves the environment from `uv.lock` before running, so the first
 command doubles as the install step and nobody drifts onto a different version
-of anything. `ELECTION_STORE=sqlite` keeps imported elections across restarts.
+of anything — including the interpreter: `backend/.python-version` pins it, and
+uv downloads that Python if the machine has not got it. So
+[uv](https://docs.astral.sh/uv/getting-started/installation/) is the whole
+toolchain: nothing here asks you to match a system Python, create a virtualenv
+or run `pip`. `ELECTION_STORE=sqlite` keeps imported elections across restarts.
 
 Dependencies are edited through uv rather than by hand, so the lockfile stays in
 step — `uv add httpx`, `uv add --dev pytest`, `uv remove …`. After changing
 `pyproject.toml` directly, run `uv lock` and commit the result: the Dockerfile
 builds with `--locked` and fails if the two disagree.
 
+The interpreter is pinned the same way. `uv python pin 3.14` rewrites
+`backend/.python-version`, and the `FROM` line in the root `Dockerfile` has to
+move with it: the image builds with `UV_PYTHON_DOWNLOADS=never`, so uv must find
+that exact version already in the base image, and a pin the base image cannot
+satisfy fails the build rather than a revision. `requires-python` in
+`pyproject.toml` is the wider range the code supports; the pin is the one
+version everyone actually develops and ships on.
+
+Editors get the same environment: `.vscode/settings.json` points the Python
+extension at `backend/.venv` — the one uv builds — rather than at a system
+interpreter, so what Pylance resolves is what `uv run pytest` imports.
+
 Frontend on its own (bundled election only, no import):
 
 ```sh
-python3 -m http.server 8000   # or: npx wrangler dev
+uv run --no-project python -m http.server 8000   # or: npx wrangler dev
 node --test test/*.test.mjs
 ```
+
+`--no-project` because there is no project at the repo root to sync — it is only
+uv's Python serving static files, so the frontend needs no toolchain of its own
+either.
 
 Before changing anything in the import path — the fetcher, the extraction
 prompt, the schema, or how extracted strings are rendered — read
@@ -61,6 +81,9 @@ anywhere. `AUTH_MODE` is a separate question, about who a request *is*.
 | `LLM_MODE=mock` | Fetches the page, then returns a fixed Sachsen-Anhalt result instead of calling a model. The default, and the whole pipeline except the model. | — |
 | `LLM_MODE=live` | Runs the real extraction agent. | `ANTHROPIC_API_KEY` |
 | `LLM_MODE=off` | Importing is refused outright. | — |
+| `SEARCH_MODE=auto` | When a page states no seat counts, an import reads the pages it links to, then searches the web for one that does. Google if its keys are set, otherwise the Anthropic API's hosted search. The default. | `LLM_MODE=live` |
+| `SEARCH_MODE=google` | The same, always through Google Programmable Search. | `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_CX` |
+| `SEARCH_MODE=off` | An import reads only the pages the resolver named. | — |
 | Billing on | Subscriptions are for sale; Stripe is the only thing that grants a tier. | `STRIPE_API_KEY`, `STRIPE_PRICE_BASIC` and/or `STRIPE_PRICE_PREMIUM`, `STRIPE_WEBHOOK_SECRET`, `PUBLIC_BASE_URL` |
 | Billing off | Free accounts work, nothing is for sale. The default. | — |
 
@@ -106,7 +129,44 @@ ELECTION_STORE=sqlite AUTH_MODE=sqlite uv run uvicorn app.main:app --reload
 # The real extraction agent against a real results page.
 ELECTION_STORE=sqlite LLM_MODE=live ANTHROPIC_API_KEY=… \
   uv run uvicorn app.main:app --reload
+
+# The same, reading only the resolver's best page. Useful when you want to see
+# exactly what one page yields.
+ELECTION_STORE=sqlite LLM_MODE=live ANTHROPIC_API_KEY=… \
+  IMPORT_PAGE_LIMIT=1 SEARCH_MODE=off uv run uvicorn app.main:app --reload
 ```
+
+### From "Sachen-Anhalt 2026" to a seat distribution
+
+A user types a year, a country, and — for a regional election — the region.
+Nothing more, and not necessarily spelled correctly. Two agents turn that into
+a stored election, and they are kept apart on purpose:
+
+1. **`app.resolver`** is given only what the user typed, plus today's date. It
+   searches, and may answer with one election's identity — nation, region, date,
+   in English — and a list of candidate URLs. Reading "Germny" as Germany and
+   knowing which day the election was held is its whole job. It never reads a
+   results page, so nothing a hostile page wrote can reach it.
+2. **`app.extractor`** is handed one candidate page at a time, with no tools,
+   and reports what that page states. It is told which election is wanted, so
+   it can answer "wrong_election" instead of extracting a different one.
+
+`app.search` adds candidates on top of the resolver's, which matters for a
+deployment whose `SEARCH_MODE` is a plain index rather than an agent.
+
+Then `app.parser` checks, in code, that what came back is what was asked for:
+the year must match the user's own input, and the nation and region must match
+the resolution (compared with `identity.place_token`, so spelling and
+punctuation do not matter). A page about the previous election, or the
+neighbouring region, or the national result in place of a regional one, is
+discarded and the next candidate read. That check is why this pipeline can be
+pointed at a search engine at all — the models choose what to *read*, never what
+counts as an answer.
+
+Whatever page the numbers came from is what the stored election is attributed
+to, and the preview names it, because nobody chose that address. Some hosts
+refuse us whatever we do — Wikimedia blocks this fetcher's requests — and those
+candidates are passed over rather than worked around.
 
 ### Working on accounts, tiers and quotas
 
@@ -264,6 +324,10 @@ variables from `--set-env-vars` and Secret Manager.
 | `LLM_MODE` | no | `mock` | `mock` returns a fixed Sachsen-Anhalt result without calling Anthropic; `live` runs the real extraction agent; `off` disables importing. |
 | `ANTHROPIC_API_KEY` | with `LLM_MODE=live` | — | Anthropic API key. Store it in Secret Manager and mount it as this env var; never put it in the image or in client code. |
 | `PARSE_LEASE_SECONDS` | no | `300` | How long a parse may run before a crashed job is reclaimed. |
+| `IMPORT_PAGE_LIMIT` | no | `3` | Candidate pages one import may read. Each is a fetch and a model call. `1` reads only the resolver's best answer. |
+| `IMPORT_SEARCH_LIMIT` | no | `3` | Candidates a search engine may contribute beyond the ones the resolver named. `0` disables searching without touching `SEARCH_MODE`. |
+| `SEARCH_MODE` | no | `auto` | Which engine that search uses: `google` is Programmable Search; `anthropic` is the search tool the Anthropic API hosts; `off` reads only the resolver's candidates. `auto` picks Google where it is configured, otherwise `off` — the resolver has already searched, and paying twice for the same hosted tool is not a useful default. Always off unless `LLM_MODE=live`. |
+| `GOOGLE_SEARCH_API_KEY` / `GOOGLE_SEARCH_CX` | with `SEARCH_MODE=google` | — | API key and the id of a [Programmable Search engine](https://programmablesearchengine.google.com/) set to search the whole web. Named explicitly, both are required at startup even under a mocked agent. |
 | `IMPORT_MAX_WAIT_SECONDS` | no | `25` | Ceiling on `?wait_seconds=` long-polling. |
 | `ALLOWED_ORIGINS` | no | — | Comma-separated origins allowed to call the API, when the page is hosted elsewhere. Unset means same-origin only. |
 | `FRONTEND_DIR` | no | repo root | Directory holding `index.html`; served at `/` when present. |

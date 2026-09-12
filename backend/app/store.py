@@ -1,28 +1,31 @@
-"""The election store and its single-flight extraction bookkeeping.
+"""The election store and its single-flight import bookkeeping.
 
-Three collections: validated elections keyed by *identity* hash, one extraction
-job per *page*, and an index from page to the election that page produced.
+Three collections: validated elections keyed by *identity* hash, one import job
+per *request*, and an index from request to the election that request produced.
 
 Two different keys, because an election's identity — nation, region, date — is
-not known until the page has been read. Work is therefore claimed by page
-(:func:`identity.source_url_key`), while storage and de-duplication happen by
+not known until the results have been found: a user asks for a year and a
+place, not for a day. Work is therefore claimed by request
+(:func:`identity.request_key`), while storage and de-duplication happen by
 election identity (:func:`identity.election_hash`). The index between them is
-what lets a page that has been imported before short-circuit without any
-extraction at all.
+what lets a request that has been made before short-circuit without any
+searching or extraction at all.
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from enum import Enum
 from threading import Lock
 from typing import Protocol
 
+from .identity import same_place
 from .schema import Election
 
-# An extraction that has not reported back within this window is presumed dead
-# and may be reclaimed, so a crashed container cannot pin a page in "pending".
+# An import that has not reported back within this window is presumed dead and
+# may be reclaimed, so a crashed container cannot pin a request in "pending".
 DEFAULT_STALE_AFTER_SECONDS = 300.0
 
 
@@ -35,30 +38,47 @@ class JobStatus(str, Enum):
     FAILED = "failed"
 
 
-#: Statuses meaning "an extraction already happened or is happening for this page".
+#: Statuses meaning "an import already ran, or is running, for this request".
 LIVE_STATUSES = (JobStatus.PENDING, JobStatus.AWAITING_CONFIRMATION)
 
 
 class ClaimOutcome(str, Enum):
-    """What a caller should do after claiming a page."""
+    """What a caller should do after claiming a request."""
 
-    STORED = "stored"      # this page already produced a stored election
-    STARTED = "started"    # this caller owns the extraction
-    ATTACHED = "attached"  # someone else is extracting; wait for their result
+    STORED = "stored"      # this request already produced a stored election
+    STARTED = "started"    # this caller owns the import
+    ATTACHED = "attached"  # someone else is importing; wait for their result
 
 
 @dataclass(frozen=True)
 class ImportRequest:
-    """What a user supplies to import an election: just where to read it."""
+    """What a user supplies to import an election: which election, roughly.
 
-    source_url: str
+    A year, a nation, and — for a regional election — the region within it.
+    Spelling is not expected to be exact; resolving "Germny" and finding the
+    day the election was held is the resolver's job (see :mod:`app.resolver`).
+    """
+
+    year: int
+    nation: str
+    subnation: str | None = None
+
+    def describe(self) -> str:
+        """One line naming the request, for logs and for the job record.
+
+        The user's own words, not the resolver's reading of them: when an
+        import goes wrong this is the thing that needs to be recognisable.
+        """
+        where = f"{self.nation} — {self.subnation}" if self.subnation else self.nation
+        return f"{where} {self.year}"
 
 
 @dataclass(frozen=True)
 class Job:
-    page_key: str
+    request_key: str
     status: JobStatus
-    source_url: str
+    query: str
+    """What was asked for, as :meth:`ImportRequest.describe` put it."""
     started_at: float
     attempt: int = 1
     error: str | None = None
@@ -69,7 +89,7 @@ class Job:
 @dataclass(frozen=True)
 class Claim:
     outcome: ClaimOutcome
-    page_key: str
+    request_key: str
     election: Election | None = None
     election_hash: str | None = None
     job: Job | None = None
@@ -80,7 +100,7 @@ class Confirmation:
     election_hash: str
     election: Election
     duplicate: bool
-    """True when this page turned out to describe an already-stored election."""
+    """True when this request turned out to name an already-stored election."""
 
 
 @dataclass(frozen=True)
@@ -90,6 +110,32 @@ class StoredElection:
     stored_at: float
     selected: bool = False
     """Curated for the front page: the only elections a visitor sees signed out."""
+
+
+def select_by_place(
+    stored: Iterable[StoredElection], year: int, nation: str, subnation: str | None = None
+) -> StoredElection | None:
+    """The stored election held in ``year`` in that place, if there is one.
+
+    The bridge between the two keys: a request names a year and a place, an
+    identity names a day, and this is how one finds the other without a model
+    call. Names are compared as :func:`identity.place_token` reduces them, so
+    the spelling a previous importer's page happened to use does not matter.
+
+    Shared by every backend — a filter over ``list_elections`` rather than an
+    index, because this store holds tens of elections, not millions, and one
+    rule that cannot drift between three implementations is worth more here
+    than a query per backend.
+    """
+    for candidate in stored:
+        election = candidate.election
+        if (
+            election.election_date.year == year
+            and same_place(election.nation, nation)
+            and same_place(election.state, subnation)
+        ):
+            return candidate
+    return None
 
 
 class ElectionStore(Protocol):
@@ -103,35 +149,46 @@ class ElectionStore(Protocol):
 
     def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]: ...
 
+    def find_by_place(
+        self, year: int, nation: str, subnation: str | None = None
+    ) -> StoredElection | None:
+        """The election already stored for that year and place, if any.
+
+        What makes a repeated request free: asked for an election somebody has
+        already imported, the server answers from storage without resolving,
+        searching, fetching or extracting anything.
+        """
+        ...
+
     def set_selected(self, election_hash: str, selected: bool) -> bool:
         """Mark an election visible to signed-out visitors. False if unknown."""
         ...
 
-    def get_job(self, page_key: str) -> Job | None: ...
+    def get_job(self, request_key: str) -> Job | None: ...
 
-    def resolve_page(self, page_key: str) -> str | None:
-        """The election hash this page produced, if it has produced one."""
+    def resolve_request(self, request_key: str) -> str | None:
+        """The election hash this request produced, if it has produced one."""
         ...
 
-    def claim(self, page_key: str, request: ImportRequest) -> Claim: ...
+    def claim(self, request_key: str, request: ImportRequest) -> Claim: ...
 
-    def stage(self, page_key: str, election: Election) -> None:
+    def stage(self, request_key: str, election: Election) -> None:
         """Record an extracted election as awaiting the user's confirmation."""
         ...
 
-    def confirm(self, page_key: str, election_hash: str) -> Confirmation | None:
+    def confirm(self, request_key: str, election_hash: str) -> Confirmation | None:
         """Store a staged election under its identity. Idempotent."""
         ...
 
-    def link(self, page_key: str, election_hash: str) -> None:
-        """Record that this page describes an already-stored election."""
+    def link(self, request_key: str, election_hash: str) -> None:
+        """Record that this request names an already-stored election."""
         ...
 
-    def discard(self, page_key: str) -> bool:
-        """Throw away a staged election, freeing the page for another attempt."""
+    def discard(self, request_key: str) -> bool:
+        """Throw away a staged election, freeing the request for another attempt."""
         ...
 
-    def fail(self, page_key: str, error: str) -> None: ...
+    def fail(self, request_key: str, error: str) -> None: ...
 
 
 def _decide(
@@ -142,10 +199,10 @@ def _decide(
 ) -> ClaimOutcome:
     """The claim rule, shared by every implementation so they cannot drift.
 
-    A page already resolved to a stored election always wins. A fresh job —
-    extracting, or extracted and waiting for confirmation — is joined. Anything
+    A request already resolved to a stored election always wins. A fresh job —
+    running, or finished and waiting for confirmation — is joined. Anything
     else (no job, a failed job, or a job past its lease) is claimable, which is
-    what keeps failures and abandoned previews from poisoning the page.
+    what keeps failures and abandoned previews from poisoning the request.
     """
     if election is not None:
         return ClaimOutcome.STORED
@@ -165,7 +222,7 @@ class InMemoryElectionStore:
     def __init__(self, *, stale_after: float = DEFAULT_STALE_AFTER_SECONDS, clock=time.monotonic):
         self._elections: dict[str, StoredElection] = {}
         self._jobs: dict[str, Job] = {}
-        self._pages: dict[str, str] = {}  # page key -> election hash
+        self._resolved: dict[str, str] = {}  # request key -> election hash
         self._lock = Lock()
         self._stale_after = stale_after
         self._clock = clock
@@ -184,6 +241,11 @@ class InMemoryElectionStore:
             stored = [s for s in self._elections.values() if s.selected or not selected_only]
             return sorted(stored, key=lambda s: s.stored_at)
 
+    def find_by_place(
+        self, year: int, nation: str, subnation: str | None = None
+    ) -> StoredElection | None:
+        return select_by_place(self.list_elections(), year, nation, subnation)
+
     def set_selected(self, election_hash: str, selected: bool) -> bool:
         with self._lock:
             stored = self._elections.get(election_hash)
@@ -192,57 +254,57 @@ class InMemoryElectionStore:
             self._elections[election_hash] = replace(stored, selected=selected)
             return True
 
-    def get_job(self, page_key: str) -> Job | None:
+    def get_job(self, request_key: str) -> Job | None:
         with self._lock:
-            return self._jobs.get(page_key)
+            return self._jobs.get(request_key)
 
-    def resolve_page(self, page_key: str) -> str | None:
+    def resolve_request(self, request_key: str) -> str | None:
         with self._lock:
-            return self._pages.get(page_key)
+            return self._resolved.get(request_key)
 
-    def claim(self, page_key: str, request: ImportRequest) -> Claim:
+    def claim(self, request_key: str, request: ImportRequest) -> Claim:
         with self._lock:
-            election_hash = self._pages.get(page_key)
+            election_hash = self._resolved.get(request_key)
             stored = self._elections.get(election_hash) if election_hash else None
-            job = self._jobs.get(page_key)
+            job = self._jobs.get(request_key)
             outcome = _decide(
                 stored.election if stored else None, job, self._clock(), self._stale_after
             )
             if outcome is ClaimOutcome.STORED:
-                return Claim(outcome, page_key, election=stored.election,
+                return Claim(outcome, request_key, election=stored.election,
                              election_hash=election_hash, job=job)
             if outcome is ClaimOutcome.ATTACHED:
-                return Claim(outcome, page_key, job=job)
+                return Claim(outcome, request_key, job=job)
             new_job = Job(
-                page_key=page_key,
+                request_key=request_key,
                 status=JobStatus.PENDING,
-                source_url=request.source_url,
+                query=request.describe(),
                 started_at=self._clock(),
                 attempt=(job.attempt + 1) if job else 1,
             )
-            self._jobs[page_key] = new_job
-            return Claim(outcome, page_key, job=new_job)
+            self._jobs[request_key] = new_job
+            return Claim(outcome, request_key, job=new_job)
 
-    def stage(self, page_key: str, election: Election) -> None:
+    def stage(self, request_key: str, election: Election) -> None:
         with self._lock:
-            job = self._jobs.get(page_key)
-            self._jobs[page_key] = Job(
-                page_key=page_key,
+            job = self._jobs.get(request_key)
+            self._jobs[request_key] = Job(
+                request_key=request_key,
                 status=JobStatus.AWAITING_CONFIRMATION,
-                source_url=job.source_url if job else "",
+                query=job.query if job else "",
                 # Restart the lease so the user gets a full window to confirm.
                 started_at=self._clock(),
                 attempt=job.attempt if job else 1,
                 result=election,
             )
 
-    def confirm(self, page_key: str, election_hash: str) -> Confirmation | None:
+    def confirm(self, request_key: str, election_hash: str) -> Confirmation | None:
         with self._lock:
-            job = self._jobs.get(page_key)
+            job = self._jobs.get(request_key)
             already = self._elections.get(election_hash)
             if job is None or job.status is not JobStatus.AWAITING_CONFIRMATION or job.result is None:
-                # Confirming twice is harmless as long as the page resolved here.
-                if already is not None and self._pages.get(page_key) == election_hash:
+                # Confirming twice is harmless as long as the request resolved here.
+                if already is not None and self._resolved.get(request_key) == election_hash:
                     return Confirmation(election_hash, already.election, duplicate=False)
                 return None
 
@@ -251,46 +313,46 @@ class InMemoryElectionStore:
                 self._elections[election_hash] = StoredElection(
                     election_hash=election_hash, election=job.result, stored_at=self._clock()
                 )
-            self._pages[page_key] = election_hash
-            self._jobs[page_key] = Job(
-                page_key=page_key,
+            self._resolved[request_key] = election_hash
+            self._jobs[request_key] = Job(
+                request_key=request_key,
                 status=JobStatus.SUCCEEDED,
-                source_url=job.source_url,
+                query=job.query,
                 started_at=job.started_at,
                 attempt=job.attempt,
             )
             stored = self._elections[election_hash]
             return Confirmation(election_hash, stored.election, duplicate=duplicate)
 
-    def link(self, page_key: str, election_hash: str) -> None:
+    def link(self, request_key: str, election_hash: str) -> None:
         with self._lock:
             if election_hash not in self._elections:
                 return
-            self._pages[page_key] = election_hash
-            job = self._jobs.get(page_key)
-            self._jobs[page_key] = Job(
-                page_key=page_key,
+            self._resolved[request_key] = election_hash
+            job = self._jobs.get(request_key)
+            self._jobs[request_key] = Job(
+                request_key=request_key,
                 status=JobStatus.SUCCEEDED,
-                source_url=job.source_url if job else "",
+                query=job.query if job else "",
                 started_at=job.started_at if job else self._clock(),
                 attempt=job.attempt if job else 1,
             )
 
-    def discard(self, page_key: str) -> bool:
+    def discard(self, request_key: str) -> bool:
         with self._lock:
-            job = self._jobs.get(page_key)
+            job = self._jobs.get(request_key)
             if job is None or job.status is not JobStatus.AWAITING_CONFIRMATION:
                 return False
-            del self._jobs[page_key]
+            del self._jobs[request_key]
             return True
 
-    def fail(self, page_key: str, error: str) -> None:
+    def fail(self, request_key: str, error: str) -> None:
         with self._lock:
-            job = self._jobs.get(page_key)
-            self._jobs[page_key] = Job(
-                page_key=page_key,
+            job = self._jobs.get(request_key)
+            self._jobs[request_key] = Job(
+                request_key=request_key,
                 status=JobStatus.FAILED,
-                source_url=job.source_url if job else "",
+                query=job.query if job else "",
                 started_at=job.started_at if job else self._clock(),
                 attempt=job.attempt if job else 1,
                 error=error,

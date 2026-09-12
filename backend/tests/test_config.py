@@ -18,6 +18,7 @@ def clean_config():
     cached = (
         config.get_store,
         config.get_parser,
+        config.get_search,
         config.get_accounts,
         config.get_password_store,
         config.get_verifier,
@@ -42,6 +43,17 @@ def clean_config():
         ({"ELECTION_STORE": "firestore", "GOOGLE_CLOUD_PROJECT": ""},
          "requires GOOGLE_CLOUD_PROJECT"),
         ({"PARSE_LEASE_SECONDS": "soon"}, "must be a number"),
+        ({"IMPORT_PAGE_LIMIT": "a few"}, "must be a whole number"),
+        ({"SEARCH_MODE": "bing"}, "SEARCH_MODE must be one of"),
+        # Asked for by name, so its credentials are required even under a
+        # mocked agent that will never reach it.
+        ({"SEARCH_MODE": "google"}, "GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX"),
+        ({"SEARCH_MODE": "google", "GOOGLE_SEARCH_API_KEY": "k"},
+         "GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX"),
+        ({"SEARCH_MODE": "google", "GOOGLE_SEARCH_API_KEY": "k", "GOOGLE_SEARCH_CX": "c"}, None),
+        ({"SEARCH_MODE": "anthropic", "ANTHROPIC_API_KEY": ""}, "requires ANTHROPIC_API_KEY"),
+        # And auto asks for nothing: a local checkout with no keys still boots.
+        ({"SEARCH_MODE": "auto"}, None),
         ({"AUTH_MODE": "firebase", "FIREBASE_PROJECT_ID": "", "GOOGLE_CLOUD_PROJECT": ""},
          "requires FIREBASE_PROJECT_ID"),
         ({"AUTH_MODE": "on"}, "AUTH_MODE must be one of"),
@@ -71,6 +83,84 @@ def test_unrecognised_configuration_is_rejected(env, expected, monkeypatch, clea
         return
     with pytest.raises(ConfigError, match=expected):
         validate_configuration()
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        # Nothing extra configured: no second search. The resolver searches as
+        # part of identifying the election, and paying twice for the same
+        # hosted tool is not a default worth having.
+        ({}, "off"),
+        ({"GOOGLE_SEARCH_API_KEY": "k", "GOOGLE_SEARCH_CX": "c"}, "google"),
+        # An index of its own is worth consulting on top of the resolver, and
+        # asking for the hosted tool anyway is allowed — just not by default.
+        ({"SEARCH_MODE": "anthropic"}, "anthropic"),
+        ({"SEARCH_MODE": "off", "GOOGLE_SEARCH_API_KEY": "k", "GOOGLE_SEARCH_CX": "c"}, "off"),
+    ],
+)
+def test_auto_search_follows_whichever_engine_is_configured(
+    env, expected, monkeypatch, clean_config
+):
+    from app.config import search_mode
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert search_mode() == expected
+
+
+def test_a_mocked_agent_never_reaches_a_search_engine(monkeypatch, clean_config):
+    """A mocked resolver names its own page, so a search would be dead code —
+    and a local run must not spend anyone's search quota."""
+    from app.config import get_search, search_mode
+    from app.search import DisabledSearch
+
+    monkeypatch.setenv("LLM_MODE", "mock")
+    monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_SEARCH_CX", "c")
+    assert search_mode() == "off"
+    assert isinstance(get_search(), DisabledSearch)
+
+
+def test_the_parser_is_given_the_search_and_the_budgets_it_may_use(monkeypatch, clean_config):
+    from app.config import get_parser, get_search
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    monkeypatch.setenv("IMPORT_PAGE_LIMIT", "1")
+    monkeypatch.setenv("IMPORT_SEARCH_LIMIT", "4")
+
+    parser = get_parser()
+    assert parser._search is get_search()
+    assert (parser._page_limit, parser._search_limit) == (1, 4)
+
+
+def test_live_mode_wires_both_agents(monkeypatch, clean_config):
+    """Two agents, one key: the resolver that searches, the extractor that reads."""
+    from app.config import get_parser
+    from app.extractor import AnthropicExtractor
+    from app.resolver import AnthropicResolver
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+
+    parser = get_parser()
+    assert isinstance(parser._resolver, AnthropicResolver)
+    assert isinstance(parser._extractor, AnthropicExtractor)
+
+
+def test_mock_mode_wires_neither(monkeypatch, clean_config):
+    from app.config import get_parser
+    from app.extractor import MockExtractor
+    from app.resolver import MockResolver
+
+    monkeypatch.setenv("LLM_MODE", "mock")
+
+    parser = get_parser()
+    assert isinstance(parser._resolver, MockResolver)
+    assert isinstance(parser._extractor, MockExtractor)
 
 
 def test_an_unknown_llm_mode_never_silently_becomes_the_mock(monkeypatch, clean_config):

@@ -1,3 +1,14 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system"
+    // The environment uv builds in backend/.venv, not whatever `python3` the
+    // machine happens to have — so the editor resolves imports from the same
+    // versions `uv run pytest` does. Creating or repairing it goes through uv
+    // as well (`python-envs.alwaysUseUv` is on by default).
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    "python-envs.pythonProjects": [
+        {
+            "path": "backend",
+            "envManager": "ms-python.python:venv"
+        }
+    ],
+    "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python"
 }

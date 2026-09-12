@@ -16,7 +16,7 @@ from app.store import ClaimOutcome, JobStatus
 from tests.factories import make_election, make_request
 
 HASH = "e" * 64
-PAGE = "p" * 64
+KEY = "k" * 64
 
 
 @pytest.fixture
@@ -28,10 +28,10 @@ def open_store(db, **kwargs):
     return SqliteElectionStore(db, **kwargs)
 
 
-def save(store, page=PAGE, election_hash=HASH, election=None):
-    store.claim(page, make_request())
-    store.stage(page, election or make_election())
-    return store.confirm(page, election_hash)
+def save(store, key=KEY, election_hash=HASH, election=None):
+    store.claim(key, make_request())
+    store.stage(key, election or make_election())
+    return store.confirm(key, election_hash)
 
 
 def test_a_stored_election_survives_a_restart(db):
@@ -43,10 +43,10 @@ def test_a_stored_election_survives_a_restart(db):
 
     second = open_store(db)
     assert second.get_election(HASH) == election
-    assert second.resolve_page(PAGE) == HASH
+    assert second.resolve_request(KEY) == HASH
     assert [s.election_hash for s in second.list_elections()] == [HASH]
-    assert second.claim(PAGE, make_request()).outcome is ClaimOutcome.STORED, (
-        "the page is recognised across runs, so nothing is extracted again"
+    assert second.claim(KEY, make_request()).outcome is ClaimOutcome.STORED, (
+        "the request is recognised across runs, so nothing is looked up again"
     )
     second.close()
 
@@ -72,12 +72,12 @@ def test_reopening_an_existing_database_does_not_wipe_it(db):
 def test_an_unconfirmed_preview_survives_a_restart(db):
     """A draft is a job row, not an election, and must stay that way."""
     first = open_store(db)
-    first.claim(PAGE, make_request())
-    first.stage(PAGE, make_election())
+    first.claim(KEY, make_request())
+    first.stage(KEY, make_election())
     first.close()
 
     second = open_store(db)
-    job = second.get_job(PAGE)
+    job = second.get_job(KEY)
     assert job.status is JobStatus.AWAITING_CONFIRMATION
     assert job.result is not None, "the extracted draft is still there"
     assert second.list_elections() == [], "and still not stored"
@@ -86,22 +86,22 @@ def test_an_unconfirmed_preview_survives_a_restart(db):
 
 def test_a_failed_job_survives_a_restart_and_stays_retryable(db):
     first = open_store(db)
-    first.claim(PAGE, make_request())
-    first.fail(PAGE, "extraction failed")
+    first.claim(KEY, make_request())
+    first.fail(KEY, "extraction failed")
     first.close()
 
     second = open_store(db)
-    assert second.get_job(PAGE).error == "extraction failed"
-    assert second.claim(PAGE, make_request()).outcome is ClaimOutcome.STARTED
-    assert second.get_job(PAGE).attempt == 2, "the attempt count carries over"
+    assert second.get_job(KEY).error == "extraction failed"
+    assert second.claim(KEY, make_request()).outcome is ClaimOutcome.STARTED
+    assert second.get_job(KEY).attempt == 2, "the attempt count carries over"
     second.close()
 
 
 def test_separate_connections_to_one_file_still_single_flight(db):
     """Two store instances stand in for two processes sharing the file."""
     a, b = open_store(db), open_store(db)
-    outcomes = [a.claim(PAGE, make_request()).outcome,
-                b.claim(PAGE, make_request()).outcome]
+    outcomes = [a.claim(KEY, make_request()).outcome,
+                b.claim(KEY, make_request()).outcome]
     assert outcomes == [ClaimOutcome.STARTED, ClaimOutcome.ATTACHED]
     a.close()
     b.close()
@@ -111,7 +111,7 @@ def test_racing_threads_on_one_file_produce_one_started_claim(db):
     """Each thread gets its own connection; SQLite's write lock serialises them."""
     store = open_store(db)
     with ThreadPoolExecutor(max_workers=16) as pool:
-        outcomes = list(pool.map(lambda _: store.claim(PAGE, make_request()).outcome, range(48)))
+        outcomes = list(pool.map(lambda _: store.claim(KEY, make_request()).outcome, range(48)))
 
     assert outcomes.count(ClaimOutcome.STARTED) == 1
     assert outcomes.count(ClaimOutcome.ATTACHED) == 47
@@ -120,11 +120,11 @@ def test_racing_threads_on_one_file_produce_one_started_claim(db):
 
 def test_racing_confirmations_across_threads_store_one_election(db):
     store = open_store(db)
-    store.claim(PAGE, make_request())
-    store.stage(PAGE, make_election())
+    store.claim(KEY, make_request())
+    store.stage(KEY, make_election())
 
     with ThreadPoolExecutor(max_workers=16) as pool:
-        results = list(pool.map(lambda _: store.confirm(PAGE, HASH), range(32)))
+        results = list(pool.map(lambda _: store.confirm(KEY, HASH), range(32)))
 
     assert all(r is not None for r in results)
     assert len(store.list_elections()) == 1

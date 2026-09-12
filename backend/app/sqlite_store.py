@@ -2,8 +2,8 @@
 
 The middle option between the in-memory store (fast, forgets everything on
 restart) and Firestore (shared, needs a GCP project): a local file that survives
-restarts, so a developer does not re-fetch and re-extract the same pages every
-time the server comes up.
+restarts, so a developer does not re-resolve and re-extract the same elections
+every time the server comes up.
 
 Atomicity comes from ``BEGIN IMMEDIATE``, which takes SQLite's write lock for
 the whole read-decide-write of :meth:`claim`. That is the same guarantee the
@@ -34,10 +34,15 @@ from .store import (
     JobStatus,
     StoredElection,
     _decide,
+    select_by_place,
 )
 
 log = logging.getLogger(__name__)
 
+# The two import tables are keyed by *request* (a year and a place). A database
+# from before that change carries ``jobs``/``pages`` keyed by URL instead; those
+# rows mean nothing now, so they are left where they are rather than migrated —
+# the elections they produced are in ``elections``, which is unchanged.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS elections (
     election_hash TEXT PRIMARY KEY,
@@ -45,17 +50,17 @@ CREATE TABLE IF NOT EXISTS elections (
     stored_at     REAL NOT NULL,
     selected      INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS jobs (
-    page_key   TEXT PRIMARY KEY,
-    status     TEXT NOT NULL,
-    source_url TEXT NOT NULL DEFAULT '',
-    started_at REAL NOT NULL,
-    attempt    INTEGER NOT NULL DEFAULT 1,
-    error      TEXT,
-    result     TEXT
+CREATE TABLE IF NOT EXISTS import_jobs (
+    request_key TEXT PRIMARY KEY,
+    status      TEXT NOT NULL,
+    query       TEXT NOT NULL DEFAULT '',
+    started_at  REAL NOT NULL,
+    attempt     INTEGER NOT NULL DEFAULT 1,
+    error       TEXT,
+    result      TEXT
 );
-CREATE TABLE IF NOT EXISTS pages (
-    page_key      TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS import_results (
+    request_key   TEXT PRIMARY KEY,
     election_hash TEXT NOT NULL,
     linked_at     REAL NOT NULL
 );
@@ -74,9 +79,9 @@ def _stored_from_row(row: sqlite3.Row) -> StoredElection:
 
 def _job_from_row(row: sqlite3.Row) -> Job:
     return Job(
-        page_key=row["page_key"],
+        request_key=row["request_key"],
         status=JobStatus(row["status"]),
-        source_url=row["source_url"] or "",
+        query=row["query"] or "",
         started_at=float(row["started_at"]),
         attempt=int(row["attempt"]),
         error=row["error"],
@@ -185,6 +190,14 @@ class SqliteElectionStore:
             span["count"] = len(rows)
             return [_stored_from_row(row) for row in rows]
 
+    def find_by_place(
+        self, year: int, nation: str, subnation: str | None = None
+    ) -> StoredElection | None:
+        with io_span(log, "sqlite", "find_by_place", year=year) as span:
+            found = select_by_place(self.list_elections(), year, nation, subnation)
+            span["found"] = found is not None
+            return found
+
     def set_selected(self, election_hash: str, selected: bool) -> bool:
         with io_span(log, "sqlite", "set_selected", hash=election_hash[:12],
                      selected=selected) as span:
@@ -196,19 +209,19 @@ class SqliteElectionStore:
                 span["found"] = bool(changed)
                 return bool(changed)
 
-    def get_job(self, page_key: str) -> Job | None:
-        with io_span(log, "sqlite", "get_job", page=page_key[:12]) as span:
+    def get_job(self, request_key: str) -> Job | None:
+        with io_span(log, "sqlite", "get_job", request=request_key[:12]) as span:
             row = self._connect().execute(
-                "SELECT * FROM jobs WHERE page_key = ?", (page_key,)
+                "SELECT * FROM import_jobs WHERE request_key = ?", (request_key,)
             ).fetchone()
             job = _job_from_row(row) if row else None
             span["status"] = job.status.value if job else "absent"
             return job
 
-    def resolve_page(self, page_key: str) -> str | None:
-        with io_span(log, "sqlite", "resolve_page", page=page_key[:12]) as span:
+    def resolve_request(self, request_key: str) -> str | None:
+        with io_span(log, "sqlite", "resolve_request", request=request_key[:12]) as span:
             row = self._connect().execute(
-                "SELECT election_hash FROM pages WHERE page_key = ?", (page_key,)
+                "SELECT election_hash FROM import_results WHERE request_key = ?", (request_key,)
             ).fetchone()
             resolved = row["election_hash"] if row else None
             span["hash"] = resolved[:12] if resolved else "unresolved"
@@ -216,83 +229,86 @@ class SqliteElectionStore:
 
     # --- writes ------------------------------------------------------------
 
-    def claim(self, page_key: str, request: ImportRequest) -> Claim:
-        with io_span(log, "sqlite", "claim", page=page_key[:12]) as span:
+    def claim(self, request_key: str, request: ImportRequest) -> Claim:
+        with io_span(log, "sqlite", "claim", request=request_key[:12]) as span:
             with self._write() as conn:
-                page = conn.execute(
-                    "SELECT election_hash FROM pages WHERE page_key = ?", (page_key,)
+                resolved = conn.execute(
+                    "SELECT election_hash FROM import_results WHERE request_key = ?",
+                    (request_key,),
                 ).fetchone()
-                election_hash = page["election_hash"] if page else None
+                election_hash = resolved["election_hash"] if resolved else None
                 election = self._read_election(conn, election_hash) if election_hash else None
 
                 row = conn.execute(
-                    "SELECT * FROM jobs WHERE page_key = ?", (page_key,)
+                    "SELECT * FROM import_jobs WHERE request_key = ?", (request_key,)
                 ).fetchone()
                 job = _job_from_row(row) if row else None
 
                 outcome = _decide(election, job, self._clock(), self._stale_after)
                 span["outcome"] = outcome.value
                 if outcome is ClaimOutcome.STORED:
-                    return Claim(outcome, page_key, election=election,
+                    return Claim(outcome, request_key, election=election,
                                  election_hash=election_hash, job=job)
                 if outcome is ClaimOutcome.ATTACHED:
-                    return Claim(outcome, page_key, job=job)
+                    return Claim(outcome, request_key, job=job)
 
                 new_job = Job(
-                    page_key=page_key,
+                    request_key=request_key,
                     status=JobStatus.PENDING,
-                    source_url=request.source_url,
+                    query=request.describe(),
                     started_at=self._clock(),
                     attempt=(job.attempt + 1) if job else 1,
                 )
                 conn.execute(
-                    "INSERT INTO jobs (page_key, status, source_url, started_at, attempt,"
+                    "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, ?, ?, ?, NULL, NULL)"
-                    " ON CONFLICT(page_key) DO UPDATE SET status=excluded.status,"
-                    " source_url=excluded.source_url, started_at=excluded.started_at,"
+                    " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
+                    " query=excluded.query, started_at=excluded.started_at,"
                     " attempt=excluded.attempt, error=NULL, result=NULL",
-                    (page_key, new_job.status.value, new_job.source_url,
+                    (request_key, new_job.status.value, new_job.query,
                      new_job.started_at, new_job.attempt),
                 )
                 span["attempt"] = new_job.attempt
-                return Claim(outcome, page_key, job=new_job)
+                return Claim(outcome, request_key, job=new_job)
 
-    def stage(self, page_key: str, election: Election) -> None:
-        with io_span(log, "sqlite", "stage", page=page_key[:12],
+    def stage(self, request_key: str, election: Election) -> None:
+        with io_span(log, "sqlite", "stage", request=request_key[:12],
                      total_seats=election.total_seats):
             with self._write() as conn:
                 row = conn.execute(
-                    "SELECT source_url, attempt FROM jobs WHERE page_key = ?", (page_key,)
+                    "SELECT query, attempt FROM import_jobs WHERE request_key = ?", (request_key,)
                 ).fetchone()
                 conn.execute(
-                    "INSERT INTO jobs (page_key, status, source_url, started_at, attempt,"
+                    "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, ?, ?, ?, NULL, ?)"
-                    " ON CONFLICT(page_key) DO UPDATE SET status=excluded.status,"
+                    " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     # Restart the lease so the user gets a full window to confirm.
                     " started_at=excluded.started_at, error=NULL, result=excluded.result",
-                    (page_key, JobStatus.AWAITING_CONFIRMATION.value,
-                     row["source_url"] if row else "", self._clock(),
+                    (request_key, JobStatus.AWAITING_CONFIRMATION.value,
+                     row["query"] if row else "", self._clock(),
                      row["attempt"] if row else 1,
                      json.dumps(election.model_dump(mode="json"))),
                 )
 
-    def confirm(self, page_key: str, election_hash: str) -> Confirmation | None:
-        with io_span(log, "sqlite", "confirm", page=page_key[:12],
+    def confirm(self, request_key: str, election_hash: str) -> Confirmation | None:
+        with io_span(log, "sqlite", "confirm", request=request_key[:12],
                      hash=election_hash[:12]) as span:
             with self._write() as conn:
                 row = conn.execute(
-                    "SELECT * FROM jobs WHERE page_key = ?", (page_key,)
+                    "SELECT * FROM import_jobs WHERE request_key = ?", (request_key,)
                 ).fetchone()
                 job = _job_from_row(row) if row else None
                 already = self._read_election(conn, election_hash)
 
                 if job is None or job.status is not JobStatus.AWAITING_CONFIRMATION \
                         or job.result is None:
-                    # Confirming twice is harmless as long as the page resolved here.
-                    page = conn.execute(
-                        "SELECT election_hash FROM pages WHERE page_key = ?", (page_key,)
+                    # Confirming twice is harmless as long as the request resolved here.
+                    resolved = conn.execute(
+                        "SELECT election_hash FROM import_results WHERE request_key = ?",
+                        (request_key,),
                     ).fetchone()
-                    if already is not None and page and page["election_hash"] == election_hash:
+                    if already is not None and resolved \
+                            and resolved["election_hash"] == election_hash:
                         span["result"] = "already"
                         return Confirmation(election_hash, already, duplicate=False)
                     span["result"] = "none"
@@ -307,20 +323,20 @@ class SqliteElectionStore:
                         (election_hash, json.dumps(job.result.model_dump(mode="json")), now),
                     )
                 conn.execute(
-                    "INSERT INTO pages (page_key, election_hash, linked_at) VALUES (?, ?, ?)"
-                    " ON CONFLICT(page_key) DO UPDATE SET election_hash=excluded.election_hash,"
+                    "INSERT INTO import_results (request_key, election_hash, linked_at) VALUES (?, ?, ?)"
+                    " ON CONFLICT(request_key) DO UPDATE SET election_hash=excluded.election_hash,"
                     " linked_at=excluded.linked_at",
-                    (page_key, election_hash, now),
+                    (request_key, election_hash, now),
                 )
                 conn.execute(
-                    "UPDATE jobs SET status = ?, result = NULL WHERE page_key = ?",
-                    (JobStatus.SUCCEEDED.value, page_key),
+                    "UPDATE import_jobs SET status = ?, result = NULL WHERE request_key = ?",
+                    (JobStatus.SUCCEEDED.value, request_key),
                 )
                 span["result"] = "duplicate" if duplicate else "stored"
                 return Confirmation(election_hash, already or job.result, duplicate=duplicate)
 
-    def link(self, page_key: str, election_hash: str) -> None:
-        with io_span(log, "sqlite", "link", page=page_key[:12],
+    def link(self, request_key: str, election_hash: str) -> None:
+        with io_span(log, "sqlite", "link", request=request_key[:12],
                      hash=election_hash[:12]) as span:
             with self._write() as conn:
                 if self._read_election(conn, election_hash) is None:
@@ -328,43 +344,43 @@ class SqliteElectionStore:
                     return
                 now = self._clock()
                 conn.execute(
-                    "INSERT INTO pages (page_key, election_hash, linked_at) VALUES (?, ?, ?)"
-                    " ON CONFLICT(page_key) DO UPDATE SET election_hash=excluded.election_hash,"
+                    "INSERT INTO import_results (request_key, election_hash, linked_at) VALUES (?, ?, ?)"
+                    " ON CONFLICT(request_key) DO UPDATE SET election_hash=excluded.election_hash,"
                     " linked_at=excluded.linked_at",
-                    (page_key, election_hash, now),
+                    (request_key, election_hash, now),
                 )
                 conn.execute(
-                    "INSERT INTO jobs (page_key, status, source_url, started_at, attempt,"
+                    "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, '', ?, 1, NULL, NULL)"
-                    " ON CONFLICT(page_key) DO UPDATE SET status=excluded.status, result=NULL",
-                    (page_key, JobStatus.SUCCEEDED.value, now),
+                    " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status, result=NULL",
+                    (request_key, JobStatus.SUCCEEDED.value, now),
                 )
                 span["linked"] = True
 
-    def discard(self, page_key: str) -> bool:
-        with io_span(log, "sqlite", "discard", page=page_key[:12]) as span:
+    def discard(self, request_key: str) -> bool:
+        with io_span(log, "sqlite", "discard", request=request_key[:12]) as span:
             with self._write() as conn:
                 deleted = conn.execute(
-                    "DELETE FROM jobs WHERE page_key = ? AND status = ?",
-                    (page_key, JobStatus.AWAITING_CONFIRMATION.value),
+                    "DELETE FROM import_jobs WHERE request_key = ? AND status = ?",
+                    (request_key, JobStatus.AWAITING_CONFIRMATION.value),
                 ).rowcount
                 span["discarded"] = bool(deleted)
                 return bool(deleted)
 
-    def fail(self, page_key: str, error: str) -> None:
-        with io_span(log, "sqlite", "fail", page=page_key[:12], reason=error):
+    def fail(self, request_key: str, error: str) -> None:
+        with io_span(log, "sqlite", "fail", request=request_key[:12], reason=error):
             with self._write() as conn:
                 row = conn.execute(
-                    "SELECT source_url, started_at, attempt FROM jobs WHERE page_key = ?",
-                    (page_key,),
+                    "SELECT query, started_at, attempt FROM import_jobs WHERE request_key = ?",
+                    (request_key,),
                 ).fetchone()
                 conn.execute(
-                    "INSERT INTO jobs (page_key, status, source_url, started_at, attempt,"
+                    "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, ?, ?, ?, ?, NULL)"
-                    " ON CONFLICT(page_key) DO UPDATE SET status=excluded.status,"
+                    " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     " error=excluded.error, result=NULL",
-                    (page_key, JobStatus.FAILED.value,
-                     row["source_url"] if row else "",
+                    (request_key, JobStatus.FAILED.value,
+                     row["query"] if row else "",
                      row["started_at"] if row else self._clock(),
                      row["attempt"] if row else 1, error[:1000]),
                 )

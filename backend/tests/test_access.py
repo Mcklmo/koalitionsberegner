@@ -29,9 +29,9 @@ from app.service import ImportService
 from app.store import InMemoryElectionStore
 from tests.factories import CountingParser, make_election
 
-URL = "https://wahlergebnisse.sachsen-anhalt.de/"
-OTHER_URL = "https://mirror.example.net/sachsen-anhalt"
-BODY = {"source_url": URL}
+#: What a user asks for: a year, a country, and sometimes a region.
+BODY = {"year": 2026, "nation": "Danmark"}
+OTHER_BODY = {"year": 2021, "nation": "Deutschland", "subnation": "Sachsen-Anhalt"}
 
 BASIC_LIMIT = 2
 PREMIUM_LIMIT = 5
@@ -45,13 +45,13 @@ ADMIN = {"Authorization": "Bearer admin-1:admin@example.org:admin"}
 
 @pytest.fixture
 def parser():
-    # Distinct identities per URL, so two saved pages are two stored elections
-    # rather than one deduplicated one.
+    # Distinct identities per year asked for, so two saved requests are two
+    # stored elections rather than one deduplicated one.
     return CountingParser(
-        by_url={
-            URL: make_election(nation="Deutschland", state="Sachsen-Anhalt",
-                               election_date="2021-06-06"),
-            OTHER_URL: make_election(nation="Danmark", election_date="2026-03-25"),
+        by_year={
+            2026: make_election(nation="Danmark", election_date="2026-03-25"),
+            2021: make_election(nation="Deutschland", state="Sachsen-Anhalt",
+                                election_date="2021-06-06"),
         }
     )
 
@@ -103,7 +103,7 @@ def save(client, headers, body=None):
                             headers=headers).json()
     assert previewed["state"] == "preview", previewed
     saved = client.post(
-        f"/api/elections/pages/{previewed['page_key']}/confirm", headers=headers
+        f"/api/elections/imports/{previewed['request_key']}/confirm", headers=headers
     )
     assert saved.status_code == 200, saved.text
     return saved.json()
@@ -118,7 +118,7 @@ def used(accounts, uid):
 def test_a_visitor_sees_only_the_curated_selection(client, store, accounts):
     uid = subscribe(accounts, SUBSCRIBER)
     hidden = save(client, SUBSCRIBER)
-    shown = save(client, SUBSCRIBER, {"source_url": OTHER_URL})
+    shown = save(client, SUBSCRIBER, OTHER_BODY)
     assert used(accounts, uid) <= BASIC_LIMIT
     store.set_selected(shown["election_hash"], True)
 
@@ -196,16 +196,16 @@ def test_a_subscriber_imports_within_the_monthly_quota(client, accounts, parser)
 
 def test_the_quota_is_enforced_on_the_server_not_the_client(client, accounts, parser):
     uid = subscribe(accounts, SUBSCRIBER)
-    urls = [f"https://results.example.org/{n}" for n in range(BASIC_LIMIT + 2)]
+    asked = [{"year": 2000 + n, "nation": "Danmark"} for n in range(BASIC_LIMIT + 2)]
 
     statuses = [
         client.post("/api/elections/import?wait_seconds=2",
-                    json={"source_url": url}, headers=SUBSCRIBER).status_code
-        for url in urls
+                    json=body, headers=SUBSCRIBER).status_code
+        for body in asked
     ]
 
     assert statuses == [200] * BASIC_LIMIT + [429, 429]
-    assert parser.call_count == BASIC_LIMIT, "nothing is fetched once the quota is spent"
+    assert parser.call_count == BASIC_LIMIT, "nothing is looked up once the quota is spent"
     assert used(accounts, uid) == BASIC_LIMIT
 
 
@@ -213,7 +213,7 @@ def test_a_spent_quota_says_when_it_comes_back(client, accounts):
     subscribe(accounts, SUBSCRIBER)
     for n in range(BASIC_LIMIT):
         client.post("/api/elections/import?wait_seconds=2",
-                    json={"source_url": f"https://results.example.org/{n}"},
+                    json={"year": 2000 + n, "nation": "Danmark"},
                     headers=SUBSCRIBER)
 
     refused = client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
@@ -302,23 +302,32 @@ def test_a_failed_extraction_is_refunded(client, accounts, store):
     assert used(accounts, uid) == 0, "the quota is back by the time the failure is visible"
 
 
-def test_a_malformed_url_costs_nothing(client, accounts, parser):
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"year": "not-a-year", "nation": "Danmark"},
+        {"year": 20226, "nation": "Danmark"},
+        {"year": 2026, "nation": "   "},
+        {"year": 2026},
+        {"year": 2026, "nation": "Danmark", "source_url": "https://x.example"},
+    ],
+)
+def test_a_request_that_is_not_one_costs_nothing(client, accounts, parser, body):
     uid = subscribe(accounts, SUBSCRIBER)
 
-    refused = client.post("/api/elections/import",
-                          json={"source_url": "javascript:alert(1)"}, headers=SUBSCRIBER)
+    refused = client.post("/api/elections/import", json=body, headers=SUBSCRIBER)
 
     assert refused.status_code == 422
     assert parser.call_count == 0
     assert used(accounts, uid) == 0
 
 
-def test_looking_up_a_page_costs_nothing_and_needs_only_an_account(client, accounts, parser):
+def test_looking_up_a_request_costs_nothing_and_needs_only_an_account(client, accounts, parser):
     uid = subscribe(accounts, SUBSCRIBER)
 
-    assert client.get("/api/elections/lookup", params={"source_url": URL},
+    assert client.get("/api/elections/lookup", params=BODY,
                       headers=FREE).status_code == 200
-    assert client.get("/api/elections/lookup", params={"source_url": URL},
+    assert client.get("/api/elections/lookup", params=BODY,
                       headers=VISITOR).status_code == 401
     assert parser.call_count == 0
     assert used(accounts, uid) == 0
@@ -329,21 +338,23 @@ def test_confirming_a_preview_needs_an_account_but_no_further_payment(client, ac
     subscribe(accounts, SUBSCRIBER)
     previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
                             headers=SUBSCRIBER).json()
-    page = previewed["page_key"]
+    key = previewed["request_key"]
 
-    assert client.post(f"/api/elections/pages/{page}/confirm", headers=VISITOR).status_code == 401
-    assert client.post(f"/api/elections/pages/{page}/confirm", headers=FREE).status_code == 200
+    assert client.post(
+        f"/api/elections/imports/{key}/confirm", headers=VISITOR
+    ).status_code == 401
+    assert client.post(f"/api/elections/imports/{key}/confirm", headers=FREE).status_code == 200
 
 
 def test_discarding_a_preview_needs_an_account(client, accounts):
     subscribe(accounts, SUBSCRIBER)
     previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
                             headers=SUBSCRIBER).json()
-    page = previewed["page_key"]
+    key = previewed["request_key"]
 
-    assert client.delete(f"/api/elections/pages/{page}/preview",
+    assert client.delete(f"/api/elections/imports/{key}/preview",
                          headers=VISITOR).status_code == 401
-    assert client.delete(f"/api/elections/pages/{page}/preview",
+    assert client.delete(f"/api/elections/imports/{key}/preview",
                          headers=FREE).status_code == 204
 
 

@@ -51,14 +51,17 @@ function harness({ api, selected = [], account = SUBSCRIBER } = {}) {
   globalThis.document = { createElement: node };
   const el = {
     form: node('form'),
-    sourceUrl: node('input'),
+    year: node('input'),
+    nation: node('input'),
+    subnation: node('input'),
     submit: node('button'),
     message: node(),
     availability: node(),
-    fieldErrors: { sourceUrl: node() },
+    fieldErrors: { year: node(), nation: node() },
     preview: node(),
     previewTitle: node(),
     previewMeta: node(),
+    previewSource: node(),
     previewList: node(),
     confirm: node('button'),
     discard: node('button'),
@@ -80,7 +83,8 @@ function harness({ api, selected = [], account = SUBSCRIBER } = {}) {
 }
 
 function fillValidForm(el) {
-  el.sourceUrl.value = 'https://www.dst.dk/valg';
+  el.year.value = '2026';
+  el.nation.value = 'Danmark';
 }
 
 /** An API double that counts calls and returns queued results. */
@@ -88,10 +92,10 @@ function fakeApi(overrides = {}) {
   const calls = { lookup: 0, importElection: 0, confirm: 0, discardPreview: 0, getElection: 0, listElections: 0 };
   const api = {
     async listElections() { calls.listElections++; return overrides.summaries ?? []; },
-    async lookup() { calls.lookup++; return overrides.lookup ?? { pageKey: 'p1', electionHash: null, status: 'unknown', election: null }; },
-    async importElection() { calls.importElection++; return overrides.importElection ?? { pageKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false }; },
-    async confirm(pageKey) { calls.confirm++; calls.confirmedWith = pageKey; return overrides.confirm ?? { pageKey: 'p1', electionHash: 'h', status: 'ready', election, duplicate: false }; },
-    async discardPreview(pageKey) { calls.discardPreview++; calls.discardedWith = pageKey; },
+    async lookup() { calls.lookup++; return overrides.lookup ?? { requestKey: 'p1', electionHash: null, status: 'unknown', election: null }; },
+    async importElection() { calls.importElection++; return overrides.importElection ?? { requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false }; },
+    async confirm(requestKey) { calls.confirm++; calls.confirmedWith = requestKey; return overrides.confirm ?? { requestKey: 'p1', electionHash: 'h', status: 'ready', election, duplicate: false }; },
+    async discardPreview(requestKey) { calls.discardPreview++; calls.discardedWith = requestKey; },
     async getElection() { calls.getElection++; return overrides.getElection ?? { electionHash: 'h', status: 'ready', election }; },
   };
   return { api, calls };
@@ -99,21 +103,34 @@ function fakeApi(overrides = {}) {
 
 // --- acceptance criteria ---------------------------------------------------
 
-test('an invalid URL is never submitted for extraction', async () => {
+test('an incomplete request is never submitted for import', async () => {
   const { api, calls } = fakeApi();
   const { el } = harness({ api });
-  el.sourceUrl.value = 'javascript:alert(1)';
+  el.year.value = 'sometime';
+  el.nation.value = '';
 
   await el.form.dispatch('submit');
 
   assert.equal(calls.lookup, 0);
   assert.equal(calls.importElection, 0);
-  assert.ok(el.fieldErrors.sourceUrl.textContent, 'the bad URL is reported');
+  assert.ok(el.fieldErrors.year.textContent, 'the year is reported');
+  assert.ok(el.fieldErrors.nation.textContent, 'and so is the missing country');
 });
 
-test('a page imported before is blocked with a message before any extraction', async () => {
+test('a misspelled place is submitted rather than refused', async () => {
+  const { api, calls } = fakeApi();
+  const { el } = harness({ api });
+  el.year.value = '2o26';
+  el.nation.value = 'Danmrak';
+
+  await el.form.dispatch('submit');
+
+  assert.equal(calls.importElection, 1, 'reading it is the server’s job');
+});
+
+test('an election imported before is blocked with a message before any import', async () => {
   const { api, calls } = fakeApi({
-    lookup: { pageKey: 'p1', electionHash: 'dup', status: 'ready', election },
+    lookup: { requestKey: 'p1', electionHash: 'dup', status: 'ready', election },
     summaries: [{ electionHash: 'dup', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 10 }],
   });
   const { el } = harness({ api });
@@ -143,7 +160,23 @@ test('an extraction is previewed and nothing is saved yet', async () => {
   assert.deepEqual(selected, [], 'the renderer is untouched until the user confirms');
 });
 
-test('the preview shows the identity the agent inferred, for the user to check', () => {
+test('the preview names the page the numbers were read from', async () => {
+  // Nobody chose that page: the server searched for it. It is the only way to
+  // check the numbers against their source, so it is always shown.
+  const elsewhere = validateElection({ ...election, sourceUrl: 'https://www.dst.dk/valg/mandater' });
+  const { api } = fakeApi({
+    importElection: { requestKey: 'r1', electionHash: 'h', status: 'preview', election: elsewhere, reused: false },
+  });
+  const { el } = harness({ api });
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.equal(el.previewSource.hidden, false);
+  assert.match(el.previewSource.textContent, /https:\/\/www\.dst\.dk\/valg\/mandater/);
+});
+
+test('the preview shows which election this turned out to be, for the user to check', () => {
   // The user typed only a URL, so this line is the agent's claim about which
   // election the page describes — the thing confirmation actually approves.
   const { api } = fakeApi();
@@ -153,7 +186,7 @@ test('the preview shows the identity the agent inferred, for the user to check',
   return el.form.dispatch('submit').then(() => {
     assert.match(el.previewMeta.textContent, /Danmark/);
     assert.match(el.previewMeta.textContent, /2026-03-25/);
-    assert.match(el.message.textContent, /identificeret rigtigt/);
+    assert.match(el.message.textContent, /det rigtige valg/);
   });
 });
 
@@ -188,7 +221,7 @@ test('discarding saves nothing and tells the backend to drop the preview', async
 
 test('a failed extraction is reported and nothing is previewed', async () => {
   const { api, calls } = fakeApi({
-    importElection: { pageKey: 'p1', electionHash: null, status: 'failed', election: null, error: 'kunne ikke læses' },
+    importElection: { requestKey: 'p1', electionHash: null, status: 'failed', election: null, error: 'kunne ikke læses' },
   });
   const { el } = harness({ api });
   fillValidForm(el);

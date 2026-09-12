@@ -3,11 +3,12 @@
 Access follows one rule, applied in three places below: *viewing is open,
 importing is bought*. A signed-out visitor sees the curated selection, any
 account sees everything stored, and only a subscriber with quota left can make
-the server go out and read a page it has never read before.
+the server go and look for an election it does not already hold.
 
-The quota is charged for the one thing that costs money — a new extraction —
-and nothing else. An election somebody already imported is served to every
-subscriber for free, which is the whole point of the shared store.
+The quota is charged for the one thing that costs money — going out to find and
+read an election — and nothing else. An election somebody already imported is
+served to every subscriber for free, which is the whole point of the shared
+store.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .accounts import AccountStore, QuotaPolicy, Tier, UserAccount, billing_period
 from .auth import (
@@ -50,9 +51,9 @@ from .config import (
     public_base_url,
     validate_configuration,
 )
-from .identity import source_url_key
+from .identity import normalize_year
 from .observability import configure_logging, io_span, scrub
-from .schema import Election
+from .schema import Election, clean_text
 from .service import ImportRequest, ImportResult, ImportService, ImportState
 
 configure_logging()
@@ -173,17 +174,54 @@ def require_admin(principal: Principal = Depends(require_principal)) -> Principa
 
 # --- request and response models -------------------------------------------
 
+#: A place name is a few words. The cap is generous for the longest real ones
+#: and still far short of anything that belongs in a prompt.
+MAX_PLACE_CHARS = 80
+
+
 class ImportBody(BaseModel):
+    """Which election to import: a year, a nation, and optionally a region.
+
+    Spelling is the resolver's problem, not this model's — the only thing
+    checked here is that the values are short, printable text and a year that is
+    a year. Refusing "Germny" at the door would be refusing the request the
+    resolver exists to answer.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    source_url: str = Field(min_length=1, max_length=2000)
+    year: int
+    nation: str = Field(max_length=MAX_PLACE_CHARS)
+    subnation: str | None = Field(default=None, max_length=MAX_PLACE_CHARS)
+
+    @field_validator("year", mode="before")
+    @classmethod
+    def _year(cls, value) -> int:
+        # A mistyped digit row is read as what it means; anything else is
+        # refused here rather than spent on a model call.
+        return normalize_year(value)
+
+    @field_validator("nation")
+    @classmethod
+    def _nation(cls, value: str) -> str:
+        # The same cleaning every stored name gets: printable, normalised, and
+        # free of the invisible characters that make one name render as another.
+        return clean_text(value, field="nation")
+
+    @field_validator("subnation")
+    @classmethod
+    def _subnation(cls, value: str | None) -> str | None:
+        # An empty region box means "the national election", not an empty name.
+        if value is None or not value.strip():
+            return None
+        return clean_text(value, field="subnation")
 
     def to_request(self) -> ImportRequest:
-        return ImportRequest(source_url=self.source_url)
+        return ImportRequest(year=self.year, nation=self.nation, subnation=self.subnation)
 
 
 class ImportResponse(BaseModel):
-    page_key: str
+    request_key: str
     state: ImportState
     election: Election | None = None
     election_hash: str | None = None
@@ -195,7 +233,7 @@ class ImportResponse(BaseModel):
     @classmethod
     def of(cls, result: ImportResult) -> "ImportResponse":
         return cls(
-            page_key=result.page_key,
+            request_key=result.request_key,
             state=result.state,
             election=result.election,
             election_hash=result.election_hash,
@@ -364,14 +402,15 @@ async def import_election(
     accounts: AccountStore = Depends(get_account_store),
     policy: QuotaPolicy = Depends(get_policy),
 ) -> ImportResponse:
-    """Import an election from a results URL.
+    """Import an election named by year, nation and — optionally — region.
 
-    The agent identifies which election the page reports; the caller supplies
-    nothing but the address. A page imported before is served from storage
-    without fetching or extracting anything — and without costing quota.
+    The caller supplies no address: the resolver works out which election that
+    is, and where its results are published. A request made before is served
+    from storage without searching or extracting anything — and without costing
+    quota.
 
-    The allowance is taken *before* the page is claimed and given back if the
-    claim turns out not to need an extraction. Reserving first is what keeps two
+    The allowance is taken *before* the request is claimed and given back if the
+    claim turns out not to need any work. Reserving first is what keeps two
     simultaneous imports from both spending the last unit of a month.
     """
     period = billing_period()
@@ -411,12 +450,14 @@ async def import_election(
         raise
 
     if result.reused:
-        # Served from the store, or joined to somebody else's running extraction:
-        # nothing was fetched or read on this caller's behalf.
+        # Served from the store, or joined to somebody else's running import:
+        # nothing was searched for or read on this caller's behalf.
         await run_in_threadpool(refund)
 
     if result.state is ImportState.PENDING and wait_seconds > 0:
-        result = await service.wait_for(result.page_key, min(wait_seconds, max_wait_seconds()))
+        result = await service.wait_for(
+            result.request_key, min(wait_seconds, max_wait_seconds())
+        )
     if result.state is ImportState.PENDING:
         response.status_code = status.HTTP_202_ACCEPTED
     return ImportResponse.of(result)
@@ -443,56 +484,79 @@ async def list_elections(
 
 
 @app.get("/api/elections/lookup", response_model=ImportResponse)
-async def lookup_page(
-    source_url: str,
+async def lookup_request(
+    year: int,
+    nation: str,
+    subnation: str | None = None,
     service: ImportService = Depends(get_service),
     _account: UserAccount = Depends(require_account),
 ) -> ImportResponse:
-    """Has this page been imported already? Answered without fetching it.
+    """Has this election been imported already? Answered without looking it up.
 
-    Part of the import flow rather than of viewing, so it needs an account —
-    but not a subscription, because it never causes a page to be read.
+    Two questions in one, both free. First: is there a job for exactly this
+    request — one running, one waiting to be confirmed, one that failed? Then:
+    is the election itself already stored, whoever asked for it and however they
+    spelled it, which the store can answer from the year and the place alone.
+
+    Part of the import flow rather than of viewing, so it needs an account — but
+    not a subscription, because nothing here searches, fetches or extracts.
     """
     try:
-        key = source_url_key(source_url)
+        body = ImportBody(year=year, nation=nation, subnation=subnation)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return ImportResponse.of(await service.status(key))
+    request = body.to_request()
+    key = ImportService.request_key_for(request)
+    result = await service.status(key)
+    if result.state is not ImportState.UNKNOWN:
+        return ImportResponse.of(result)
+
+    stored = await service.find_by_place(request.year, request.nation, request.subnation)
+    if stored is None:
+        return ImportResponse.of(result)
+    return ImportResponse(
+        request_key=key,
+        state=ImportState.READY,
+        election=stored.election,
+        election_hash=stored.election_hash,
+        reused=True,
+    )
 
 
-@app.get("/api/elections/pages/{page_key}", response_model=ImportResponse)
-async def get_page(
-    page_key: str,
+@app.get("/api/elections/imports/{request_key}", response_model=ImportResponse)
+async def get_import(
+    request_key: str,
     response: Response,
     wait_seconds: float = Query(0.0, ge=0.0),
     service: ImportService = Depends(get_service),
     _account: UserAccount = Depends(require_account),
 ) -> ImportResponse:
-    result = await service.status(page_key)
+    """How one import is getting on. Polled while the state is pending."""
+    result = await service.status(request_key)
     if result.state is ImportState.PENDING and wait_seconds > 0:
-        result = await service.wait_for(page_key, min(wait_seconds, max_wait_seconds()))
+        result = await service.wait_for(request_key, min(wait_seconds, max_wait_seconds()))
     if result.state is ImportState.UNKNOWN:
-        raise HTTPException(status_code=404, detail="no import for that page")
+        raise HTTPException(status_code=404, detail="no such import")
     if result.state is ImportState.PENDING:
         response.status_code = status.HTTP_202_ACCEPTED
     return ImportResponse.of(result)
 
 
-@app.post("/api/elections/pages/{page_key}/confirm", response_model=ImportResponse)
+@app.post("/api/elections/imports/{request_key}/confirm", response_model=ImportResponse)
 async def confirm_election(
-    page_key: str,
+    request_key: str,
     service: ImportService = Depends(get_service),
     _account: UserAccount = Depends(require_account),
 ) -> ImportResponse:
-    """Save a previewed election under the identity the agent inferred.
+    """Save a previewed election under the identity that was read off the page.
 
-    Any account may confirm: the extraction that produced this preview has
-    already been paid for, and charging again for saving what was read would
-    mean a lapsed subscription could strand a page mid-import.
+    Any account may confirm: the import that produced this preview has already
+    been paid for, and charging again for saving what was read would mean a
+    lapsed subscription could strand an import halfway.
     """
-    result = await service.confirm(page_key)
+    result = await service.confirm(request_key)
     if result.state is ImportState.UNKNOWN:
-        raise HTTPException(status_code=404, detail="no preview to confirm for that page")
+        raise HTTPException(status_code=404, detail="no preview to confirm for that import")
     if result.state is not ImportState.READY:
         raise HTTPException(
             status_code=409, detail=f"nothing awaiting confirmation (state: {result.state.value})"
@@ -500,15 +564,17 @@ async def confirm_election(
     return ImportResponse.of(result)
 
 
-@app.delete("/api/elections/pages/{page_key}/preview", status_code=status.HTTP_204_NO_CONTENT)
+@app.delete(
+    "/api/elections/imports/{request_key}/preview", status_code=status.HTTP_204_NO_CONTENT
+)
 async def discard_preview(
-    page_key: str,
+    request_key: str,
     service: ImportService = Depends(get_service),
     _account: UserAccount = Depends(require_account),
 ) -> Response:
-    """Reject a previewed election, leaving the page free to import again."""
-    if not await service.discard(page_key):
-        raise HTTPException(status_code=404, detail="no preview to discard for that page")
+    """Reject a previewed election, leaving the request free to import again."""
+    if not await service.discard(request_key):
+        raise HTTPException(status_code=404, detail="no preview to discard for that import")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -551,7 +617,7 @@ async def get_election(
             headers=UNAUTHENTICATED,
         )
     return ImportResponse(
-        page_key="",
+        request_key="",
         state=ImportState.READY,
         election=stored.election,
         election_hash=election_hash,

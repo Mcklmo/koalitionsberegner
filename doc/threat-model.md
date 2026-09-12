@@ -14,8 +14,12 @@ it is stored, and that renders as inert text either way.
 ## The pipeline
 
 ```
- user pastes URL
+ user types year + place
         │
+        ▼
+ [0] resolver agent         resolver.py  ── the typed text and today's date, a
+        │  one election,       search.py     hosted search, and an output of one
+        │  candidate URLs                    identity plus candidate addresses
         ▼
  [1] backend fetch          fetcher.py   ── SSRF checks, size/type/redirect caps
         │  HTML → text                      script/style/comments dropped
@@ -25,6 +29,10 @@ it is stored, and that renders as inert text either way.
         ▼
  [3] validator              schema.py    ── allowlisted fields, types, bounds,
         │  Election                         seat/majority consistency, safe text
+        ▼
+ [3b] is this the election  parser.py    ── year must match what the user typed,
+        │   that was asked for?             nation and region the resolution;
+        │   no → next candidate, back to [1] otherwise it is discarded
         ▼
  [4] preview (not stored)   service.py   ── staged; the user sees it
         │
@@ -36,22 +44,33 @@ it is stored, and that renders as inert text either way.
                             app.js       ── textContent only, never markup
 ```
 
-Steps 1–5 run server-side. The browser never fetches the imported page and never
+Steps 0–5 run server-side. The browser never fetches the imported page and never
 sees the API key.
+
+The user supplies no address at all now: the candidate pages come from the
+resolver, which is given a few dozen characters of typed text and never reads a
+results page. A page that states no seats, or turns out to be a different
+election, simply moves the import on to the next candidate of that fixed list
+(see T9) — no page is ever asked where to go next, and the links on a fetched
+page are not read. The election is attributed to whichever page the numbers came
+from, and the preview always names it.
 
 ## Trust boundaries
 
 | Input | Trusted? | Notes |
 | --- | --- | --- |
-| The pasted URL | No | Attacker-chosen address; it is the only thing the user supplies. |
+| What the user typed | Partly | A year and a place, from our own user. Length-capped and stripped of control and direction-changing characters, then passed on as typed — misspellings are the resolver's job. |
+| A URL from the resolver | No | Produced by a model that read search results. Only `http(s)` addresses survive `resolver.clean_sources`, and each is fetched under the same SSRF checks as anything else. |
 | The fetched page | No | Fully attacker-controlled bytes. Every field of an imported election ultimately derives from it. |
 | The model's output | No | It read untrusted input, so its answer is untrusted too. Constrained by the output schema, then re-validated. |
+| A link on the fetched page | Not read | Nothing consults the links on an imported page any more; there is no path by which one becomes an address we fetch. |
+| A web search result | No | Comes from outside the app entirely; filtered and fetched exactly as a link is. |
 | The stored election | Partly | It passed validation and a human confirmation. Still rendered as text only. |
 | Our own prompts and code | Yes | Built server-side from constants; no part of the page reaches them as instructions. |
 
-The adversary is whoever controls a page a user pastes — including the operator
-of a legitimate-looking results site, or anyone who can get a URL in front of a
-user. They can serve any bytes, any redirects, any encoding, and can vary the
+The adversary is whoever controls a page an import reads — including the operator
+of a legitimate-looking results site, or anyone who can get a page ranked for an
+election's name. They can serve any bytes, any redirects, any encoding, and can vary the
 response per request.
 
 Their goals, in the order we care about: make the agent do something other than
@@ -116,11 +135,17 @@ turn. Injected instructions to browse, fetch, POST, or read a file address
 capabilities that do not exist.
 
 The page is fetched *before* the model runs, and the model is never asked again,
-so "now go and read this other URL" has no fetcher to reach.
+so "now go and read this other URL" has no fetcher to reach. The importer does
+sometimes read a second page — see T9 — but the extraction agent has no say in
+which, and is handed the result as one more fenced document.
 
 The model's only output channel is one `ExtractedElection` object with
 `extra="forbid"`: a demand to "add a field called `exfiltrate`" cannot be
-satisfied, because the object has nowhere to put it.
+satisfied, because the object has nowhere to put it. The one field whose value
+reaches the user as prose rather than as election data — `no_results_reason`,
+which explains an empty extraction — is a three-value enum, and
+`parser.NO_RESULTS_MESSAGES` owns the wording. A page can steer which of three
+sentences appears; it cannot write one.
 
 ### T5 — Hostile or nonsense extraction output
 
@@ -196,8 +221,44 @@ everyone. Three things bound it:
 The Anthropic key lives in Secret Manager, is mounted into the Cloud Run
 revision, and is used only server-side; it never reaches the browser. Extraction
 logs record sizes, token counts, stop reasons and durations — never page text
-and never model output (`extractor.AnthropicExtractor.extract`). Pasted URLs
-*are* logged, as the fetch target.
+and never model output (`extractor.AnthropicExtractor.extract`). The typed
+request and the addresses we fetch *are* logged, as the targets. Only the
+notable calls are logged at all (`observability.NOTABLE_SYSTEMS`), so an
+import's log is a handful of lines and a failure stands out in it.
+
+### T9 — Every page is one the user did not name
+
+Nobody supplies an address any more. The pages an import reads come from
+`resolver.py` and `search.py`, which is a search engine's opinion turned into a
+fetch, so the narrowing is where the safety is:
+
+- **The reading agent never chooses what to read.** The extractor has no tools
+  and no second turn. The list of candidates is fixed before the first page is
+  fetched, and the links on a fetched page are not read at all — a page cannot
+  nominate its successor.
+- **Only the resolver has a tool**, and it is a search engine
+  (`resolver.SEARCH_TOOL`). Its input is the few dozen characters the user typed
+  plus today's date — no page text can reach it, because no page has been read
+  when it runs. Its output is put through `resolver.clean_sources`, which keeps
+  `http(s)` URLs and discards everything else, including any instruction a
+  search result talked it into repeating.
+- **Every candidate is fetched the same way.** Same `_assert_public_url`, same
+  size, type and redirect caps. A candidate pointing at `169.254.169.254` is
+  refused — being named by a model earns an address nothing.
+- **A page that is not the election asked for is discarded in code.**
+  `parser.is_wanted` requires the year to match the user's own input and the
+  nation and region to match the resolution. The neighbouring region and the
+  previous election are the wrong answers that do not look wrong, so they are
+  refused before anything is staged, however cleanly they extracted.
+- **Nothing is stored silently.** The election is attributed to the page it was
+  read from, the preview names that page, and the user confirms.
+- **The budget is small and configurable.** `IMPORT_PAGE_LIMIT` (3) and
+  `IMPORT_SEARCH_LIMIT` (3) keep an import to a handful of pages, not a crawl;
+  `SEARCH_MODE=off` leaves only the resolver's own candidates.
+
+What this does *not* defend against is a wrong-but-plausible page: a search can
+return an outdated or unofficial page whose numbers differ from the official
+ones. The confirmation step, with the source page named, is the check.
 
 ## Accepted risks
 
@@ -220,6 +281,13 @@ These are known and deliberately not addressed here:
   that rate-limits, or on Firebase, which does it for you.
 - **The page can vary per request.** The page we fetched is the page we
   extracted; nothing guarantees a later visitor sees the same thing.
+- **A found page may be unofficial or out of date.** Every page is one a search
+  turned up; the alternative is no import at all. The source URL is shown in the
+  preview and stored with the election, so what it was read from is always
+  visible.
+- **Some hosts refuse this fetcher.** Wikimedia blocks it by policy, so search
+  results there are skipped. Working around that is out of scope: it would mean
+  disguising the client.
 
 ## Where this is tested
 
@@ -233,6 +301,10 @@ These are known and deliberately not addressed here:
 | Extracted strings render inert; no markup sinks in `js/` | `test/injection.test.mjs` |
 | Schema bounds, text safety, seat consistency | `backend/tests/test_schema.py`, `test/election.test.mjs` |
 | SSRF, size and redirect limits | `backend/tests/test_fetcher.py` |
+| A page cannot nominate the next page to read | `backend/tests/test_injection.py` |
+| A page reporting another year or region is discarded | `backend/tests/test_extraction.py` |
+| A search returns URLs and nothing else; a broken search is not a failed import | `backend/tests/test_search.py` |
+| Candidate pages go through the fetcher, and only for pages that stated no seats | `backend/tests/test_extraction.py` |
 
 The adversarial fixtures themselves are `test/adversarial/`:
 `injected-instructions.html` argues with the agent through five different

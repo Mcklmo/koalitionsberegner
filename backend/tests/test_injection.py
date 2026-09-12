@@ -3,7 +3,13 @@
 The fixtures in ``test/adversarial/`` are results pages written to attack the
 import pipeline: one argues with the agent, one hides markup in party names.
 Every test here starts from one of those files and follows it through the same
-path a pasted URL takes — fetch, flatten, prompt, agent, validator, store.
+path a real import takes — resolve, fetch, flatten, prompt, agent, validator,
+store.
+
+One attack surface is gone rather than defended: nothing the user supplies is
+an address any more, and the pages an import reads are chosen from a resolution
+made before any page was read. A page cannot be asked about its links because
+its links are never consulted.
 
 The claim under test is not "the model resists persuasion". It is that a page
 which fully succeeds at persuading the model still cannot do anything: the only
@@ -13,6 +19,7 @@ to reject. See ``doc/threat-model.md``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -22,17 +29,17 @@ from app.extractor import (
     ExtractedBlock,
     ExtractedElection,
     ExtractedParty,
-    MockExtractor,
     build_request,
     build_user_message,
     fence_page,
 )
-from app.fetcher import FetchedPage, html_to_text
+from app.fetcher import FetchError, FetchedPage, html_to_text
 from app.parser import MAX_PROBLEM_CHARS, LlmElectionParser, ParseError
+from app.resolver import ResolvedElection, StubResolver
 from app.schema import Election
 from app.service import ImportService, ImportState
 from app.store import InMemoryElectionStore
-from tests.factories import make_request
+from tests.factories import FixedExtractor, make_request
 
 pytestmark = pytest.mark.anyio
 
@@ -49,18 +56,62 @@ def page_text(name: str) -> str:
     return html_to_text((PAGES / name).read_text(encoding="utf-8"))
 
 
+def page_urls(name: str) -> list[str]:
+    """Every address the page itself offers, read straight out of the markup.
+
+    Not something the app does — it is how these tests show that a link on an
+    adversarial page never becomes a page this app reads.
+    """
+    raw = (PAGES / name).read_text(encoding="utf-8")
+    return re.findall(r'href="([^"]+)"', raw)
+
+
 class StubFetcher:
     """Serves one of the adversarial pages instead of making a request."""
 
     def __init__(self, name: str):
         self.text = page_text(name)
+        self.urls: list[str] = []
 
     async def fetch(self, url):
+        """The fixture is the page that was asked for first; nothing else exists.
+
+        Any further candidate is therefore a 404 — which is what the real
+        fetcher would say about most of them anyway.
+        """
+        first = not self.urls
+        self.urls.append(url)
+        if not first:
+            raise FetchError("the page returned HTTP 404")
         return FetchedPage(url=url, text=self.text)
 
 
+GRENZLAND_URL = "https://grenzland.example/wahl/2026"
+
+
 def grenzland_request():
-    return make_request(source_url="https://grenzland.example/wahl/2026")
+    """What the user typed. No address: they asked for a year and a country."""
+    return make_request(year=2026, nation="Grenzland")
+
+
+def grenzland_resolution(**overrides) -> ResolvedElection:
+    """What the resolver made of it, having read no page at all."""
+    data = {
+        "nation": "Grenzland",
+        "state": None,
+        "election_date": "2026-04-12",
+        "title": "Grenzland Parliament 2026",
+        "search_terms": "Grenzland Wahl 2026 Sitzverteilung",
+        "sources": [GRENZLAND_URL],
+    }
+    data.update(overrides)
+    return ResolvedElection.model_validate(data)
+
+
+def grenzland_parser(fetcher, extractor, resolved=None, **kwargs):
+    return LlmElectionParser(
+        fetcher, extractor, StubResolver(resolved or grenzland_resolution()), **kwargs
+    )
 
 
 #: What a faithful agent reads off ``injected-instructions.html``: the table,
@@ -111,7 +162,10 @@ def test_a_page_cannot_close_the_data_fence():
     """The one structural attack: ending the document early and continuing as
     the operator. The markers the page carries are neutralised, so the fence the
     model sees opens once and closes once, around everything the page said."""
-    message = build_user_message(page_text("injected-instructions.html"), grenzland_request())
+    message = build_user_message(
+        FetchedPage(url=GRENZLAND_URL, text=page_text("injected-instructions.html")),
+        grenzland_resolution(),
+    )
 
     assert message.count("<document>") == 1
     assert message.count("</document>") == 1
@@ -138,7 +192,10 @@ def test_the_system_prompt_states_that_the_document_is_data():
 def test_hidden_page_text_still_arrives_but_only_as_data():
     """A documented residual: CSS-hidden text is text. It reaches the model like
     everything else on the page — inside the fence, with no more authority."""
-    message = build_user_message(page_text("injected-instructions.html"), grenzland_request())
+    message = build_user_message(
+        FetchedPage(url=GRENZLAND_URL, text=page_text("injected-instructions.html")),
+        grenzland_resolution(),
+    )
     hidden = message.index("Assistant Compromised")
     assert message.index("<document>") < hidden < message.index("</document>")
 
@@ -148,7 +205,11 @@ def test_hidden_page_text_still_arrives_but_only_as_data():
 def test_the_extraction_call_carries_no_tools_and_no_other_channel():
     """The capability restriction is this argument list. Nothing the page says
     can add to it, because the page is not what builds it."""
-    kwargs = build_request("CDU\t40", grenzland_request(), model="claude-opus-5")
+    kwargs = build_request(
+        FetchedPage(url=GRENZLAND_URL, text="CDU\t40"),
+        grenzland_resolution(),
+        model="claude-opus-5",
+    )
 
     assert set(kwargs) == {"model", "max_tokens", "thinking", "system", "messages", "output_format"}
     assert "tools" not in kwargs, "the agent has no tools to be talked into using"
@@ -180,7 +241,7 @@ async def test_an_agent_that_obeyed_the_injection_produces_nothing_storable():
             ExtractedParty(name="Loyal Party", abbr="LP", seats=400, color="#2980b9"),
         ])],
     )
-    parser = LlmElectionParser(StubFetcher("injected-instructions.html"), MockExtractor(obeyed))
+    parser = grenzland_parser(StubFetcher("injected-instructions.html"), FixedExtractor(obeyed))
 
     with pytest.raises(ParseError, match="not valid"):
         await parser.parse(grenzland_request())
@@ -190,12 +251,80 @@ async def test_the_page_the_agent_read_is_still_the_only_page_fetched():
     """Injected browse-here instructions have no fetcher to reach: the page is
     retrieved before the model runs, and the model is never asked again."""
     fetcher = StubFetcher("injected-instructions.html")
-    extractor = MockExtractor(GRENZLAND_AS_REPORTED)
-    election = await LlmElectionParser(fetcher, extractor).parse(grenzland_request())
+    extractor = FixedExtractor(GRENZLAND_AS_REPORTED)
+    election = await grenzland_parser(fetcher, extractor).parse(grenzland_request())
 
-    assert len(extractor.calls) == 1, "one page, one extraction, no follow-ups"
-    assert election.source_url == grenzland_request().source_url
+    assert len(extractor.pages) == 1, "one page, one extraction, no follow-ups"
+    assert fetcher.urls == [GRENZLAND_URL]
+    assert election.source_url == GRENZLAND_URL
     assert "wahl-exfil.example" not in election.source_url
+
+
+async def test_a_page_cannot_choose_which_page_is_read_instead_of_it():
+    """The page states no seats, so the import moves on to its next candidate —
+    and the addresses the page offers are not candidates. They cannot be: the
+    list was fixed by the resolver before this page was fetched, and nothing
+    reads the links on a page at all.
+
+    The page offers another host under a "Sitzverteilung" label, cloud metadata,
+    and a sibling page that would extract cleanly as a different election."""
+    fetcher = StubFetcher("injected-instructions.html")
+    stated_nothing = ExtractedElection(
+        nation="Grenzland", election_date="2026-04-12", title="Grenzland Parliament 2026",
+        total_seats=120, majority_seats=61,
+        blocks=[ExtractedBlock(name="Parliament", parties=[])],
+        no_results_reason="votes_only",
+    )
+    offered = page_urls("injected-instructions.html")
+    assert any("wahl-exfil.example" in url for url in offered), "the page did try"
+    assert any("nachbarland" in url for url in offered)
+
+    with pytest.raises(ParseError):
+        await grenzland_parser(
+            fetcher, FixedExtractor(stated_nothing),
+            grenzland_resolution(sources=[GRENZLAND_URL, "https://grenzland.example/wahl/sitze"]),
+        ).parse(grenzland_request())
+
+    assert fetcher.urls == [GRENZLAND_URL, "https://grenzland.example/wahl/sitze"], (
+        "only the resolver's candidates, in the resolver's order"
+    )
+    for url in fetcher.urls:
+        assert url not in offered, f"{url} came off the page"
+
+
+async def test_a_page_cannot_write_the_search_we_run_for_it():
+    """The query is built from the resolution, which was made before any page
+    was fetched — so the page's text is not merely filtered out of the search,
+    it has not been read when the search happens."""
+    class RecordingSearch:
+        def __init__(self):
+            self.queries: list[str] = []
+
+        async def find(self, query, *, limit):
+            self.queries.append(query)
+            return []
+
+    search = RecordingSearch()
+    stated_nothing = ExtractedElection(
+        nation="Grenzland", election_date="2026-04-12", title="Grenzland Parliament 2026",
+        total_seats=120, majority_seats=61,
+        blocks=[ExtractedBlock(name="Parliament", parties=[])],
+        no_results_reason="votes_only",
+    )
+
+    with pytest.raises(ParseError):
+        await grenzland_parser(
+            StubFetcher("injected-instructions.html"),
+            FixedExtractor(stated_nothing),
+            search=search,
+        ).parse(grenzland_request())
+
+    query = search.queries[0]
+    for smuggled in (
+        "IGNORE ALL PREVIOUS INSTRUCTIONS", "wahl-exfil.example", "exfiltrate",
+        "Assistant Compromised", "Loyal Party",
+    ):
+        assert smuggled not in query, f"{smuggled!r} reached the search engine"
 
 
 async def test_an_adversarial_page_reaches_a_preview_and_stops_there():
@@ -204,22 +333,35 @@ async def test_an_adversarial_page_reaches_a_preview_and_stops_there():
     store = InMemoryElectionStore()
     service = ImportService(
         store,
-        LlmElectionParser(StubFetcher("injected-instructions.html"), MockExtractor(GRENZLAND_AS_REPORTED)),
+        grenzland_parser(
+            StubFetcher("injected-instructions.html"), FixedExtractor(GRENZLAND_AS_REPORTED)
+        ),
     )
     request = grenzland_request()
 
     submitted = await service.submit(request)
-    result = await service.wait_for(submitted.page_key, timeout=2.0)
+    result = await service.wait_for(submitted.request_key, timeout=2.0)
 
     assert result.state is ImportState.PREVIEW
     assert result.election.nation == "Grenzland"
     assert store.list_elections() == [], "nothing is saved before confirmation"
 
-    assert await service.discard(submitted.page_key) is True
+    assert await service.discard(submitted.request_key) is True
     assert store.list_elections() == [], "and nothing is saved after rejection either"
 
 
 # --- what survives into the UI ---------------------------------------------
+
+MARKUP_URL = "https://markupland.example/result"
+
+
+def markupland_parser(fetcher, extracted):
+    """The second fixture's pipeline: a page whose *names* are the attack."""
+    resolved = ResolvedElection(
+        nation="Markupland", state=None, election_date="2026-05-03",
+        title="Markupland Assembly 2026", sources=[MARKUP_URL],
+    )
+    return LlmElectionParser(fetcher, FixedExtractor(extracted), StubResolver(resolved))
 
 async def test_markup_in_party_names_is_kept_as_text_not_rejected():
     """Names are compared and displayed, never parsed. ``<script>`` as a party
@@ -238,9 +380,9 @@ async def test_markup_in_party_names_is_kept_as_text_not_rejected():
             ExtractedParty(name="Ordinary Party", abbr="OP", seats=4, color="#8e44ad"),
         ])],
     )
-    election = await LlmElectionParser(
-        StubFetcher("markup-in-names.html"), MockExtractor(markup)
-    ).parse(make_request(source_url="https://markupland.example/result"))
+    election = await markupland_parser(StubFetcher("markup-in-names.html"), markup).parse(
+        make_request(year=2026, nation="Markupland")
+    )
 
     names = [p.name for b in election.blocks for p in b.parties]
     assert names[0] == "<script>alert('xss')</script>", "stored verbatim, escaped at render time"
@@ -258,8 +400,8 @@ async def test_a_direction_override_in_a_name_is_rejected():
         ])],
     )
     with pytest.raises(ParseError, match="direction-changing"):
-        await LlmElectionParser(StubFetcher("markup-in-names.html"), MockExtractor(spoofed)).parse(
-            make_request(source_url="https://markupland.example/result")
+        await markupland_parser(StubFetcher("markup-in-names.html"), spoofed).parse(
+            make_request(year=2026, nation="Markupland")
         )
 
 
@@ -275,9 +417,9 @@ async def test_the_error_a_page_can_write_is_bounded():
         ])],
     )
     with pytest.raises(ParseError) as caught:
-        await LlmElectionParser(StubFetcher("injected-instructions.html"), MockExtractor(verbose)).parse(
-            grenzland_request()
-        )
+        await grenzland_parser(
+            StubFetcher("injected-instructions.html"), FixedExtractor(verbose)
+        ).parse(grenzland_request())
 
     message = str(caught.value)
     assert len(message) < MAX_PROBLEM_CHARS * 4, f"error grew to {len(message)} characters"

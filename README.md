@@ -1,7 +1,7 @@
 # Koalitionsberegner
 
 Coalition-seat calculator. Pick parties, see whether they reach a majority.
-Elections can be imported from an official results URL and shared between users.
+Elections can be imported by naming a year and a place — the server finds the official results itself — and shared between users.
 
 The renderer (`js/app.js`) is election-agnostic; elections come from an injected
 provider and must pass the canonical schema validator in `js/election.js` before
@@ -37,6 +37,14 @@ free — which is the point of a shared store. A failed extraction is refunded.
 
 ## Run locally
 
+[uv](https://docs.astral.sh/uv/getting-started/installation/) is the only thing
+to install — not even Python, which it fetches at the version
+`backend/.python-version` pins:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh   # or: brew install uv
+```
+
 The import UI calls the API on the same origin, so run both from the backend:
 
 ```sh
@@ -44,10 +52,9 @@ cd backend
 ELECTION_STORE=sqlite uv run uvicorn app.main:app --reload
 ```
 
-`uv run` builds the environment from `backend/uv.lock` on first use, so there is
-no install step to remember and no way to end up on different versions than
-everyone else. [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
-if you have not.
+`uv run` builds the environment from `backend/uv.lock` before running, so that
+first command doubles as the install step, and there is no way to end up on
+different versions than everyone else.
 
 `sqlite` keeps imported elections in `./data/elections.db`, so restarting does not
 re-fetch and re-extract pages you already imported. Use `memory` for a clean slate.
@@ -60,7 +67,7 @@ Then open <http://localhost:8000>.
 Frontend only — the bundled Folketing 2026 election renders, import is disabled:
 
 ```sh
-python3 -m http.server 8000   # or: npx wrangler dev
+uv run --no-project python -m http.server 8000   # or: npx wrangler dev
 ```
 
 ## Configure with `.env`

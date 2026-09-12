@@ -109,7 +109,7 @@ function toSession(body) {
  *  with an election's `state` (its region). */
 function toResult(body) {
   return {
-    pageKey: body.page_key,
+    requestKey: body.request_key,
     electionHash: body.election_hash ?? null,
     status: body.status ?? body.state,
     election: body.election ? toElection(body.election) : null,
@@ -199,35 +199,37 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {
       return (await request('/api/elections')).map(toSummary);
     },
 
-    /** Has this page been imported before? Answered without fetching it. */
-    async lookup({ sourceUrl }) {
-      return toResult(await request(`/api/elections/lookup?${query({ source_url: sourceUrl })}`));
+    /** Has this election been imported before? Answered without looking it up. */
+    async lookup({ year, nation, subnation }) {
+      return toResult(
+        await request(`/api/elections/lookup?${query({ year, nation, subnation })}`)
+      );
     },
 
     async getElection(electionHash) {
       return toResult(await request(`/api/elections/${encodeURIComponent(electionHash)}`));
     },
 
-    /** The agent identifies the election; we send only where to read it. */
-    async importElection({ sourceUrl }, { waitSeconds = 25 } = {}) {
+    /** The server finds the election; we send only which one is wanted. */
+    async importElection({ year, nation, subnation }, { waitSeconds = 25 } = {}) {
       const body = await request(`/api/elections/import?${query({ wait_seconds: waitSeconds })}`, {
         method: 'POST',
-        body: JSON.stringify({ source_url: sourceUrl }),
+        body: JSON.stringify({ year, nation, subnation: subnation ?? null }),
       });
       return toResult(body);
     },
 
     /** The only path into storage. */
-    async confirm(pageKey) {
+    async confirm(requestKey) {
       return toResult(
-        await request(`/api/elections/pages/${encodeURIComponent(pageKey)}/confirm`, {
+        await request(`/api/elections/imports/${encodeURIComponent(requestKey)}/confirm`, {
           method: 'POST',
         })
       );
     },
 
-    async discardPreview(pageKey) {
-      await request(`/api/elections/pages/${encodeURIComponent(pageKey)}/preview`, {
+    async discardPreview(requestKey) {
+      await request(`/api/elections/imports/${encodeURIComponent(requestKey)}/preview`, {
         method: 'DELETE',
       });
     },
