@@ -26,6 +26,20 @@ def make_election(**overrides) -> Election:
     return Election.model_validate(data)
 
 
+def make_forecast(
+    publisher: str = "Voxmeter", published_on: str = "2026-09-07", computed: bool = False,
+    **overrides,
+) -> Election:
+    """One poll of an election not yet held, as the parser turns it into an election."""
+    data = {
+        "election_date": "2027-10-31",
+        "title": f"Next Danish general election — {publisher}",
+        "forecast": {"publisher": publisher, "published_on": published_on, "computed": computed},
+    }
+    data.update(overrides)
+    return make_election(**data)
+
+
 def make_request(**overrides) -> ImportRequest:
     """An import request: a year and a place, spelled however the user spelled it."""
     data = {"year": 2026, "nation": "Danmark", "subnation": None}

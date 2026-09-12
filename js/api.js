@@ -26,6 +26,8 @@ export const ImportStatus = {
   READY: 'ready',
   PENDING: 'pending',
   PREVIEW: 'preview',
+  // Not held yet: `forecasts` lists its polls, and one is confirmed by option.
+  CHOOSE: 'choose',
   FAILED: 'failed',
   UNKNOWN: 'unknown',
 };
@@ -44,7 +46,19 @@ export function toElection(payload) {
     totalSeats: payload.total_seats,
     majoritySeats: payload.majority_seats,
     blocks: payload.blocks,
+    forecast: toForecast(payload.forecast),
   });
+}
+
+/** A forecast's wire shape; left for the validator to judge. */
+function toForecast(forecast) {
+  if (forecast === null || forecast === undefined) return null;
+  if (typeof forecast !== 'object') return forecast;
+  return {
+    publisher: forecast.publisher,
+    publishedOn: forecast.published_on,
+    computed: forecast.computed,
+  };
 }
 
 function toSummary(row) {
@@ -56,6 +70,7 @@ function toSummary(row) {
     title: row.title,
     totalSeats: row.total_seats,
     selected: Boolean(row.selected),
+    forecast: toForecast(row.forecast),
   };
 }
 
@@ -116,6 +131,8 @@ function toResult(body) {
     error: body.error ?? null,
     reused: Boolean(body.reused),
     duplicate: Boolean(body.duplicate),
+    // Every forecast is an election like any other, and validated like one.
+    forecasts: (body.forecasts ?? []).map(toElection),
   };
 }
 
@@ -219,10 +236,11 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {
       return toResult(body);
     },
 
-    /** The only path into storage. */
-    async confirm(requestKey) {
+    /** The only path into storage. `option` picks one of an upcoming election's forecasts. */
+    async confirm(requestKey, { option } = {}) {
+      const suffix = option === undefined || option === null ? '' : `?${query({ option })}`;
       return toResult(
-        await request(`/api/elections/imports/${encodeURIComponent(requestKey)}/confirm`, {
+        await request(`/api/elections/imports/${encodeURIComponent(requestKey)}/confirm${suffix}`, {
           method: 'POST',
         })
       );

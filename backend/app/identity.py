@@ -113,24 +113,42 @@ def normalize_date(value: str | date | datetime) -> date:
 
 
 def election_hash(
-    nation: str, state: str | None, election_date: str | date | datetime
+    nation: str,
+    state: str | None,
+    election_date: str | date | datetime,
+    forecast: tuple[str, str | date | datetime] | None = None,
 ) -> str:
     """Return the stable identity hash for an election.
 
     The hashed payload is JSON so that field boundaries cannot be forged by a
     value containing the separator: ``nation="a", state="b"`` and
     ``nation="a|b", state=None`` produce different digests.
+
+    ``forecast`` is ``(publisher, published_on)`` for a poll of an election not
+    yet held. One election has many of those, so each is its own identity — and
+    a result's payload carries no forecast key at all, so every hash stored
+    before forecasts existed still names the same election.
     """
     normalized_nation = normalize_place(nation)
     if normalized_nation is None:
         raise ValueError("nation must not be empty")
+    fields = {
+        "version": HASH_VERSION,
+        "nation": normalized_nation,
+        "state": normalize_place(state),
+        "election_date": normalize_date(election_date).isoformat(),
+    }
+    if forecast is not None:
+        publisher, published_on = forecast
+        normalized_publisher = normalize_place(publisher)
+        if normalized_publisher is None:
+            raise ValueError("a forecast's publisher must not be empty")
+        fields["forecast"] = {
+            "publisher": normalized_publisher,
+            "published_on": normalize_date(published_on).isoformat(),
+        }
     payload = json.dumps(
-        {
-            "version": HASH_VERSION,
-            "nation": normalized_nation,
-            "state": normalize_place(state),
-            "election_date": normalize_date(election_date).isoformat(),
-        },
+        fields,
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),

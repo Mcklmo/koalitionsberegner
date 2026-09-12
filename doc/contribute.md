@@ -88,7 +88,7 @@ anywhere. `AUTH_MODE` is a separate question, about who a request *is*.
 | `AUTH_MODE=sqlite` | Real gating with no identity provider: this app holds the passwords and issues its own session tokens, in the same file as everything else. Sign-in works in the browser. | `SQLITE_PATH` (optional); pair it with `ELECTION_STORE=sqlite` |
 | `AUTH_MODE=stub` | The bearer token *is* the identity — `uid`, `uid:email`, `uid:email:admin`. Nothing is verified. Exercises signed-in state, quota accounting and admin curation; the browser cannot mint these tokens, so drive the API with `curl`. | — |
 | `AUTH_MODE=off` | No gating at all: every request is one admin developer with no quota. Default with no project id. | — |
-| `LLM_MODE=mock` | Fetches the page, then returns a fixed Sachsen-Anhalt result instead of calling a model. The default, and the whole pipeline except the model. | — |
+| `LLM_MODE=mock` | Fetches the page, then returns a fixed Sachsen-Anhalt result instead of calling a model — or, for a year still to come, two fixed polls, one of them computed from vote shares. The default, and the whole pipeline except the model. | — |
 | `LLM_MODE=live` | Runs the real extraction agent. | `ANTHROPIC_API_KEY` |
 | `LLM_MODE=off` | Importing is refused outright. | — |
 | `SEARCH_MODE=auto` | When a page states no seat counts, an import reads the pages it links to, then searches the web for one that does. Google if its keys are set, otherwise the Anthropic API's hosted search. The default. | `LLM_MODE=live` |
@@ -195,6 +195,39 @@ exception, and not by disguise: it has an API for this, and it asks a caller to
 identify itself rather than to look like a browser. So we do, in the `User-Agent`
 — this project's URL by default, a deployment's own address through
 `WIKIPEDIA_CONTACT`.
+
+### An election that has not been held yet
+
+When the resolver says an election is `upcoming` — or its date is after today,
+whatever the flag says — there are no seats to read, and the import reads polls
+instead:
+
+1. The resolver lists pages that publish recent polls, and describes the
+   assembly: its size, its threshold, and whether D'Hondt or Sainte-Laguë is the
+   closer highest-averages method. `app.wikipedia` searches for the "Opinion
+   polling for the next … election" article and puts it first.
+2. `app.extractor` reads each page with a separate prompt and output schema
+   (`ExtractedForecasts`): the newest polls, each one publisher's figures from
+   one date, in `seats` or `percent` exactly as the page states them. It never
+   converts one into the other.
+3. `app.parser.forecast_election` turns each poll into an `Election` carrying a
+   `forecast` — publisher, date, and `computed`. Seats are taken as stated;
+   percentages go through `app.seats.allocate` over the resolver's assembly. A
+   poll that cannot be made valid is dropped on its own, and reading carries on
+   past the first good page until the page budget or ten forecasts is reached.
+4. The job waits in `awaiting_choice` with the list, and the API answers
+   `state: "choose"` with `forecasts`. `POST …/confirm?option=N` saves one;
+   the job keeps offering the rest until its lease runs out, so more than one
+   can be saved and asking again later reads newer polls.
+
+A stored forecast is its own identity — the election's plus publisher and date
+— so two polls never collide, and a result's hash is exactly what it was before
+forecasts existed. `find_by_place` ignores forecasts, so a saved poll never stops
+somebody importing a newer one, or the result once there is one.
+
+The computed seats are an approximation: one nationwide allocation, with no
+constituency seats, overhang, regional thresholds or reserved seats. That is why
+they are labelled in the list, the preview and the calculator's footer.
 
 ### Working on accounts, tiers and quotas
 

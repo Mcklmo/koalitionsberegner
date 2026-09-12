@@ -20,6 +20,7 @@ from .observability import io_span
 from .schema import Election
 from .store import (
     DEFAULT_STALE_AFTER_SECONDS,
+    DISCARDABLE_STATUSES,
     Claim,
     ClaimOutcome,
     Confirmation,
@@ -61,6 +62,7 @@ def _job_from_doc(request_key: str, data: dict) -> Job:
         error=data.get("error"),
         # A staged draft is re-validated on read like anything else from storage.
         result=Election.model_validate(result) if result else None,
+        forecasts=tuple(Election.model_validate(item) for item in data.get("forecasts") or ()),
     )
 
 
@@ -195,6 +197,7 @@ class FirestoreElectionStore:
                     "attempt": new_job.attempt,
                     "error": None,
                     "result": None,
+                    "forecasts": None,
                 },
             )
             return Claim(outcome, request_key, job=new_job)
@@ -212,12 +215,64 @@ class FirestoreElectionStore:
                 {
                     "status": JobStatus.AWAITING_CONFIRMATION.value,
                     "result": election.model_dump(mode="json"),
+                    "forecasts": None,
                     "error": None,
                     # Restart the lease so the user gets a full window to confirm.
                     "started_at": self._clock(),
                 },
                 merge=True,
             )
+
+    def offer(self, request_key: str, forecasts: list[Election]) -> None:
+        with io_span(log, "firestore", "offer", request=request_key[:12],
+                     forecasts=len(forecasts)):
+            self._job_ref(request_key).set(
+                {
+                    "status": JobStatus.AWAITING_CHOICE.value,
+                    "forecasts": [f.model_dump(mode="json") for f in forecasts],
+                    "result": None,
+                    "error": None,
+                    # Restart the lease so the user gets a full window to choose.
+                    "started_at": self._clock(),
+                },
+                merge=True,
+            )
+
+    def confirm_forecast(
+        self, request_key: str, forecast: Election, election_hash: str
+    ) -> Confirmation | None:
+        election_ref = self._election_ref(election_hash)
+        job_ref = self._job_ref(request_key)
+        clock = self._clock
+
+        @firestore.transactional
+        def _confirm(transaction):
+            job_doc = job_ref.get(transaction=transaction)
+            election_doc = election_ref.get(transaction=transaction)
+            job = _job_from_doc(request_key, job_doc.to_dict()) if job_doc.exists else None
+            if job is None or job.status is not JobStatus.AWAITING_CHOICE \
+                    or forecast not in job.forecasts:
+                return None
+            if election_doc.exists:
+                already = Election.model_validate(election_doc.to_dict()["election"])
+                return Confirmation(election_hash, already, duplicate=True)
+            transaction.set(
+                election_ref,
+                {
+                    "election": forecast.model_dump(mode="json"),
+                    "stored_at": clock(),
+                    "selected": False,
+                },
+            )
+            return Confirmation(election_hash, forecast, duplicate=False)
+
+        with io_span(log, "firestore", "confirm_forecast", request=request_key[:12],
+                     hash=election_hash[:12]) as span:
+            confirmation = _confirm(self._db.transaction())
+            span["result"] = "none" if confirmation is None else (
+                "duplicate" if confirmation.duplicate else "stored"
+            )
+            return confirmation
 
     def confirm(self, request_key: str, election_hash: str) -> Confirmation | None:
         election_ref = self._election_ref(election_hash)
@@ -282,7 +337,8 @@ class FirestoreElectionStore:
                       {"election_hash": election_hash, "linked_at": linked_at})
             batch.set(
                 self._job_ref(request_key),
-                {"status": JobStatus.SUCCEEDED.value, "result": None, "finished_at": linked_at},
+                {"status": JobStatus.SUCCEEDED.value, "result": None, "forecasts": None,
+                 "finished_at": linked_at},
                 merge=True,
             )
             batch.commit()
@@ -296,7 +352,7 @@ class FirestoreElectionStore:
             job_doc = job_ref.get(transaction=transaction)
             if not job_doc.exists:
                 return False
-            if JobStatus(job_doc.to_dict()["status"]) is not JobStatus.AWAITING_CONFIRMATION:
+            if JobStatus(job_doc.to_dict()["status"]) not in DISCARDABLE_STATUSES:
                 return False
             transaction.delete(job_ref)
             return True
@@ -313,6 +369,7 @@ class FirestoreElectionStore:
                     "status": JobStatus.FAILED.value,
                     "error": error[:1000],
                     "result": None,
+                    "forecasts": None,
                     "finished_at": self._clock(),
                 },
                 merge=True,

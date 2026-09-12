@@ -16,6 +16,13 @@ shown to the user for confirmation before anything is stored — and every
 extracted string reaches the DOM as text, never as markup. See
 [doc/threat-model.md](doc/threat-model.md).
 
+An election that has not been held yet has no seats, so asking for one reads its
+opinion polls instead and offers the newest of them as a list. The user picks a
+poll, checks it, and saves it as a *forecast* — as many of them as they like. A
+poll that publishes seat projections is used as stated; one that publishes only
+vote shares has its seats allocated in code (`backend/app/seats.py`), and is
+labelled as computed wherever it appears.
+
 ## Who may do what
 
 Viewing is open; importing is what is sold, because an import is what makes the

@@ -176,6 +176,10 @@ test('the import preview shows an adversarial extraction as text', async () => {
     previewList: node(),
     confirm: node('button'),
     discard: node('button'),
+    choices: node(),
+    choicesTitle: node(),
+    choicesList: node(),
+    choicesDiscard: node('button'),
     picker: node('select'),
     pickerRow: node(),
   };
@@ -217,6 +221,10 @@ test('an error message from the backend is shown as text, never as markup', asyn
     previewList: node(),
     confirm: node('button'),
     discard: node('button'),
+    choices: node(),
+    choicesTitle: node(),
+    choicesList: node(),
+    choicesDiscard: node('button'),
     picker: node('select'),
     pickerRow: node(),
   };

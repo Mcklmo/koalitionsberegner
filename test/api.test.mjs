@@ -61,7 +61,7 @@ test('listElections maps summaries to camelCase', async () => {
   ]);
   const listed = await createApiClient({ fetch: fetchImpl }).listElections();
   assert.deepEqual(listed, [
-    { electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179, selected: false },
+    { electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179, selected: false, forecast: null },
   ]);
 });
 

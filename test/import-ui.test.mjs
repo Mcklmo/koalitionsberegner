@@ -65,6 +65,10 @@ function harness({ api, selected = [], account = SUBSCRIBER } = {}) {
     previewList: node(),
     confirm: node('button'),
     discard: node('button'),
+    choices: node(),
+    choicesTitle: node(),
+    choicesList: node(),
+    choicesDiscard: node('button'),
     picker: node('select'),
     pickerRow: node(),
   };

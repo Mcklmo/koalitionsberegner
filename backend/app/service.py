@@ -31,12 +31,16 @@ class ImportState(str, Enum):
     READY = "ready"        # the election is stored and returned
     PENDING = "pending"    # an import is running; poll or wait
     PREVIEW = "preview"    # found and shown for confirmation; not saved yet
+    CHOOSE = "choose"      # not held yet: its forecasts are offered; none saved yet
     FAILED = "failed"      # the last import failed; importing again retries
     UNKNOWN = "unknown"    # nothing stored and no job for this request
 
 
 #: States a caller can stop polling on.
-TERMINAL_STATES = (ImportState.READY, ImportState.PREVIEW, ImportState.FAILED, ImportState.UNKNOWN)
+TERMINAL_STATES = (
+    ImportState.READY, ImportState.PREVIEW, ImportState.CHOOSE,
+    ImportState.FAILED, ImportState.UNKNOWN,
+)
 
 
 @dataclass(frozen=True)
@@ -53,10 +57,16 @@ class ImportResult:
     """True when the caller was served without triggering any import work."""
     duplicate: bool = False
     """True when this request turned out to name an already-stored election."""
+    forecasts: tuple[Election, ...] = ()
+    """In the CHOOSE state: the upcoming election's forecasts, newest first."""
 
 
 def identity_of(election: Election) -> str:
-    return election_hash(election.nation, election.state, election.election_date)
+    forecast = election.forecast
+    return election_hash(
+        election.nation, election.state, election.election_date,
+        (forecast.publisher, forecast.published_on) if forecast else None,
+    )
 
 
 class ImportService:
@@ -109,6 +119,11 @@ class ImportService:
                     election_hash=identity_of(job.result) if job.result else None,
                     attempt=job.attempt, reused=True,
                 )
+            if job is not None and job.status is JobStatus.AWAITING_CHOICE:
+                return ImportResult(
+                    key, ImportState.CHOOSE, forecasts=job.forecasts,
+                    attempt=job.attempt, reused=True,
+                )
             return ImportResult(
                 key, ImportState.PENDING, attempt=job.attempt if job else None, reused=True
             )
@@ -138,13 +153,21 @@ class ImportService:
             with io_span(
                 log, "import", "run", request=key[:12], query=request.describe()
             ) as span:
-                election = await self._parser.parse(request)
-                span["identity"] = identity_of(election)[:12]
-                span["total_seats"] = election.total_seats
+                outcome = await self._parser.parse(request)
+                if isinstance(outcome, list):
+                    span["forecasts"] = len(outcome)
+                else:
+                    span["identity"] = identity_of(outcome)[:12]
+                    span["total_seats"] = outcome.total_seats
         except Exception as exc:  # noqa: BLE001 - a failed import must not kill the worker
             await failed(str(exc))
             log.info("failed request=%s reason=%s", key[:12], scrub(exc))
             return
+
+        if isinstance(outcome, list):
+            await self._offer(key, outcome, failed)
+            return
+        election = outcome
 
         try:
             # This may be an election we already hold — another way of asking
@@ -170,6 +193,25 @@ class ImportService:
             log.exception("staging %s failed", key)
             await failed(f"could not stage result: {exc}")
 
+    async def _offer(self, key: str, forecasts: list[Election], failed) -> None:
+        """Hold an upcoming election's forecasts for the user to choose from.
+
+        Unlike a result, none is matched against the store first: whether a
+        poll is already saved is answered when it is chosen, and a list with the
+        saved ones left out would be a list that changes depending on who asked.
+        """
+        if not forecasts:
+            await failed("no polls could be found for that election")
+            return
+        try:
+            await self._in_thread(self._store.offer, key, forecasts)
+            log.info(
+                "offered request=%s forecasts=%s awaiting a choice", key[:12], len(forecasts)
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("offering %s failed", key)
+            await failed(f"could not stage forecasts: {exc}")
+
     async def status(self, key: str) -> ImportResult:
         job = await self._in_thread(self._store.get_job, key)
         resolved = await self._in_thread(self._store.resolve_request, key)
@@ -188,6 +230,10 @@ class ImportService:
                 key, ImportState.PREVIEW, election=job.result,
                 election_hash=identity_of(job.result), attempt=job.attempt,
             )
+        if job.status is JobStatus.AWAITING_CHOICE:
+            return ImportResult(
+                key, ImportState.CHOOSE, forecasts=job.forecasts, attempt=job.attempt
+            )
         return ImportResult(key, ImportState.PENDING, attempt=job.attempt)
 
     async def wait_for(self, key: str, timeout: float) -> ImportResult:
@@ -205,12 +251,17 @@ class ImportService:
                 return result
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-    async def confirm(self, key: str) -> ImportResult:
+    async def confirm(self, key: str, option: int | None = None) -> ImportResult:
         """Save a previewed election under the identity that was read.
 
-        Nothing reaches storage without this.
+        Nothing reaches storage without this. For an upcoming election,
+        ``option`` says which of the offered forecasts to save; without one the
+        import is still waiting for a choice, and that is what comes back.
+        Raises :class:`ValueError` for an option that was never offered.
         """
         job = await self._in_thread(self._store.get_job, key)
+        if job is not None and job.status is JobStatus.AWAITING_CHOICE:
+            return await self._confirm_forecast(key, job, option)
         if job is None or job.result is None:
             return await self.status(key)
         confirmation = await self._in_thread(self._store.confirm, key, identity_of(job.result))
@@ -220,6 +271,30 @@ class ImportService:
         log.info(
             "confirm request=%s hash=%s %s",
             key[:12], confirmation.election_hash[:12],
+            "duplicate" if confirmation.duplicate else "stored",
+        )
+        return ImportResult(
+            key, ImportState.READY,
+            election=confirmation.election,
+            election_hash=confirmation.election_hash,
+            duplicate=confirmation.duplicate,
+        )
+
+    async def _confirm_forecast(self, key: str, job, option: int | None) -> ImportResult:
+        if option is None:
+            return await self.status(key)
+        if not 0 <= option < len(job.forecasts):
+            raise ValueError(f"there is no forecast {option} to choose")
+        chosen = job.forecasts[option]
+        confirmation = await self._in_thread(
+            self._store.confirm_forecast, key, chosen, identity_of(chosen)
+        )
+        if confirmation is None:
+            log.info("confirm request=%s rejected forecast-no-longer-offered", key[:12])
+            return await self.status(key)
+        log.info(
+            "confirm request=%s forecast=%s hash=%s %s",
+            key[:12], option, confirmation.election_hash[:12],
             "duplicate" if confirmation.duplicate else "stored",
         )
         return ImportResult(

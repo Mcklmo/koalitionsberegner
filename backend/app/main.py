@@ -53,8 +53,9 @@ from .config import (
 )
 from .identity import normalize_year
 from .observability import configure_logging, io_span, scrub
-from .schema import Election, clean_text
+from .schema import Election, Forecast, clean_text
 from .service import ImportRequest, ImportResult, ImportService, ImportState
+from .store import StoredElection
 
 configure_logging()
 log = logging.getLogger(__name__)
@@ -229,6 +230,8 @@ class ImportResponse(BaseModel):
     attempt: int | None = None
     reused: bool = False
     duplicate: bool = False
+    forecasts: list[Election] = Field(default_factory=list)
+    """In the ``choose`` state: the forecasts to pick from, newest first."""
 
     @classmethod
     def of(cls, result: ImportResult) -> "ImportResponse":
@@ -241,6 +244,7 @@ class ImportResponse(BaseModel):
             attempt=result.attempt,
             reused=result.reused,
             duplicate=result.duplicate,
+            forecasts=list(result.forecasts),
         )
 
 
@@ -252,6 +256,20 @@ class ElectionSummary(BaseModel):
     title: str
     total_seats: int
     selected: bool = False
+    forecast: Forecast | None = None
+
+    @classmethod
+    def of(cls, stored: StoredElection) -> "ElectionSummary":
+        return cls(
+            election_hash=stored.election_hash,
+            nation=stored.election.nation,
+            state=stored.election.state,
+            election_date=stored.election.election_date,
+            title=stored.election.title,
+            total_seats=stored.election.total_seats,
+            selected=stored.selected,
+            forecast=stored.election.forecast,
+        )
 
 
 class TierInfo(BaseModel):
@@ -470,15 +488,7 @@ async def list_elections(
 ) -> list[ElectionSummary]:
     """Every stored election — or only the curated ones, to a signed-out visitor."""
     return [
-        ElectionSummary(
-            election_hash=stored.election_hash,
-            nation=stored.election.nation,
-            state=stored.election.state,
-            election_date=stored.election.election_date,
-            title=stored.election.title,
-            total_seats=stored.election.total_seats,
-            selected=stored.selected,
-        )
+        ElectionSummary.of(stored)
         for stored in await service.list_elections(selected_only=principal is None)
     ]
 
@@ -545,6 +555,9 @@ async def get_import(
 @app.post("/api/elections/imports/{request_key}/confirm", response_model=ImportResponse)
 async def confirm_election(
     request_key: str,
+    option: int | None = Query(
+        None, ge=0, description="Which offered forecast to save, for an election not yet held."
+    ),
     service: ImportService = Depends(get_service),
     _account: UserAccount = Depends(require_account),
 ) -> ImportResponse:
@@ -552,11 +565,19 @@ async def confirm_election(
 
     Any account may confirm: the import that produced this preview has already
     been paid for, and charging again for saving what was read would mean a
-    lapsed subscription could strand an import halfway.
+    lapsed subscription could strand an import halfway. For the same reason
+    every forecast of an upcoming election may be saved, not just one.
     """
-    result = await service.confirm(request_key)
+    try:
+        result = await service.confirm(request_key, option)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     if result.state is ImportState.UNKNOWN:
         raise HTTPException(status_code=404, detail="no preview to confirm for that import")
+    if result.state is ImportState.CHOOSE:
+        raise HTTPException(
+            status_code=409, detail="choose which forecast to save with ?option="
+        )
     if result.state is not ImportState.READY:
         raise HTTPException(
             status_code=409, detail=f"nothing awaiting confirmation (state: {result.state.value})"
@@ -588,16 +609,7 @@ async def set_selected(
     """Curate an election into, or out of, what signed-out visitors can see."""
     if not await service.set_selected(election_hash, body.selected):
         raise HTTPException(status_code=404, detail="no stored election with that hash")
-    stored = await service.get_stored(election_hash)
-    return ElectionSummary(
-        election_hash=stored.election_hash,
-        nation=stored.election.nation,
-        state=stored.election.state,
-        election_date=stored.election.election_date,
-        title=stored.election.title,
-        total_seats=stored.election.total_seats,
-        selected=stored.selected,
-    )
+    return ElectionSummary.of(await service.get_stored(election_hash))
 
 
 @app.get("/api/elections/{election_hash}", response_model=ImportResponse)

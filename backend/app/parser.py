@@ -9,14 +9,17 @@ without a configured parser fails loudly instead of silently storing nothing.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Protocol
 
 from pydantic import ValidationError
 
-from .identity import normalize_date, same_place
+from .extractor import MAX_POLLS_PER_PAGE
+from .identity import normalize_date, place_token, same_place
 from .resolver import ResolvedElection, unresolved_message
 from .schema import Election
 from .search import DEFAULT_SEARCH_LIMIT, DisabledSearch
+from .seats import allocate
 from .store import ImportRequest
 from .wikipedia import DEFAULT_ARTICLE_LIMIT
 
@@ -26,21 +29,30 @@ log = logging.getLogger(__name__)
 #: candidate further down the list is rarely the official one.
 DEFAULT_PAGE_LIMIT = 3
 
+#: How many forecasts one upcoming election is offered with. The newest ones;
+#: a list longer than this is a table to read, not a choice to make.
+MAX_FORECASTS = 10
+
 
 class ParseError(RuntimeError):
     """Raised when a request cannot be turned into a valid election."""
 
 
 class ElectionParser(Protocol):
-    async def parse(self, request: ImportRequest) -> Election:
-        """Find the election ``request`` names and extract its results."""
+    async def parse(self, request: ImportRequest) -> Election | list[Election]:
+        """Find the election ``request`` names and extract its results.
+
+        An election that has not been held has none, and comes back as a list
+        instead: its newest polls, each one a forecast (:class:`schema.Forecast`)
+        for the user to choose from. Never an empty one — no polls is an error.
+        """
         ...
 
 
 class UnavailableParser:
     """Placeholder parser: every import fails until a real one is injected."""
 
-    async def parse(self, request: ImportRequest) -> Election:
+    async def parse(self, request: ImportRequest) -> Election | list[Election]:
         raise ParseError("no election parser is configured")
 
 
@@ -78,7 +90,9 @@ class LlmElectionParser:
         page_limit: int = DEFAULT_PAGE_LIMIT,
         search_limit: int = DEFAULT_SEARCH_LIMIT,
         article_limit: int = DEFAULT_ARTICLE_LIMIT,
+        clock=date.today,
     ):
+        self._clock = clock
         self._fetcher = fetcher
         self._extractor = extractor
         self._resolver = resolver
@@ -91,8 +105,10 @@ class LlmElectionParser:
         self._search_limit = search_limit
         self._article_limit = article_limit
 
-    async def parse(self, request: ImportRequest) -> Election:
+    async def parse(self, request: ImportRequest) -> Election | list[Election]:
         resolved = await self._resolve(request)
+        if self._upcoming(resolved):
+            return await self._forecasts(resolved, request)
         candidates = await self._candidates(resolved)
         if not candidates:
             raise ParseError(
@@ -137,6 +153,114 @@ class LlmElectionParser:
             raise ParseError(unresolved_message("no_election"))
         log.info("resolved %r as %s", request.describe(), resolved.describe())
         return resolved
+
+    def _upcoming(self, resolved: ResolvedElection) -> bool:
+        """Whether this election is still to be held, and so has polls, not results.
+
+        The resolver says so, and the date is checked as well: an election dated
+        after today has no results to read, whatever the flag was left at.
+        """
+        return resolved.upcoming or normalize_date(resolved.election_date) > self._clock()
+
+    async def _forecasts(
+        self, resolved: ResolvedElection, request: ImportRequest
+    ) -> list[Election]:
+        """The newest polls for an upcoming election, as forecasts to choose from.
+
+        The same reading loop as for a result, with two differences. Every page
+        read may contribute several forecasts — a polling table is one poll per
+        row — so reading carries on past the first good page until the page
+        budget or :data:`MAX_FORECASTS` is reached. And no search engine is asked
+        for more pages: the ones :mod:`app.search` is prompted to find are
+        results, which is the one thing an upcoming election does not have.
+        """
+        candidates = await self._articles(resolved)
+        for url in resolved.sources:
+            if url not in candidates:
+                candidates.append(url)
+        if not candidates:
+            raise ParseError(
+                f"no page publishing polls for {_clip(resolved.describe(), 80)} could be found"
+            )
+
+        found: dict[tuple, Election] = {}
+        read = 0
+        problems: list[str] = []
+        for url in candidates[: self._page_limit]:
+            if len(found) >= MAX_FORECASTS:
+                break
+            forecasts, problem = await self._read_polls(url, resolved, request)
+            if forecasts is None and problem is None:
+                continue  # did not load; passed over as a result candidate is
+            read += 1
+            if problem is not None:
+                problems.append(problem)
+            for forecast in forecasts or ():
+                # The same poll on two pages — an aggregator and the article
+                # citing it — is one choice, not two.
+                key = (place_token(forecast.forecast.publisher), forecast.forecast.published_on)
+                found.setdefault(key, forecast)
+
+        if not found:
+            raise ParseError(_summarise_attempt(resolved, read, problems))
+        newest_first = sorted(
+            found.values(), key=lambda e: e.forecast.published_on, reverse=True
+        )
+        log.info(
+            "found %s forecasts for %s", len(newest_first), _clip(resolved.describe(), 80)
+        )
+        return newest_first[:MAX_FORECASTS]
+
+    async def _read_polls(self, url: str, resolved: ResolvedElection, request: ImportRequest):
+        """Read one candidate for polls. Returns the forecasts, or why there were none.
+
+        A poll that cannot be made into a valid forecast is dropped on its own —
+        one row with a misread date says nothing about the other seven — and the
+        page only counts as a failure when none of its polls survived.
+        """
+        from .fetcher import FetchError
+
+        try:
+            page = await self._fetcher.fetch(url)
+        except FetchError as exc:
+            log.info("skipped %s — %s", url, exc)
+            return None, None
+
+        try:
+            extracted = await self._extractor.extract_forecasts(page, resolved)
+        except ParseError as exc:
+            return None, str(exc)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user, never rendered
+            return None, f"extraction failed: {_clip(str(exc))}"
+
+        if not extracted.polls:
+            return None, _no_polls_message(extracted.no_results_reason)
+        # Checked before any poll is built, for the same reason as a result's
+        # identity: the page said which election these are, and it is untrusted.
+        if not polls_are_wanted(extracted, resolved, request):
+            log.info(
+                "discarded polls on %s — for %s %s, wanted %s",
+                page.url, extracted.nation, extracted.election_year, resolved.describe(),
+            )
+            return None, _no_polls_message("wrong_election")
+
+        forecasts: list[Election] = []
+        rejected: list[str] = []
+        for poll in extracted.polls[:MAX_POLLS_PER_PAGE]:
+            try:
+                forecasts.append(
+                    forecast_election(poll, resolved, page.url, today=self._clock())
+                )
+            except ParseError as exc:
+                rejected.append(str(exc))
+        if rejected:
+            log.info(
+                "dropped %s of %s polls on %s — the first because %s",
+                len(rejected), len(extracted.polls[:MAX_POLLS_PER_PAGE]), page.url, rejected[0],
+            )
+        if not forecasts:
+            return None, rejected[0]
+        return forecasts, None
 
     async def _candidates(self, resolved: ResolvedElection) -> list[str]:
         """Where to look, best first: Wikipedia, the resolver's own list, a search.
@@ -265,6 +389,104 @@ def is_wanted(election: Election, resolved: ResolvedElection, request: ImportReq
     )
 
 
+def polls_are_wanted(extracted, resolved: ResolvedElection, request: ImportRequest) -> bool:
+    """Whether a page's polls are for the upcoming election that was asked for.
+
+    The same place check as :func:`is_wanted`. The year is checked only where
+    the page stated one: a polling article is usually "for the next election",
+    which is the one being asked about precisely because it has not been held.
+    """
+    return (
+        (extracted.election_year is None or extracted.election_year == request.year)
+        and same_place(extracted.nation, resolved.nation)
+        and same_place(extracted.state, resolved.state)
+    )
+
+
+def forecast_election(poll, resolved: ResolvedElection, source_url: str, *, today: date) -> Election:
+    """One poll as a forecast: seats as stated, or computed from vote shares.
+
+    The identity is the resolver's — the page was only asked to confirm it — so
+    every forecast of one election is filed under one name and one date, whoever
+    published it. The seats are the page's, in one of two ways:
+
+    - a poll in **seats** is taken as it is, and its seats are the assembly;
+    - a poll in **percent** is allocated over the resolver's assembly size, with
+      its threshold and method (:func:`app.seats.allocate`), and marked
+      ``computed``. That is arithmetic on figures the page stated — not a model's
+      estimate — but it is ours, and the forecast says so.
+    """
+    try:
+        published_on = normalize_date(poll.published_on)
+    except (TypeError, ValueError):
+        raise ParseError("a poll's date could not be read") from None
+    if published_on > today:
+        raise ParseError("a poll was dated after today")
+    if not poll.parties:
+        raise ParseError("a poll listed no parties")
+
+    if poll.unit == "seats":
+        if any(not float(party.value).is_integer() for party in poll.parties):
+            raise ParseError("a poll gave a party part of a seat")
+        seats = [int(party.value) for party in poll.parties]
+        computed = False
+    else:
+        if resolved.assembly_seats is None or resolved.seat_method is None:
+            raise ParseError(
+                "a poll gave only vote shares, and this assembly's seats cannot be "
+                "computed from them"
+            )
+        try:
+            seats = allocate(
+                [party.value for party in poll.parties],
+                resolved.assembly_seats,
+                method=resolved.seat_method,
+                threshold=resolved.threshold_percent or 0.0,
+            )
+        except ValueError as exc:
+            raise ParseError(f"no seats could be computed from a poll: {exc}") from None
+        computed = True
+
+    # A party a poll gives no seat is not in the assembly it forecasts.
+    won = [(party, count) for party, count in zip(poll.parties, seats) if count > 0]
+    if not won:
+        raise ParseError("a poll gave no party a seat")
+    total = sum(count for _, count in won)
+    try:
+        return Election.model_validate(
+            {
+                "nation": resolved.nation,
+                "state": resolved.state,
+                "election_date": resolved.election_date,
+                "title": f"{_clip(resolved.title, 120)} — {_clip(poll.publisher, 60)}",
+                "source_url": source_url,
+                "total_seats": total,
+                "majority_seats": total // 2 + 1,
+                "blocks": [
+                    {
+                        "name": _clip(resolved.title, 120),
+                        "parties": [
+                            {
+                                "name": party.name,
+                                "abbr": party.abbr,
+                                "seats": count,
+                                "color": party.color,
+                            }
+                            for party, count in won
+                        ],
+                    }
+                ],
+                "forecast": {
+                    "publisher": poll.publisher,
+                    "published_on": published_on.isoformat(),
+                    "computed": computed,
+                },
+            }
+        )
+    except ValidationError as exc:
+        raise ParseError(f"a poll is not valid: {_summarise(exc)}") from None
+
+
 def search_query(resolved: ResolvedElection) -> str:
     """What to search for: the election, as the resolver identified it.
 
@@ -338,6 +560,19 @@ DEFAULT_NO_RESULTS_MESSAGE = "no election results could be found on it"
 def _no_results_message(reason: str | None) -> str:
     """Explain one unusable page, falling back when the agent said nothing."""
     return NO_RESULTS_MESSAGES.get(reason, DEFAULT_NO_RESULTS_MESSAGE)
+
+
+#: The same, for a page that was read for polls.
+NO_POLLS_MESSAGES = {
+    "wrong_election": "its polls were for a different election",
+    "no_polls": "it published no polls for that election",
+}
+
+DEFAULT_NO_POLLS_MESSAGE = "no polls could be found on it"
+
+
+def _no_polls_message(reason: str | None) -> str:
+    return NO_POLLS_MESSAGES.get(reason, DEFAULT_NO_POLLS_MESSAGE)
 
 
 def _summarise_attempt(

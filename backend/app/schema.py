@@ -89,6 +89,46 @@ class Block(Strict):
         return clean_text(v, field="name")
 
 
+class Forecast(Strict):
+    """What makes an election a forecast rather than a result.
+
+    An election that has not been held has no seats yet, only opinion polls and
+    projections of them — many of each, from different publishers on different
+    days. So a forecast names who published it and when, and whether its seats
+    were stated by that publisher or computed by us from vote shares
+    (:mod:`app.seats`), which is a difference a reader has to be told about.
+    """
+
+    publisher: str
+    published_on: date
+    computed: bool = False
+    """True when the seats were allocated by us from the poll's vote shares."""
+
+    @field_validator("publisher")
+    @classmethod
+    def _text(cls, v: str) -> str:
+        return clean_text(v, field="publisher")
+
+    @field_validator("published_on", mode="before")
+    @classmethod
+    def _date(cls, v):
+        return _to_date(v, field="published_on")
+
+
+def _to_date(v, *, field: str) -> date:
+    # Accept ISO dates and date-times; identity only ever depends on the day.
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v).date()
+        except ValueError:
+            raise ValueError(f"{field} must be an ISO 8601 date, got {v!r}") from None
+    raise ValueError(f"{field} must be an ISO 8601 date")
+
+
 class Election(Strict):
     """A validated election, ready to store and to render."""
 
@@ -100,6 +140,8 @@ class Election(Strict):
     total_seats: int = Field(ge=1, le=MAX_SEATS)
     majority_seats: int = Field(ge=1, le=MAX_SEATS)
     blocks: list[Block] = Field(min_length=1, max_length=MAX_BLOCKS)
+    forecast: Forecast | None = None
+    """Set for a poll or projection of an election not yet held; None for a result."""
 
     @field_validator("nation", "title")
     @classmethod
@@ -114,17 +156,7 @@ class Election(Strict):
     @field_validator("election_date", mode="before")
     @classmethod
     def _date(cls, v):
-        # Accept ISO dates and date-times; identity only ever depends on the day.
-        if isinstance(v, datetime):
-            return v.date()
-        if isinstance(v, date):
-            return v
-        if isinstance(v, str):
-            try:
-                return datetime.fromisoformat(v).date()
-            except ValueError:
-                raise ValueError(f"election_date must be an ISO 8601 date, got {v!r}") from None
-        raise ValueError("election_date must be an ISO 8601 date")
+        return _to_date(v, field="election_date")
 
     @field_validator("source_url")
     @classmethod
@@ -153,5 +185,11 @@ class Election(Strict):
         if seat_sum != self.total_seats:
             raise ValueError(
                 f"party seats sum to {seat_sum}, but total_seats is {self.total_seats}"
+            )
+        # A "forecast" published after the vote is a result under another name.
+        if self.forecast is not None and self.forecast.published_on > self.election_date:
+            raise ValueError(
+                f"forecast published on {self.forecast.published_on} is after the "
+                f"election on {self.election_date}"
             )
         return self

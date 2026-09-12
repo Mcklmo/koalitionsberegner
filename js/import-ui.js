@@ -13,6 +13,13 @@
  * named so it can be opened. That confirmation is the only thing standing
  * between a misread request and the store.
  *
+ * An election that has not been held has no seats to confirm, only polls. For
+ * one of those the server answers with a list — the newest polls it could read,
+ * each already turned into seats — and the user picks one to preview and save.
+ * A poll that gave only vote shares had its seats computed by the server, and
+ * both the list and the preview say so: those numbers are ours, not the
+ * pollster's.
+ *
  * Importing is also the part that is sold. This module shows what the account
  * allows but never decides it: the form is disabled as a courtesy, and the
  * server refuses regardless — the two can disagree only in the safe direction.
@@ -30,10 +37,23 @@ const REFUSALS = {
   429: 'Denne måneds importer er brugt op. Kvoten fornys ved månedsskiftet.',
 };
 
+const COMPUTED_NOTE = 'mandater beregnet ud fra stemmeandele';
+
+/** "Voxmeter · 2026-09-07" */
+const forecastLabel = (forecast) => `${forecast.publisher} · ${forecast.publishedOn}`;
+
+const placeOf = (election) =>
+  election.state ? `${election.nation} — ${election.state}` : election.nation;
+
 export function mountImportUi({ api, elements, onSelect, bundled, onImported = () => {} }) {
   const el = elements;
-  /** The election currently held for confirmation, if any. */
+  /**
+   * What is held for confirmation, if anything. `option` is set when it is one
+   * of the forecasts in `offered`, and is what confirming sends.
+   */
   let pending = null;
+  /** An upcoming election's forecasts, while the user chooses between them. */
+  let offered = null;
   let summaries = [];
   /** What the server last said this account may do; null when signed out. */
   let account = null;
@@ -79,7 +99,8 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
   }
 
   function optionLabel(summary) {
-    const where = summary.state ? `${summary.nation} — ${summary.state}` : summary.nation;
+    const where = placeOf(summary);
+    if (summary.forecast) return `${where} · prognose ${forecastLabel(summary.forecast)}`;
     return `${where} · ${summary.electionDate}`;
   }
 
@@ -119,13 +140,17 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
     // The identity line is what the server decided the request meant, not what
     // was typed — it is shown first because confirming it is the point of this
     // step.
+    const identity = `${placeOf(election)} · ${election.electionDate}`;
+    const forecast = election.forecast;
     el.previewMeta.textContent =
-      `${election.state ? `${election.nation} — ${election.state}` : election.nation}`
-      + ` · ${election.electionDate} · ${election.totalSeats} mandater`
+      (forecast ? `Prognose fra ${forecastLabel(forecast)} for valget ${identity}` : identity)
+      + ` · ${election.totalSeats} mandater`
       + ` · flertal ved ${election.majoritySeats}`;
     // Nobody chose this address: the server searched for it. Naming it is how
     // the numbers can be checked against their source.
-    el.previewSource.textContent = `Tallene er læst fra ${election.sourceUrl}`;
+    el.previewSource.textContent = forecast?.computed
+      ? `Stemmeandelene er læst fra ${election.sourceUrl}; mandaterne er beregnet ud fra dem og er et skøn.`
+      : `Tallene er læst fra ${election.sourceUrl}`;
     show(el.previewSource, true);
     el.previewList.innerHTML = '';
     for (const party of seats) {
@@ -138,6 +163,8 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
       row.append(name, count);
       el.previewList.appendChild(row);
     }
+    // From the list, stepping back is not throwing anything away.
+    el.discard.textContent = pending?.option === undefined ? 'Forkast' : 'Tilbage til listen';
     show(el.preview, true);
   }
 
@@ -147,9 +174,47 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
     show(el.preview, false);
   }
 
+  function renderChoices(result) {
+    offered = { requestKey: result.requestKey, forecasts: result.forecasts };
+    const [first] = result.forecasts;
+    el.choicesTitle.textContent = `${placeOf(first)} · valget afholdes senest ${first.electionDate}`;
+    el.choicesList.innerHTML = '';
+    result.forecasts.forEach((election, option) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'choice';
+      const who = document.createElement('span');
+      who.textContent = forecastLabel(election.forecast);
+      const what = document.createElement('span');
+      what.className = 'choice-note';
+      what.textContent = `${election.totalSeats} mandater`
+        + (election.forecast.computed ? ` · ${COMPUTED_NOTE}` : '');
+      button.append(who, what);
+      button.addEventListener('click', () => choose(option));
+      el.choicesList.appendChild(button);
+    });
+    show(el.choices, true);
+    setMessage('Valget er ikke afholdt endnu. Vælg en meningsmåling at regne på.', 'info');
+  }
+
+  function clearChoices() {
+    offered = null;
+    show(el.choices, false);
+  }
+
+  function choose(option) {
+    if (!offered) return;
+    const election = offered.forecasts[option];
+    pending = { requestKey: offered.requestKey, option, election };
+    show(el.choices, false);
+    renderPreview(election);
+    setMessage('Kontrollér tallene, før du gemmer prognosen.', 'info');
+  }
+
   async function submit(event) {
     event.preventDefault();
     clearPreview();
+    clearChoices();
     setMessage('');
 
     const { valid, values, errors } = validateImportForm({
@@ -170,6 +235,11 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
         await refreshPicker(existing.electionHash).catch(() => {});
         return;
       }
+      if (existing.status === ImportStatus.CHOOSE) {
+        // Somebody read these polls a moment ago; choosing from them is free.
+        renderChoices(existing);
+        return;
+      }
 
       busy(true, 'Henter…');
       const result = await api.importElection(values);
@@ -185,6 +255,11 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
       }
       if (result.status === ImportStatus.PENDING) {
         setMessage('Behandling er stadig i gang. Prøv igen om lidt.', 'info');
+        return;
+      }
+      if (result.status === ImportStatus.CHOOSE) {
+        renderChoices(result);
+        await onImported();
         return;
       }
       pending = result;
@@ -211,13 +286,16 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
 
   async function confirm() {
     if (!pending) return;
-    const { requestKey } = pending;
+    const { requestKey, option } = pending;
+    const isForecast = option !== undefined;
     try {
       el.confirm.disabled = true;
-      const saved = await api.confirm(requestKey);
+      const saved = await api.confirm(requestKey, isForecast ? { option } : {});
       clearPreview();
+      clearChoices();
       await refreshPicker(saved.electionHash).catch(() => {});
-      setMessage(saved.duplicate ? 'Valget var allerede gemt.' : 'Valget er gemt.', 'ok');
+      const noun = isForecast ? 'Prognosen' : 'Valget';
+      setMessage(saved.duplicate ? `${noun} var allerede gemt.` : `${noun} er gemt.`, 'ok');
       el.form.reset();
       setFieldErrors({});
       onSelect(saved.election);
@@ -230,8 +308,24 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
 
   async function discard() {
     if (!pending) return;
+    if (pending.option !== undefined && offered) {
+      // One poll out of a list was never staged on its own; go back to the list.
+      clearPreview();
+      show(el.choices, true);
+      setMessage('');
+      return;
+    }
     const { requestKey } = pending;
     clearPreview();
+    setMessage('Forkastet. Intet blev gemt.', 'info');
+    await api.discardPreview(requestKey).catch(() => {});
+  }
+
+  async function discardChoices() {
+    if (!offered) return;
+    const { requestKey } = offered;
+    clearPreview();
+    clearChoices();
     setMessage('Forkastet. Intet blev gemt.', 'info');
     await api.discardPreview(requestKey).catch(() => {});
   }
@@ -253,6 +347,7 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
   el.form.addEventListener('submit', submit);
   el.confirm.addEventListener('click', confirm);
   el.discard.addEventListener('click', discard);
+  el.choicesDiscard.addEventListener('click', discardChoices);
   el.picker.addEventListener('change', select);
 
   return {

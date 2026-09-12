@@ -192,8 +192,15 @@ def article_queries(resolved, *, language: str = DEFAULT_LANGUAGE) -> list[str]:
     """
     year = str(resolved.election_date)[:4]
     place = _clip(resolved.state or resolved.nation, 60)
-    conventional = f"{year} {place} election"
     named = _clip(resolved.title, 120)
+    if getattr(resolved, "upcoming", False):
+        # An election not yet held has no results article worth reading; its
+        # polls live in "Opinion polling for the next Danish general election",
+        # which takes the year into its title only once the date is set.
+        conventional = f"opinion polling next {place} election"
+        named = f"opinion polling {year} {place} election"
+    else:
+        conventional = f"{year} {place} election"
     ordered = (conventional, named) if language == DEFAULT_LANGUAGE else (named, conventional)
 
     queries: list[str] = []
@@ -204,7 +211,7 @@ def article_queries(resolved, *, language: str = DEFAULT_LANGUAGE) -> list[str]:
     return queries
 
 
-def relevant_titles(titles: list[str], year: str) -> list[str]:
+def relevant_titles(titles: list[str], year: str, *, polls: bool = False) -> list[str]:
     """The articles that could be this election, the ones named after it first.
 
     An article whose title carries a *different* year is a different election —
@@ -212,11 +219,17 @@ def relevant_titles(titles: list[str], year: str) -> list[str]:
     up second — and reading it would cost a fetch and a model call to be told so.
     What is left is ordered by whether the title names the year at all, because
     "Elections in Saxony-Anhalt" is the overview article and has no one table.
+
+    Looking for ``polls``, a title that says so goes first, whether or not it has
+    a year in it: the polling article for the next election is named for "the
+    next" one until its date is fixed.
     """
     kept = [
         title for title in titles
         if not ((years := set(_TITLE_YEAR.findall(title))) and year not in years)
     ]
+    if polls:
+        return sorted(kept, key=lambda title: "poll" not in title.casefold())
     return sorted(kept, key=lambda title: year not in title)
 
 
@@ -259,7 +272,8 @@ class Wikipedia:
         year = str(resolved.election_date)[:4]
         for query in article_queries(resolved, language=self._language):
             titles = relevant_titles(
-                await self._search(query, limit=max(limit * 2, 2)), year
+                await self._search(query, limit=max(limit * 2, 2)), year,
+                polls=bool(getattr(resolved, "upcoming", False)),
             )
             if titles:
                 return [article_url(self.host, title) for title in titles[:limit]]

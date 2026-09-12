@@ -26,6 +26,12 @@
  * @property {number} totalSeats     Size of the assembly.
  * @property {number} majoritySeats  Seats needed for a majority.
  * @property {Block[]} blocks
+ * @property {Forecast|null} forecast  Set for a poll of an election not yet held.
+ *
+ * @typedef {Object} Forecast
+ * @property {string} publisher     Who published the poll or projection.
+ * @property {string} publishedOn   ISO 8601 date it was published.
+ * @property {boolean} computed     True when the seats were computed from vote shares.
  *
  * @typedef {Object} ElectionProvider
  * @property {() => Promise<Election>} getElection
@@ -41,7 +47,8 @@ export class ElectionValidationError extends Error {
   }
 }
 
-const ELECTION_FIELDS = ['nation', 'state', 'electionDate', 'title', 'sourceUrl', 'totalSeats', 'majoritySeats', 'blocks'];
+const ELECTION_FIELDS = ['nation', 'state', 'electionDate', 'title', 'sourceUrl', 'totalSeats', 'majoritySeats', 'blocks', 'forecast'];
+const FORECAST_FIELDS = ['publisher', 'publishedOn', 'computed'];
 const BLOCK_FIELDS = ['name', 'parties'];
 const PARTY_FIELDS = ['name', 'abbr', 'seats', 'color'];
 
@@ -194,6 +201,9 @@ export function validateElection(input) {
     }
   }
 
+  const hasForecast = input.forecast !== undefined && input.forecast !== null;
+  if (hasForecast) validateForecast(errors, 'election.forecast', input.forecast, input.electionDate);
+
   if (errors.length > 0) throw new ElectionValidationError(errors);
 
   return freeze({
@@ -208,7 +218,33 @@ export function validateElection(input) {
       name: b.name,
       parties: b.parties.map((p) => ({ name: p.name, abbr: p.abbr, seats: p.seats, color: p.color })),
     })),
+    forecast: hasForecast
+      ? {
+        publisher: input.forecast.publisher,
+        publishedOn: input.forecast.publishedOn,
+        computed: input.forecast.computed,
+      }
+      : null,
   });
+}
+
+/**
+ * A poll of an election not yet held: who, when, and whether its seats are ours.
+ * Mirrors `Forecast` in `backend/app/schema.py`.
+ */
+function validateForecast(errors, path, forecast, electionDate) {
+  if (!isPlainObject(forecast)) return errors.push(`${path}: expected an object, got ${describe(forecast)}`);
+  checkAllowlist(errors, path, forecast, FORECAST_FIELDS);
+  checkText(errors, `${path}.publisher`, forecast.publisher);
+  const dateOk = checkElectionDate(errors, `${path}.publishedOn`, forecast.publishedOn);
+  if (typeof forecast.computed !== 'boolean') {
+    errors.push(`${path}.computed: expected a boolean, got ${describe(forecast.computed)}`);
+  }
+  // A "forecast" published after the vote is a result under another name.
+  if (dateOk && typeof electionDate === 'string'
+    && forecast.publishedOn.slice(0, 10) > electionDate.slice(0, 10)) {
+    errors.push(`${path}.publishedOn: ${forecast.publishedOn} is after the election on ${electionDate}`);
+  }
 }
 
 /** Objects that came out of {@link validateElection}; membership cannot be forged by copying. */
@@ -221,6 +257,7 @@ function freeze(election) {
     Object.freeze(b);
   });
   Object.freeze(election.blocks);
+  if (election.forecast) Object.freeze(election.forecast);
   Object.freeze(election);
   validated.add(election);
   return election;

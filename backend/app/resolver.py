@@ -36,9 +36,14 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .observability import io_span
+from .schema import MAX_SEATS
+from .seats import AllocationMethod
 from .store import ImportRequest
 
 log = logging.getLogger(__name__)
+
+#: No proportional system asks for more than this; a larger figure is a misreading.
+MAX_THRESHOLD_PERCENT = 50.0
 
 MODEL = "claude-opus-5"
 MAX_TOKENS = 4_000
@@ -74,16 +79,32 @@ Then identify the election:
 - If a region is named, the election is that region's own assembly — the
   Landtag, parliament, or council elected in that region. If no region is named,
   it is the national parliament.
-- It must be an election held in the year given. If that place held no such
-  election that year, say so rather than answering with a different year: the
-  year is what the person asked for, and a neighbouring one is a different
-  election.
+- It must be an election held, or due to be held, in the year given. If that
+  place holds no such election that year, say so rather than answering with a
+  different year: the year is what the person asked for, and a neighbouring one
+  is a different election.
 - Give the nation and the region in English, and the region as null for a
   national election. Give the date the election was held as YYYY-MM-DD; for an
   election held over several days, the last of them.
+- Say how the assembly's seats are allocated, as closely as one proportional
+  allocation from nationwide vote shares can approximate it: assembly_seats is
+  the number of seats, threshold_percent the vote share a party needs to win
+  any (0 when there is no threshold), and seat_method "dhondt" or
+  "sainte_lague", whichever highest-averages method is closer to the real one.
+  Leave all three null for an assembly that is not elected proportionally.
 
-Then find where its seat distribution is published. Search for it, and list the
-URLs of pages that state how many seats each party won: the electoral
+An election that has not been held yet — today is before its date — is
+upcoming. Set upcoming to true, and give as its date the day it is scheduled
+for or, when no day has been set, the last day on which it can be held. It has
+no results, so instead of a seat distribution find its opinion polls: list the
+URLs of pages that publish recent polls or seat projections for this election —
+a poll aggregator, a public broadcaster's poll tracker, the pollsters' own
+pages, or an encyclopedia article listing the polls — the most complete and
+most recently updated first.
+
+For an election that has been held, find where its seat distribution is
+published. Search for it, and list the URLs of pages that state how many seats
+each party won: the electoral
 authority, the assembly's own page on its composition, a public broadcaster's
 results page, or an encyclopedia article that gives seat counts. Most official
 sites publish this in the country's own language, so search in that language —
@@ -96,9 +117,9 @@ different election in the same place.
 If you cannot get to one election, fill in unresolved_reason instead and leave
 the rest as your best guess:
 - "unknown_place" when the nation or region is not a place you can identify;
-- "no_election" when that place held no such election in that year;
-- "not_yet_held" when the election is in the future, or has been held but has no
-  seat distribution yet;
+- "no_election" when that place holds no such election in that year;
+- "not_yet_held" when the election has been held but its seats have not been
+  allocated yet (an upcoming election is not this: set upcoming instead);
 - "ambiguous" when the request fits more than one election and nothing chooses
   between them.\
 """
@@ -117,10 +138,7 @@ UNRESOLVED_MESSAGES: dict[str, str] = {
         "no election of that kind was held there in that year — check the year, "
         "and whether it is the region's own parliament you mean"
     ),
-    "not_yet_held": (
-        "that election has not been held yet, or its seats have not been "
-        "allocated yet"
-    ),
+    "not_yet_held": "that election's seats have not been allocated yet",
     "ambiguous": (
         "more than one election fits that description — name the region whose "
         "own parliament you mean"
@@ -159,7 +177,26 @@ class ResolvedElection(BaseModel):
     )
     sources: list[str] = Field(
         default_factory=list,
-        description="URLs of pages that state the seat counts, most official first.",
+        description=(
+            "URLs of pages that state the seat counts, most official first — or, "
+            "for an upcoming election, pages publishing its opinion polls."
+        ),
+    )
+    upcoming: bool = Field(
+        default=False,
+        description="True when the election has not been held yet.",
+    )
+    assembly_seats: int | None = Field(
+        default=None, ge=1, le=MAX_SEATS,
+        description="Seats in the assembly; null if not elected proportionally.",
+    )
+    threshold_percent: float | None = Field(
+        default=None, ge=0, le=MAX_THRESHOLD_PERCENT,
+        description="Vote share in percent a party needs to win seats; 0 for none.",
+    )
+    seat_method: AllocationMethod | None = Field(
+        default=None,
+        description="The highest-averages method closest to how seats are allocated.",
     )
     unresolved_reason: UnresolvedReason | None = Field(
         default=None,
@@ -299,20 +336,29 @@ class MockResolver:
     #: fetch and the extraction. Tests inject their own.
     DEFAULT_SOURCES = ("https://example.com/",)
 
-    def __init__(self, sources: tuple[str, ...] | None = None):
+    def __init__(self, sources: tuple[str, ...] | None = None, *, clock=date.today):
         self.sources = list(self.DEFAULT_SOURCES if sources is None else sources)
         self.calls: list[ImportRequest] = []
+        self._clock = clock
 
     async def resolve(self, request: ImportRequest) -> ResolvedElection:
         self.calls.append(request)
+        # Mid-year, so nothing depends on a date the mock cannot know.
+        held = date(request.year, 6, 6)
         resolved = ResolvedElection(
             nation=request.nation,
             state=request.subnation,
-            # Mid-year, so nothing depends on a date the mock cannot know.
-            election_date=f"{request.year}-06-06",
+            election_date=held.isoformat(),
             title=request.describe(),
             search_terms=request.describe(),
             sources=list(self.sources),
+            # A year still to come is an upcoming election here too, so mock
+            # mode walks through the forecast list as well as the result.
+            upcoming=held > self._clock(),
+            # The mock's parties are Saxony-Anhalt's, so its Landtag's rules.
+            assembly_seats=97,
+            threshold_percent=5.0,
+            seat_method="sainte_lague",
         )
         with io_span(log, "anthropic", "resolve", model="mock", year=request.year) as span:
             span["reason"] = "resolved"

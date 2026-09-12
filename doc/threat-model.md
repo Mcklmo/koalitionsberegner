@@ -277,6 +277,36 @@ What this does *not* defend against is a wrong-but-plausible page: a search can
 return an outdated or unofficial page whose numbers differ from the official
 ones. The confirmation step, with the source page named, is the check.
 
+### T10 — Polls of an election not yet held
+
+An upcoming election is imported from its opinion polls, which changes what a
+page's numbers are *for* but none of the defences above:
+
+- **Same fence, same capability.** `extractor.build_forecast_request` carries
+  exactly the arguments `build_request` does, with its own system prompt that
+  opens with the same untrusted-data paragraph (`DOCUMENT_IS_DATA`) and its own
+  closed output schema, `ExtractedForecasts`. `no_results_reason` is again a
+  code, and `parser.NO_POLLS_MESSAGES` owns the wording.
+- **The identity is the resolver's.** A forecast is filed under the nation,
+  region and date the resolver gave, never the page's; the page's own claim of
+  which election its polls are for is checked against the request by
+  `parser.polls_are_wanted` first, and a page for another place or year is
+  discarded whole.
+- **Seats are never the model's arithmetic.** The agent reports seats or vote
+  shares as stated and is told not to convert. Converting is
+  `seats.allocate`, in code, from the resolver's assembly size, threshold and
+  method — a model's reading of the election, not of the page. Every poll
+  passes `schema.Election` like a result does, a poll dated after today or
+  after the election is refused, and a bad poll is dropped rather than repaired.
+- **No overwrite, and no squatting.** A forecast's identity adds its publisher
+  and date to the election's, so it can never take a result's place in the
+  store; `store.select_by_place` ignores forecasts, so a saved poll cannot block
+  the result, or a newer poll, from being imported. A forecast is saved only by
+  a user choosing it, and the store accepts only a forecast that is actually on
+  offer (`confirm_forecast` compares the election itself, not its position).
+- **Labelled.** A computed forecast says so in the list, the preview and the
+  calculator's footer, and the page it was read from is named.
+
 ## Accepted risks
 
 These are known and deliberately not addressed here:
@@ -307,6 +337,10 @@ These are known and deliberately not addressed here:
   disguising the client is out of scope. Wikimedia used to be the case that hurt
   most; it is now read through its own API, which is the supported way in, with a
   `User-Agent` that says who we are (`WIKIPEDIA_CONTACT`).
+- **Computed seats are an approximation.** A poll in percent is allocated as one
+  nationwide proportional vote; real systems add constituency seats, overhang,
+  regional thresholds and reserved seats. The error is honest, not hostile, and
+  the label is the mitigation.
 - **Wikipedia can be edited by the attacker too.** Putting its article first
   means an import usually reads the page an adversary would have to edit
   publicly, in the open, to poison — which is a trade we are making deliberately,
@@ -331,6 +365,10 @@ These are known and deliberately not addressed here:
 | An article is read first, but checked against the request like any other page | `backend/tests/test_extraction.py` |
 | Real articles reduce to their results, and to nothing that is not a result | `backend/tests/test_articles.py` |
 | Candidate pages go through the fetcher, and only for pages that stated no seats | `backend/tests/test_extraction.py` |
+| Polls are fenced, tool-less, checked against the request, and dropped when invalid | `backend/tests/test_forecasts.py` |
+| Seats from vote shares are computed in code, deterministically | `backend/tests/test_seats.py` |
+| A forecast cannot take a result's identity, block an import, or be saved unless offered | `backend/tests/test_forecast_schema.py`, `backend/tests/test_forecast_store.py`, `backend/tests/test_forecast_api.py` |
+| An offered list is validated whole; computed seats are labelled in the page | `test/forecast.test.mjs` |
 
 The adversarial fixtures themselves are `test/adversarial/`:
 `injected-instructions.html` argues with the agent through five different

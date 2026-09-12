@@ -45,7 +45,8 @@ test('a valid election is normalised and deep-frozen', () => {
   assert.ok(Object.isFrozen(election));
   assert.ok(Object.isFrozen(election.blocks[0].parties[0]));
   assert.deepEqual(Object.keys(election).sort(),
-    ['blocks', 'electionDate', 'majoritySeats', 'nation', 'sourceUrl', 'state', 'title', 'totalSeats']);
+    ['blocks', 'electionDate', 'forecast', 'majoritySeats', 'nation', 'sourceUrl', 'state', 'title', 'totalSeats']);
+  assert.equal(election.forecast, null, 'a result carries no forecast');
 });
 
 test('optional state is accepted when present', () => {

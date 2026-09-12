@@ -26,6 +26,7 @@ from .observability import io_span
 from .schema import Election
 from .store import (
     DEFAULT_STALE_AFTER_SECONDS,
+    DISCARDABLE_STATUSES,
     Claim,
     ClaimOutcome,
     Confirmation,
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS import_jobs (
     started_at  REAL NOT NULL,
     attempt     INTEGER NOT NULL DEFAULT 1,
     error       TEXT,
-    result      TEXT
+    result      TEXT,
+    forecasts   TEXT
 );
 CREATE TABLE IF NOT EXISTS import_results (
     request_key   TEXT PRIMARY KEY,
@@ -87,6 +89,9 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         error=row["error"],
         # A staged draft is re-validated on read like anything else from storage.
         result=Election.model_validate(json.loads(row["result"])) if row["result"] else None,
+        forecasts=tuple(
+            Election.model_validate(item) for item in json.loads(row["forecasts"])
+        ) if row["forecasts"] else (),
     )
 
 
@@ -118,6 +123,7 @@ class SqliteElectionStore:
         """
         for table, column, definition in (
             ("elections", "selected", "INTEGER NOT NULL DEFAULT 0"),
+            ("import_jobs", "forecasts", "TEXT"),
         ):
             existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if column not in existing:
@@ -264,7 +270,7 @@ class SqliteElectionStore:
                     " error, result) VALUES (?, ?, ?, ?, ?, NULL, NULL)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     " query=excluded.query, started_at=excluded.started_at,"
-                    " attempt=excluded.attempt, error=NULL, result=NULL",
+                    " attempt=excluded.attempt, error=NULL, result=NULL, forecasts=NULL",
                     (request_key, new_job.status.value, new_job.query,
                      new_job.started_at, new_job.attempt),
                 )
@@ -283,11 +289,59 @@ class SqliteElectionStore:
                     " error, result) VALUES (?, ?, ?, ?, ?, NULL, ?)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     # Restart the lease so the user gets a full window to confirm.
-                    " started_at=excluded.started_at, error=NULL, result=excluded.result",
+                    " started_at=excluded.started_at, error=NULL, result=excluded.result,"
+                    " forecasts=NULL",
                     (request_key, JobStatus.AWAITING_CONFIRMATION.value,
                      row["query"] if row else "", self._clock(),
                      row["attempt"] if row else 1,
                      json.dumps(election.model_dump(mode="json"))),
+                )
+
+    def offer(self, request_key: str, forecasts: list[Election]) -> None:
+        with io_span(log, "sqlite", "offer", request=request_key[:12],
+                     forecasts=len(forecasts)):
+            with self._write() as conn:
+                row = conn.execute(
+                    "SELECT query, attempt FROM import_jobs WHERE request_key = ?", (request_key,)
+                ).fetchone()
+                conn.execute(
+                    "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
+                    " error, result, forecasts) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)"
+                    " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
+                    # Restart the lease so the user gets a full window to choose.
+                    " started_at=excluded.started_at, error=NULL, result=NULL,"
+                    " forecasts=excluded.forecasts",
+                    (request_key, JobStatus.AWAITING_CHOICE.value,
+                     row["query"] if row else "", self._clock(),
+                     row["attempt"] if row else 1,
+                     json.dumps([f.model_dump(mode="json") for f in forecasts])),
+                )
+
+    def confirm_forecast(
+        self, request_key: str, forecast: Election, election_hash: str
+    ) -> Confirmation | None:
+        with io_span(log, "sqlite", "confirm_forecast", request=request_key[:12],
+                     hash=election_hash[:12]) as span:
+            with self._write() as conn:
+                row = conn.execute(
+                    "SELECT * FROM import_jobs WHERE request_key = ?", (request_key,)
+                ).fetchone()
+                job = _job_from_row(row) if row else None
+                if job is None or job.status is not JobStatus.AWAITING_CHOICE \
+                        or forecast not in job.forecasts:
+                    span["result"] = "none"
+                    return None
+                already = self._read_election(conn, election_hash)
+                if already is None:
+                    conn.execute(
+                        "INSERT INTO elections (election_hash, election, stored_at, selected)"
+                        " VALUES (?, ?, ?, 0)",
+                        (election_hash, json.dumps(forecast.model_dump(mode="json")),
+                         self._clock()),
+                    )
+                span["result"] = "duplicate" if already is not None else "stored"
+                return Confirmation(
+                    election_hash, already or forecast, duplicate=already is not None
                 )
 
     def confirm(self, request_key: str, election_hash: str) -> Confirmation | None:
@@ -352,7 +406,8 @@ class SqliteElectionStore:
                 conn.execute(
                     "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, '', ?, 1, NULL, NULL)"
-                    " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status, result=NULL",
+                    " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status, result=NULL,"
+                    " forecasts=NULL",
                     (request_key, JobStatus.SUCCEEDED.value, now),
                 )
                 span["linked"] = True
@@ -361,8 +416,8 @@ class SqliteElectionStore:
         with io_span(log, "sqlite", "discard", request=request_key[:12]) as span:
             with self._write() as conn:
                 deleted = conn.execute(
-                    "DELETE FROM import_jobs WHERE request_key = ? AND status = ?",
-                    (request_key, JobStatus.AWAITING_CONFIRMATION.value),
+                    "DELETE FROM import_jobs WHERE request_key = ? AND status IN (?, ?)",
+                    (request_key, *(status.value for status in DISCARDABLE_STATUSES)),
                 ).rowcount
                 span["discarded"] = bool(deleted)
                 return bool(deleted)
@@ -378,7 +433,7 @@ class SqliteElectionStore:
                     "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, ?, ?, ?, ?, NULL)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
-                    " error=excluded.error, result=NULL",
+                    " error=excluded.error, result=NULL, forecasts=NULL",
                     (request_key, JobStatus.FAILED.value,
                      row["query"] if row else "",
                      row["started_at"] if row else self._clock(),

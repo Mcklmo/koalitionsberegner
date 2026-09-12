@@ -55,8 +55,13 @@ export function mountCoalitionCalculator(election, elements = {}) {
   el.subtitle.textContent = `Vælg partier og se om de tilsammen opnår flertal `
     + `(${election.majoritySeats}+ ud af ${election.totalSeats} mandater)`;
   el.totalOf.textContent = `af ${election.totalSeats} mandater`;
+  // A forecast is not a result, and one whose seats we computed says so.
+  const { forecast } = election;
   el.footerNote.textContent = `Flertal kræver ${election.majoritySeats} mandater `
-    + `· Endelig resultat, ${formatElectionDate(election.electionDate)}`;
+    + (forecast
+      ? `· Prognose fra ${forecast.publisher}, ${formatElectionDate(forecast.publishedOn)}`
+        + (forecast.computed ? ' (mandater beregnet ud fra stemmeandele)' : '')
+      : `· Endelig resultat, ${formatElectionDate(election.electionDate)}`);
 
   function render() {
     el.list.innerHTML = '';

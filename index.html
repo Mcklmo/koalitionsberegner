@@ -415,6 +415,43 @@
       margin-top: 10px
     }
 
+    .choices {
+      display: flex;
+      flex-direction: column;
+      gap: 6px
+    }
+
+    button.choice {
+      font: inherit;
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 4px 12px;
+      width: 100%;
+      padding: 7px 10px;
+      text-align: left;
+      border: 0.5px solid #ccc;
+      border-radius: 6px;
+      background: none;
+      color: inherit;
+      cursor: pointer
+    }
+
+    button.choice:hover {
+      border-color: #378ADD
+    }
+
+    @media(prefers-color-scheme:dark) {
+      button.choice {
+        border-color: #444
+      }
+    }
+
+    .choice-note {
+      color: #888
+    }
+
     details.account {
       margin-top: 1.5rem;
       border-top: 0.5px solid #e0e0e0;
@@ -583,12 +620,22 @@
           autocomplete="off">
       </div>
       <p class="footer-note">Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi
-        fandt — og hvor tallene kommer fra — før der gemmes noget.</p>
+        fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt
+        endnu, kan du vælge mellem de seneste meningsmålinger.</p>
       <button class="primary" id="f-submit" type="submit">Hent valgresultat</button>
       <p class="quota" id="import-availability"></p>
     </form>
 
     <p class="msg" id="import-message"></p>
+
+    <div class="preview" id="choices" hidden>
+      <h3 id="choices-title"></h3>
+      <div class="preview-meta">Vælg en meningsmåling. Du ser tallene, før noget gemmes.</div>
+      <div class="choices" id="choices-list"></div>
+      <div class="preview-actions">
+        <button class="secondary" id="choices-discard" type="button">Forkast</button>
+      </div>
+    </div>
 
     <div class="preview" id="preview" hidden>
       <h3 id="preview-title"></h3>
