@@ -7,6 +7,11 @@ about — are all testable without Stripe, a network, or a signing secret.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import time
+
 import pytest
 
 from app.accounts import Tier
@@ -133,6 +138,7 @@ class FakeStripe:
     def __init__(self, *, event=None, signature_error=None):
         self.created = []
         self.portals = []
+        self.verified = []
         self._event = event
         self._signature_error = signature_error
         outer = self
@@ -166,6 +172,7 @@ class FakeStripe:
         class Webhook:
             @staticmethod
             def construct_event(payload, signature, secret):
+                outer.verified.append((payload, signature, secret))
                 if outer._signature_error:
                     raise outer._signature_error
                 return outer._event
@@ -243,18 +250,22 @@ def test_the_portal_is_opened_for_the_stored_customer():
 
 
 def test_a_verified_webhook_is_translated():
-    stripe_billing, _ = billing(event=subscription_event())
+    stripe_billing, fake = billing(event=subscription_event())
+    payload = json.dumps(subscription_event()).encode()
 
-    event = stripe_billing.event_from_webhook(b"{}", "t=1,v1=abc")
+    event = stripe_billing.event_from_webhook(payload, "t=1,v1=abc")
 
     assert event.tier is Tier.PREMIUM
     assert event.uid == "uid-1"
+    # The body that was parsed is the body whose signature was checked.
+    assert fake.verified == [(payload, "t=1,v1=abc", "whsec_test")]
 
 
 def test_an_unsigned_webhook_never_reaches_the_parser():
-    stripe_billing, _ = billing(event=subscription_event())
+    stripe_billing, fake = billing(event=subscription_event())
     with pytest.raises(ValueError, match="missing Stripe signature"):
         stripe_billing.event_from_webhook(b"{}", None)
+    assert fake.verified == []
 
 
 def test_a_forged_webhook_is_refused():
@@ -283,6 +294,41 @@ def test_the_fake_is_shaped_like_the_real_sdk():
     assert callable(client.checkout.sessions.create)
     assert callable(client.billing_portal.sessions.create)
     assert callable(stripe.Webhook.construct_event)
+
+
+def test_a_really_signed_webhook_grants_the_tier():
+    """The whole path against the installed SDK, with a genuine signature.
+
+    The fake above hands back a plain dict, which is the one shape this code
+    never has to cope with in production. That hid an SDK change that made
+    every real webhook a 400: `StripeObject` stopped being a `dict` and
+    `to_dict_recursive()` became private. Checkout kept succeeding and no tier
+    ever changed. This test signs a body the way Stripe does and runs it
+    through the real `stripe` module, so the next such change fails here.
+    """
+    stripe = pytest.importorskip("stripe")
+
+    secret = "whsec_testsecret"
+    payload = json.dumps(subscription_event()).encode()
+    timestamp = int(time.time())
+    signed = hmac.new(
+        secret.encode(), b"%d.%s" % (timestamp, payload), hashlib.sha256
+    ).hexdigest()
+
+    real = StripeBilling(
+        "sk_test",
+        prices={Tier.BASIC: BASIC_PRICE, Tier.PREMIUM: PREMIUM_PRICE},
+        webhook_secret=secret,
+        stripe=stripe,
+    )
+    event = real.event_from_webhook(payload, f"t={timestamp},v1={signed}")
+
+    assert event.tier is Tier.PREMIUM
+    assert event.uid == "uid-1"
+    assert event.status == "active"
+
+    with pytest.raises(stripe.SignatureVerificationError):
+        real.event_from_webhook(payload, f"t={timestamp},v1={'0' * 64}")
 
 
 def test_without_stripe_nothing_is_for_sale():

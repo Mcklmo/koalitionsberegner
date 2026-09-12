@@ -18,6 +18,7 @@ is testable without Stripe, a network, or a signing secret.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -261,8 +262,15 @@ class StripeBilling:
             raise ValueError("missing Stripe signature")
         # construct_event both verifies the HMAC and rejects a replayed
         # timestamp; an unsigned body must never reach parse_event.
-        event = self._stripe.Webhook.construct_event(payload, signature, self._webhook_secret)
-        as_dict = event if isinstance(event, Mapping) else event.to_dict_recursive()
+        self._stripe.Webhook.construct_event(payload, signature, self._webhook_secret)
+        # Once the signature holds, the bytes *are* the event, so they are read
+        # as JSON rather than unwrapped from the SDK's object. That shape has
+        # already changed under us once — in stripe 15 ``StripeObject`` stopped
+        # being a ``dict`` and ``to_dict_recursive()`` became private — and a
+        # webhook is the one path that may not break on an SDK upgrade: the
+        # payment succeeds, the tier never changes, and nobody finds out until a
+        # subscriber complains.
+        as_dict = json.loads(payload)
         parsed = parse_event(as_dict, self._price_tiers)
         log.info(
             "stripe webhook type=%s handled=%s", scrub(as_dict.get("type")), parsed is not None

@@ -39,6 +39,11 @@ whatever a bare checkout can actually do, so `uv run uvicorn app.main:app` with
 no environment set at all starts and works: in memory, ungated, with a mocked
 extraction agent. Nothing here needs a cloud account until you want one.
 
+Set them on the command line, or keep them in a `.env` at the repo root —
+`cp .env.example .env`. Both work at once, and the environment wins over the
+file, so a one-off `LLM_MODE=live uv run …` overrides what `.env` says without
+editing it. See [The .env file](#the-env-file) for the rules.
+
 The one coupling worth knowing: **accounts live wherever the elections do**.
 `ELECTION_STORE` picks the database for both, so `sqlite` gives you real
 accounts, tiers and quotas — persisted across restarts — with no Firestore
@@ -153,6 +158,9 @@ test mode and forward its webhooks:
 stripe listen --forward-to localhost:8000/api/billing/webhook
 ```
 
+[doc/stripe.md](stripe.md) is the fifteen-minute version of getting a test-mode
+account, two prices and that signing secret.
+
 `BASIC_MONTHLY_IMPORTS=2` is worth setting alongside it: the allowance is then
 small enough to spend, so the `429` at the end of a month is reachable in a
 minute rather than ten.
@@ -199,6 +207,7 @@ with `<meta name="api-base" content="https://…">` in `index.html` and set
    endpoint pointing at `/api/billing/webhook` subscribed to
    `checkout.session.completed` and `customer.subscription.*`. Put the secret
    key and the webhook signing secret in Secret Manager and mount them.
+   [doc/stripe.md](stripe.md) walks the Dashboard steps.
 5. Grant an administrator by setting `ADMIN_EMAILS`, or by setting a custom
    `admin` claim on the Firebase user. Administrators are the only callers that
    can curate which elections signed-out visitors see.
@@ -214,6 +223,35 @@ those, or use Firebase, which does.
 
 Stripe is optional: with no `STRIPE_API_KEY` the app starts, serves free
 accounts, and sells nothing.
+
+### The .env file
+
+`app/env.py` reads a `.env` before anything is configured, so a local run needs
+nothing exported. Four rules are worth knowing, because each one is there to
+stop a specific failure:
+
+- **The real environment always wins.** A variable already set is never
+  replaced. `LLM_MODE=live uv run …` still overrides the file, and a `.env` that
+  slips into an image cannot shadow what Cloud Run set.
+- **The file is found by walking up** from the working directory, so the
+  repo-root file is picked up whether the server was started in `backend/` or at
+  the root. `ENV_FILE=path` names one explicitly; `ENV_FILE=` loads none, which
+  is what `backend/tests/conftest.py` does so a developer's keys never reach the
+  suite.
+- **A file it cannot read stops the boot** — a malformed line, or an `ENV_FILE`
+  that does not exist. Same reason an unrecognised `LLM_MODE` is fatal: a typo
+  that silently leaves `ANTHROPIC_API_KEY` unset is found by the first user
+  instead of by whoever made it.
+- **Only names are logged, never values.** The startup line says which file was
+  used and which variables came from it.
+
+Syntax is `NAME=value`, one per line, with `#` comments, a tolerated leading
+`export`, and quotes when a value has spaces. No line continuations and no
+`$VAR` expansion — this is a file of literals, and a shell is what expands
+things.
+
+`.env` is in both `.gitignore` and `.dockerignore`; a deployment gets its
+variables from `--set-env-vars` and Secret Manager.
 
 ### Environment variables
 
@@ -240,6 +278,7 @@ accounts, and sells nothing.
 | `STRIPE_WEBHOOK_SECRET` | with `STRIPE_API_KEY` | — | Signing secret for `/api/billing/webhook`. The signature is the only authentication that endpoint has. |
 | `PUBLIC_BASE_URL` | with `STRIPE_API_KEY` | — | Where Stripe returns the user after checkout, e.g. `https://koalitionsberegner.example`. |
 | `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
+| `ENV_FILE` | no | nearest `.env` walking up from the working directory | A different file to read variables from. Empty loads none. A path that does not exist is a startup error. |
 | `PORT` | no | `8080` | Set by Cloud Run. |
 
 Credentials come from Application Default Credentials — the attached service account

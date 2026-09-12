@@ -63,12 +63,29 @@ Frontend only — the bundled Folketing 2026 election renders, import is disable
 python3 -m http.server 8000   # or: npx wrangler dev
 ```
 
+## Configure with `.env`
+
+Rather than prefixing every command, put the switches in a `.env` at the repo
+root — the backend reads it at startup, from wherever it was started:
+
+```sh
+cp .env.example .env
+```
+
+Anything already in the environment wins, so `LLM_MODE=live uv run …` still
+overrides the file. `.env` is gitignored and excluded from the image; a
+deployment gets its variables from Cloud Run and Secret Manager instead.
+`ENV_FILE=path` names a different file, and `ENV_FILE=` loads none.
+
 ## Run with live LLM
+
+With `ANTHROPIC_API_KEY` and `LLM_MODE=live` in `.env`, the plain command above
+is enough. Otherwise:
 
 ```sh
 cd backend
-source ../.env
-ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY LLM_MODE=live ELECTION_STORE=sqlite uv run uvicorn app.main:app --reload                                                                                              
+LLM_MODE=live ELECTION_STORE=sqlite ANTHROPIC_API_KEY=sk-ant-… \
+  uv run uvicorn app.main:app --reload
 ```
 
 ## Test
@@ -82,5 +99,6 @@ The adversarial results pages in `test/adversarial/` drive the import pipeline's
 prompt-injection and output-safety tests.
 
 See [doc/contribute.md](doc/contribute.md) for cloud setup and environment
-variables, and [doc/threat-model.md](doc/threat-model.md) for the import
-pipeline's threat model.
+variables, [doc/stripe.md](doc/stripe.md) for a bare minimum Stripe account, and
+[doc/threat-model.md](doc/threat-model.md) for the import pipeline's threat
+model.

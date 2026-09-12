@@ -1,5 +1,9 @@
 """Environment-driven configuration and dependency wiring.
 
+Values come from the environment, which a ``.env`` file at the repo root fills
+in for a local run without overriding anything already exported — see
+:mod:`app.env`.
+
 Configuration is validated eagerly at startup (see :func:`validate_configuration`),
 because the alternative is a container that passes its health check and only
 reveals a typo when the first real request arrives. A value that is not
@@ -13,6 +17,7 @@ import logging
 import os
 from functools import lru_cache
 
+from . import ENV_FILE_LOADED, ENV_NAMES_LOADED
 from .accounts import DEFAULT_MONTHLY_IMPORTS, AccountStore, InMemoryAccountStore, QuotaPolicy, Tier
 from .auth import (
     DisabledVerifier,
@@ -345,6 +350,13 @@ def validate_configuration() -> dict[str, str]:
     revision has already been rolled out and started taking traffic.
     """
     chosen = describe_configuration()
+    if ENV_FILE_LOADED is not None:
+        # Names only, never values: this file is where the API keys are. Worth a
+        # line even so — "why is billing on?" is answered by seeing which file
+        # was picked up, especially one found by walking up from the cwd.
+        log.info(
+            "loaded %s from %s", ", ".join(ENV_NAMES_LOADED) or "nothing", ENV_FILE_LOADED
+        )
     _env_float("PARSE_LEASE_SECONDS", DEFAULT_STALE_AFTER_SECONDS)
     _env_float("IMPORT_MAX_WAIT_SECONDS", 25.0)
     get_store()
