@@ -18,6 +18,7 @@ from .resolver import ResolvedElection, unresolved_message
 from .schema import Election
 from .search import DEFAULT_SEARCH_LIMIT, DisabledSearch
 from .store import ImportRequest
+from .wikipedia import DEFAULT_ARTICLE_LIMIT
 
 log = logging.getLogger(__name__)
 
@@ -46,16 +47,18 @@ class UnavailableParser:
 class LlmElectionParser:
     """Resolve the request, read the pages it points to, extract the seats.
 
-    Four steps, each a separate object so any of them can be swapped for a mock
+    Five steps, each a separate object so any of them can be swapped for a mock
     without changing the pipeline the real thing runs through:
 
     1. :mod:`app.resolver` turns what the user typed into one election — fixing
        the spelling, finding the day it was held — and into candidate URLs;
-    2. :mod:`app.search` looks for more candidates, for the search backends that
+    2. :mod:`app.wikipedia` looks the identified election up in Wikipedia, whose
+       article is read first where there is one;
+    3. :mod:`app.search` looks for more candidates, for the search backends that
        are a plain search engine rather than an agent;
-    3. :mod:`app.fetcher` downloads one candidate at a time, through the
+    4. :mod:`app.fetcher` downloads one candidate at a time, through the
        public-address guard;
-    4. :mod:`app.extractor` reads that one page, with no tools and no memory.
+    5. :mod:`app.extractor` reads that one page, with no tools and no memory.
 
     What comes back is then checked *here*, in code, against what was asked for:
     a page reporting some other year or some other region is skipped, however
@@ -71,15 +74,22 @@ class LlmElectionParser:
         resolver,
         *,
         search=None,
+        wikipedia=None,
         page_limit: int = DEFAULT_PAGE_LIMIT,
         search_limit: int = DEFAULT_SEARCH_LIMIT,
+        article_limit: int = DEFAULT_ARTICLE_LIMIT,
     ):
         self._fetcher = fetcher
         self._extractor = extractor
         self._resolver = resolver
         self._search = search or DisabledSearch()
+        # ``None``, not a disabled stand-in: there is nothing to look up in when
+        # Wikipedia is off, and the candidate list is simply the one it was
+        # before this seam existed.
+        self._wikipedia = wikipedia
         self._page_limit = page_limit
         self._search_limit = search_limit
+        self._article_limit = article_limit
 
     async def parse(self, request: ImportRequest) -> Election:
         resolved = await self._resolve(request)
@@ -129,19 +139,49 @@ class LlmElectionParser:
         return resolved
 
     async def _candidates(self, resolved: ResolvedElection) -> list[str]:
-        """Where to look, best first: the resolver's own list, then a search.
+        """Where to look, best first: Wikipedia, the resolver's own list, a search.
 
-        The resolver has usually searched already, so the extra search is for
-        the deployments whose search backend is an index rather than an agent —
-        and for the times the resolver named an election it could not find a
-        page for.
+        Wikipedia goes first where it is configured, because an encyclopedia
+        article is the one page that reliably *states seats*: one table, the
+        election named in the lead, and the party colours in the markup. The
+        resolver orders its own candidates by how official they are, which puts
+        the electoral authority at the top — and electoral authorities publish
+        votes, percentages, and PDFs at least as often as they publish a seat
+        allocation. Those candidates are still read, in order, when the article
+        turns out not to be one.
+
+        The resolver has usually searched already, so the extra search is for the
+        deployments whose search backend is an index rather than an agent — and
+        for the times the resolver named an election it could not find a page for.
         """
-        candidates = list(resolved.sources)
+        candidates = await self._articles(resolved)
+        for url in resolved.sources:
+            if url not in candidates:
+                candidates.append(url)
         if len(candidates) < self._page_limit:
             for url in await self._find(resolved):
                 if url not in candidates:
                     candidates.append(url)
         return candidates
+
+    async def _articles(self, resolved: ResolvedElection) -> list[str]:
+        """Ask Wikipedia for the article on this election.
+
+        Like a failed search, a failed lookup is not a failed import: the
+        resolver's candidates are read next, exactly as they would have been.
+        """
+        if self._wikipedia is None or self._article_limit <= 0:
+            return []
+        try:
+            found = await self._wikipedia.find(resolved, limit=self._article_limit)
+        except Exception as exc:  # noqa: BLE001 - reported as "we found nothing"
+            log.warning(
+                "looking %r up in Wikipedia failed: %s", _clip(resolved.describe(), 80), exc
+            )
+            return []
+        if found:
+            log.info("wikipedia found %s for %s", len(found), _clip(resolved.describe(), 80))
+        return found
 
     async def _find(self, resolved: ResolvedElection) -> list[str]:
         """Ask the web where this election's seats are published.

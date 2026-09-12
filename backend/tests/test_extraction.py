@@ -31,6 +31,7 @@ from app.resolver import (
     UnresolvedReason,
 )
 from app.search import StubSearch
+from app.wikipedia import StubWikipedia
 from tests.factories import FixedExtractor, make_request
 
 pytestmark = pytest.mark.anyio
@@ -44,6 +45,7 @@ def anyio_backend():
 SEATS = "https://wahlergebnisse.sachsen-anhalt.de/lt26/sitze.html"
 VOTES = "https://wahlergebnisse.sachsen-anhalt.de/lt26/stimmen.html"
 WIKI = "https://encyclopedia.example/wiki/Landtagswahl_Sachsen-Anhalt_2026"
+ARTICLE = "https://en.wikipedia.org/wiki/2026_Saxony-Anhalt_state_election"
 
 
 def sachsen_anhalt_request():
@@ -473,6 +475,82 @@ async def test_a_failed_search_leaves_the_resolvers_candidates_alone():
         SiteFetcher({SEATS: "Sitze"}), FixedExtractor(seats()), search=Broken()
     ).parse(sachsen_anhalt_request())
     assert election.total_seats == 97
+
+
+# --- Wikipedia, ahead of everything else ------------------------------------
+
+async def test_the_article_is_read_before_the_pages_the_resolver_named():
+    """An encyclopedia article states seats; an electoral authority's own site
+    often states votes, percentages, or a PDF."""
+    fetcher = SiteFetcher({ARTICLE: "Sitze", SEATS: "Sitze"})
+    election = await parser(
+        fetcher, FixedExtractor(seats()), resolution(sources=[SEATS]),
+        wikipedia=StubWikipedia([ARTICLE])
+    ).parse(sachsen_anhalt_request())
+
+    assert election.source_url == ARTICLE
+    assert fetcher.urls == [ARTICLE], "and the resolver's page was never needed"
+
+
+async def test_an_article_that_is_not_the_results_falls_through_to_the_rest():
+    """Wikipedia going first is a preference, not a dependency."""
+    fetcher = SiteFetcher({SEATS: "Sitze"})
+    election = await parser(
+        fetcher, FixedExtractor(seats()), resolution(sources=[SEATS]),
+        wikipedia=StubWikipedia([ARTICLE])
+    ).parse(sachsen_anhalt_request())
+
+    assert election.source_url == SEATS
+    assert fetcher.urls == [ARTICLE, SEATS], "in that order"
+
+
+async def test_an_article_found_is_one_page_the_search_budget_does_not_pay_for():
+    search = StubSearch([WIKI])
+    await parser(
+        SiteFetcher({ARTICLE: "Sitze"}), FixedExtractor(seats()),
+        resolution(sources=[SEATS, VOTES]), search=search,
+        wikipedia=StubWikipedia([ARTICLE])
+    ).parse(sachsen_anhalt_request())
+
+    assert search.queries == [], "the budget was full before a search engine was asked"
+
+
+async def test_a_broken_wikipedia_leaves_the_resolvers_candidates_alone():
+    """Wikipedia being down is our problem, not an import that fails."""
+    class Broken:
+        def handles(self, url):
+            return False
+
+        async def find(self, resolved, *, limit):
+            raise RuntimeError("wikipedia unreachable")
+
+    election = await parser(
+        SiteFetcher({SEATS: "Sitze"}), FixedExtractor(seats()), wikipedia=Broken()
+    ).parse(sachsen_anhalt_request())
+    assert election.total_seats == 97
+
+
+async def test_wikipedia_can_be_turned_off():
+    wikipedia = StubWikipedia([ARTICLE])
+    election = await parser(
+        SiteFetcher({SEATS: "Sitze"}), FixedExtractor(seats()),
+        wikipedia=wikipedia, article_limit=0
+    ).parse(sachsen_anhalt_request())
+
+    assert election.source_url == SEATS
+    assert wikipedia.queries == [], "no lookup was made"
+
+
+async def test_an_article_is_checked_against_the_request_like_any_other_page():
+    """Being an encyclopedia buys no trust: the article for the previous
+    election is discarded on the same check as anything else."""
+    fetcher = SiteFetcher({ARTICLE: "Sitze", SEATS: "Sitze"})
+    previous = seats(election_date="2021-06-06")
+    with pytest.raises(ParseError, match=NO_RESULTS_MESSAGES["wrong_election"]):
+        await parser(
+            fetcher, FixedExtractor(previous), resolution(sources=[SEATS]),
+            wikipedia=StubWikipedia([ARTICLE])
+        ).parse(sachsen_anhalt_request())
 
 
 # --- the prompts ------------------------------------------------------------

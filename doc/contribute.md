@@ -47,6 +47,16 @@ node --test test/*.test.mjs
 uv's Python serving static files, so the frontend needs no toolchain of its own
 either.
 
+Three real election articles are checked in under `test/wikipedia/`, and
+`backend/tests/test_articles.py` reads each of them the way an import does: the
+document handed to the agent has to name the election, state every party's seats
+in a row of its own, carry the colours the page publishes, and have dropped the
+navigation, footnotes and tables that count something else. They are verbatim
+slices of the live articles, so refresh them with
+`uv run python tools/capture_articles.py` (from `backend/`) when Wikipedia
+restructures something, and read the diff before committing it — a fixture that
+quietly loses its seats column would take the test with it.
+
 Before changing anything in the import path — the fetcher, the extraction
 prompt, the schema, or how extracted strings are rendered — read
 [threat-model.md](threat-model.md). It says which of those pieces is load-bearing
@@ -54,7 +64,7 @@ against a hostile results page, and which test holds each claim up.
 
 ### Modes
 
-Four independent switches decide what the backend talks to. Each defaults to
+Five independent switches decide what the backend talks to. Each defaults to
 whatever a bare checkout can actually do, so `uv run uvicorn app.main:app` with
 no environment set at all starts and works: in memory, ungated, with a mocked
 extraction agent. Nothing here needs a cloud account until you want one.
@@ -84,6 +94,8 @@ anywhere. `AUTH_MODE` is a separate question, about who a request *is*.
 | `SEARCH_MODE=auto` | When a page states no seat counts, an import reads the pages it links to, then searches the web for one that does. Google if its keys are set, otherwise the Anthropic API's hosted search. The default. | `LLM_MODE=live` |
 | `SEARCH_MODE=google` | The same, always through Google Programmable Search. | `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_CX` |
 | `SEARCH_MODE=off` | An import reads only the pages the resolver named. | — |
+| `WIKIPEDIA=on` | Each import looks the election up in Wikipedia and reads that article first, through Wikimedia's API. No key; the `User-Agent` identifies this project unless `WIKIPEDIA_CONTACT` names someone closer. The default. | `LLM_MODE=live` |
+| `WIKIPEDIA=off` | No lookup: an import reads the resolver's candidates, and a Wikipedia URL among them goes to the ordinary fetcher — which Wikimedia answers with a 403. | — |
 | Billing on | Subscriptions are for sale; Stripe is the only thing that grants a tier. | `STRIPE_API_KEY`, `STRIPE_PRICE_BASIC` and/or `STRIPE_PRICE_PREMIUM`, `STRIPE_WEBHOOK_SECRET`, `PUBLIC_BASE_URL` |
 | Billing off | Free accounts work, nothing is for sale. The default. | — |
 
@@ -130,8 +142,8 @@ ELECTION_STORE=sqlite AUTH_MODE=sqlite uv run uvicorn app.main:app --reload
 ELECTION_STORE=sqlite LLM_MODE=live ANTHROPIC_API_KEY=… \
   uv run uvicorn app.main:app --reload
 
-# The same, reading only the resolver's best page. Useful when you want to see
-# exactly what one page yields.
+# The same, reading only the first candidate — the Wikipedia article, unless
+# WIKIPEDIA=off. Useful when you want to see exactly what one page yields.
 ELECTION_STORE=sqlite LLM_MODE=live ANTHROPIC_API_KEY=… \
   IMPORT_PAGE_LIMIT=1 SEARCH_MODE=off uv run uvicorn app.main:app --reload
 ```
@@ -151,8 +163,20 @@ a stored election, and they are kept apart on purpose:
    and reports what that page states. It is told which election is wanted, so
    it can answer "wrong_election" instead of extracting a different one.
 
-`app.search` adds candidates on top of the resolver's, which matters for a
-deployment whose `SEARCH_MODE` is a plain index rather than an agent.
+`app.wikipedia` then looks that election up in Wikipedia's own search API and
+puts its article at the front of the queue. An encyclopedia article is the one
+page that reliably *states seats*: one table, the election named in its lead, and
+the party colours in the markup — where an electoral authority publishes votes,
+percentages, or a PDF at least as often as a seat allocation. The article is read
+through the MediaWiki API rather than the ordinary fetcher, which is both what
+Wikimedia's servers will answer and what lets BeautifulSoup cut a megabyte of
+article down to the infobox, the lead and the result tables. It buys no trust:
+the article is untrusted page content like any other, and the resolver's
+candidates are still read, in order, when the article turns out not to be the
+results.
+
+`app.search` adds candidates on top of those, which matters for a deployment
+whose `SEARCH_MODE` is a plain index rather than an agent.
 
 Then `app.parser` checks, in code, that what came back is what was asked for:
 the year must match the user's own input, and the nation and region must match
@@ -165,8 +189,12 @@ counts as an answer.
 
 Whatever page the numbers came from is what the stored election is attributed
 to, and the preview names it, because nobody chose that address. Some hosts
-refuse us whatever we do — Wikimedia blocks this fetcher's requests — and those
-candidates are passed over rather than worked around.
+refuse us whatever we do, and those candidates are passed over rather than worked
+around — disguising the client is not something we do. Wikimedia is the one
+exception, and not by disguise: it has an API for this, and it asks a caller to
+identify itself rather than to look like a browser. So we do, in the `User-Agent`
+— this project's URL by default, a deployment's own address through
+`WIKIPEDIA_CONTACT`.
 
 ### Working on accounts, tiers and quotas
 
@@ -328,6 +356,9 @@ variables from `--set-env-vars` and Secret Manager.
 | `IMPORT_SEARCH_LIMIT` | no | `3` | Candidates a search engine may contribute beyond the ones the resolver named. `0` disables searching without touching `SEARCH_MODE`. |
 | `SEARCH_MODE` | no | `auto` | Which engine that search uses: `google` is Programmable Search; `anthropic` is the search tool the Anthropic API hosts; `off` reads only the resolver's candidates. `auto` picks Google where it is configured, otherwise `off` — the resolver has already searched, and paying twice for the same hosted tool is not a useful default. Always off unless `LLM_MODE=live`. |
 | `GOOGLE_SEARCH_API_KEY` / `GOOGLE_SEARCH_CX` | with `SEARCH_MODE=google` | — | API key and the id of a [Programmable Search engine](https://programmablesearchengine.google.com/) set to search the whole web. Named explicitly, both are required at startup even under a mocked agent. |
+| `WIKIPEDIA` | no | `on` | Whether an import looks the election up in Wikipedia and reads that article before the resolver's own candidates — an article states seats where an electoral authority often states only votes. Always off unless `LLM_MODE=live`. |
+| `WIKIPEDIA_LANGUAGE` | no | `en` | Which Wikipedia to search, as a language code. English has an article for an election held anywhere; another language often has the better one for its own country. Validated at startup in every mode, because it becomes a hostname. |
+| `WIKIPEDIA_CONTACT` | no | this project's repository URL | The address in the `User-Agent` of our Wikipedia requests, as [Wikimedia's policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) requires — an email or a URL. There is always one, because a client that identifies nobody is answered `403 Please respect our robot policy`; set this so a Wikimedia administrator reaches *you* and not the project. |
 | `IMPORT_MAX_WAIT_SECONDS` | no | `25` | Ceiling on `?wait_seconds=` long-polling. |
 | `ALLOWED_ORIGINS` | no | — | Comma-separated origins allowed to call the API, when the page is hosted elsewhere. Unset means same-origin only. |
 | `FRONTEND_DIR` | no | repo root | Directory holding `index.html`; served at `/` when present. |

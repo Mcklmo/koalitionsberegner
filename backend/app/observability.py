@@ -35,7 +35,9 @@ MAX_VALUE_CHARS = 200
 #: serve. What is missing from this set is the store and the inbound request —
 #: called several times per import, and saying nothing the import's own lines
 #: do not already say. They are still there at ``LOG_LEVEL=DEBUG``.
-NOTABLE_SYSTEMS = frozenset({"anthropic", "google", "page", "import", "stripe", "firebase"})
+NOTABLE_SYSTEMS = frozenset(
+    {"anthropic", "google", "wikipedia", "page", "import", "stripe", "firebase"}
+)
 
 
 def scrub(value: object, limit: int = MAX_VALUE_CHARS) -> str:

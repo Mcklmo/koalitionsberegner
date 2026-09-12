@@ -21,8 +21,13 @@ it is stored, and that renders as inert text either way.
         │  one election,       search.py     hosted search, and an output of one
         │  candidate URLs                    identity plus candidate addresses
         ▼
+ [0b] Wikipedia lookup      wikipedia.py ── the identified election searched for
+        │  the article first                in one API, on one host, no model
+        ▼
  [1] backend fetch          fetcher.py   ── SSRF checks, size/type/redirect caps
         │  HTML → text                      script/style/comments dropped
+        │                   wikipedia.py    an article instead through its API,
+        │                                   reduced to infobox, lead and tables
         ▼
  [2] extraction agent       extractor.py ── page fenced as data, no tools,
         │  structured output                one turn, one output schema
@@ -49,7 +54,8 @@ sees the API key.
 
 The user supplies no address at all now: the candidate pages come from the
 resolver, which is given a few dozen characters of typed text and never reads a
-results page. A page that states no seats, or turns out to be a different
+results page, and from Wikipedia's search API, which is given the election the
+resolver identified and answers with article titles on one fixed host. A page that states no seats, or turns out to be a different
 election, simply moves the import on to the next candidate of that fixed list
 (see T9) — no page is ever asked where to go next, and the links on a fetched
 page are not read. The election is attributed to whichever page the numbers came
@@ -65,6 +71,8 @@ from, and the preview always names it.
 | The model's output | No | It read untrusted input, so its answer is untrusted too. Constrained by the output schema, then re-validated. |
 | A link on the fetched page | Not read | Nothing consults the links on an imported page any more; there is no path by which one becomes an address we fetch. |
 | A web search result | No | Comes from outside the app entirely; filtered and fetched exactly as a link is. |
+| A Wikipedia article | No | An encyclopedia anyone may edit is an untrusted page like any other: fenced as data, extracted by the same tool-less agent, checked by `parser.is_wanted`, confirmed by the user. What it does get is first place in the queue, because it is the page most likely to state seats at all. |
+| A Wikipedia article title | No | From the MediaWiki search API. It only ever becomes a path under the one host `wikipedia.py` is configured for, and that URL is still put through `fetcher.assert_public_url`. |
 | The stored election | Partly | It passed validation and a human confirmation. Still rendered as text only. |
 | Our own prompts and code | Yes | Built server-side from constants; no part of the page reaches them as instructions. |
 
@@ -84,7 +92,7 @@ another user, poison the shared election store, or burn our budget.
 `http://169.254.169.254/` would hand cloud instance metadata to the model, and
 `http://10.0.0.5/` would reach inside the network.
 
-`fetcher._assert_public_url` resolves the hostname and rejects any address that
+`fetcher.assert_public_url` resolves the hostname and rejects any address that
 is not globally routable, before every request *and again for every redirect
 hop* (redirects are not followed by the HTTP client; the fetcher re-checks each
 `Location` itself). Only `http`/`https` are accepted, at most 3 redirects, a
@@ -236,13 +244,21 @@ fetch, so the narrowing is where the safety is:
   and no second turn. The list of candidates is fixed before the first page is
   fetched, and the links on a fetched page are not read at all — a page cannot
   nominate its successor.
+- **Wikipedia is a preference, not a dependency.** `wikipedia.py` looks the
+  identified election up and puts its article at the front of the queue, because
+  an encyclopedia article states seats where an electoral authority often states
+  votes. It is no more trusted for it: the article is read by the same agent,
+  checked by the same `parser.is_wanted`, and confirmed by the same user. The
+  only addresses it can produce are `/wiki/<title>` on the one host it is
+  configured for, and a lookup that fails simply leaves the resolver's own
+  candidates to be read.
 - **Only the resolver has a tool**, and it is a search engine
   (`resolver.SEARCH_TOOL`). Its input is the few dozen characters the user typed
   plus today's date — no page text can reach it, because no page has been read
   when it runs. Its output is put through `resolver.clean_sources`, which keeps
   `http(s)` URLs and discards everything else, including any instruction a
   search result talked it into repeating.
-- **Every candidate is fetched the same way.** Same `_assert_public_url`, same
+- **Every candidate is fetched the same way.** Same `assert_public_url`, same
   size, type and redirect caps. A candidate pointing at `169.254.169.254` is
   refused — being named by a model earns an address nothing.
 - **A page that is not the election asked for is discarded in code.**
@@ -254,7 +270,8 @@ fetch, so the narrowing is where the safety is:
   read from, the preview names that page, and the user confirms.
 - **The budget is small and configurable.** `IMPORT_PAGE_LIMIT` (3) and
   `IMPORT_SEARCH_LIMIT` (3) keep an import to a handful of pages, not a crawl;
-  `SEARCH_MODE=off` leaves only the resolver's own candidates.
+  `SEARCH_MODE=off` leaves only the resolver's own candidates, and
+  `WIKIPEDIA=off` takes the article out of the queue.
 
 What this does *not* defend against is a wrong-but-plausible page: a search can
 return an outdated or unofficial page whose numbers differ from the official
@@ -285,9 +302,15 @@ These are known and deliberately not addressed here:
   turned up; the alternative is no import at all. The source URL is shown in the
   preview and stored with the election, so what it was read from is always
   visible.
-- **Some hosts refuse this fetcher.** Wikimedia blocks it by policy, so search
-  results there are skipped. Working around that is out of scope: it would mean
-  disguising the client.
+- **Some hosts refuse this fetcher.** A site may block us by policy or by
+  fingerprint, and those candidates are passed over rather than worked around —
+  disguising the client is out of scope. Wikimedia used to be the case that hurt
+  most; it is now read through its own API, which is the supported way in, with a
+  `User-Agent` that says who we are (`WIKIPEDIA_CONTACT`).
+- **Wikipedia can be edited by the attacker too.** Putting its article first
+  means an import usually reads the page an adversary would have to edit
+  publicly, in the open, to poison — which is a trade we are making deliberately,
+  not a defence. Every check downstream is unchanged.
 
 ## Where this is tested
 
@@ -304,6 +327,9 @@ These are known and deliberately not addressed here:
 | A page cannot nominate the next page to read | `backend/tests/test_injection.py` |
 | A page reporting another year or region is discarded | `backend/tests/test_extraction.py` |
 | A search returns URLs and nothing else; a broken search is not a failed import | `backend/tests/test_search.py` |
+| Only `wikipedia.org` articles reach the Wikipedia API, and a broken lookup is not a failed import | `backend/tests/test_wikipedia.py` |
+| An article is read first, but checked against the request like any other page | `backend/tests/test_extraction.py` |
+| Real articles reduce to their results, and to nothing that is not a result | `backend/tests/test_articles.py` |
 | Candidate pages go through the fetcher, and only for pages that stated no seats | `backend/tests/test_extraction.py` |
 
 The adversarial fixtures themselves are `test/adversarial/`:

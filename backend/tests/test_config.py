@@ -19,6 +19,7 @@ def clean_config():
         config.get_store,
         config.get_parser,
         config.get_search,
+        config.get_wikipedia,
         config.get_accounts,
         config.get_password_store,
         config.get_verifier,
@@ -52,6 +53,11 @@ def clean_config():
          "GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX"),
         ({"SEARCH_MODE": "google", "GOOGLE_SEARCH_API_KEY": "k", "GOOGLE_SEARCH_CX": "c"}, None),
         ({"SEARCH_MODE": "anthropic", "ANTHROPIC_API_KEY": ""}, "requires ANTHROPIC_API_KEY"),
+        ({"WIKIPEDIA": "yes"}, "WIKIPEDIA must be one of"),
+        # Checked even under a mocked agent that will never look anything up: it
+        # becomes a hostname, and a typo should not wait for the first import.
+        ({"WIKIPEDIA_LANGUAGE": "deutsche sprache"}, "WIKIPEDIA_LANGUAGE must be"),
+        ({"WIKIPEDIA_LANGUAGE": "DE"}, None),
         # And auto asks for nothing: a local checkout with no keys still boots.
         ({"SEARCH_MODE": "auto"}, None),
         ({"AUTH_MODE": "firebase", "FIREBASE_PROJECT_ID": "", "GOOGLE_CLOUD_PROJECT": ""},
@@ -137,6 +143,68 @@ def test_the_parser_is_given_the_search_and_the_budgets_it_may_use(monkeypatch, 
     assert (parser._page_limit, parser._search_limit) == (1, 4)
 
 
+
+def test_wikipedia_is_looked_up_first_and_serves_its_own_articles(monkeypatch, clean_config):
+    """Both halves of the seam, from one object: the candidate source the parser
+    asks, and the fetcher that reads what it found."""
+    from app.config import get_parser, get_wikipedia
+    from app.wikipedia import WikipediaFetcher
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    monkeypatch.setenv("WIKIPEDIA_CONTACT", "ops@example.org")
+    monkeypatch.setenv("WIKIPEDIA_LANGUAGE", "de")
+
+    parser = get_parser()
+    assert parser._wikipedia is get_wikipedia()
+    assert parser._wikipedia.host == "de.wikipedia.org"
+    assert isinstance(parser._fetcher, WikipediaFetcher)
+
+
+def test_wikipedia_can_be_switched_off_without_touching_anything_else(
+    monkeypatch, clean_config
+):
+    from app.config import get_parser, get_wikipedia
+    from app.fetcher import HttpPageFetcher
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    monkeypatch.setenv("WIKIPEDIA", "off")
+
+    assert get_wikipedia() is None
+    parser = get_parser()
+    assert parser._wikipedia is None
+    assert isinstance(parser._fetcher, HttpPageFetcher), "the ordinary path, unwrapped"
+
+
+def test_a_mocked_agent_never_reaches_wikipedia_either(monkeypatch, clean_config):
+    """The mock extractor ignores the page it is handed, so fetching a real
+    article would be a call made for nothing."""
+    from app.config import get_wikipedia, wikipedia_mode
+
+    monkeypatch.setenv("LLM_MODE", "mock")
+    monkeypatch.setenv("WIKIPEDIA", "on")
+    assert wikipedia_mode() == "off"
+    assert get_wikipedia() is None
+
+
+def test_an_unconfigured_deployment_still_names_itself_to_wikimedia(
+    monkeypatch, clean_config
+):
+    """A client that identifies nobody is answered 403, so the contact is not
+    something a deployment has to discover: it has a default, and
+    ``WIKIPEDIA_CONTACT`` replaces it."""
+    from app.config import get_wikipedia
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    monkeypatch.delenv("WIKIPEDIA_CONTACT", raising=False)
+
+    wikipedia = get_wikipedia()
+    assert wikipedia is not None
+    assert "github.com" in wikipedia._user_agent
+
+
 def test_live_mode_wires_both_agents(monkeypatch, clean_config):
     """Two agents, one key: the resolver that searches, the extractor that reads."""
     from app.config import get_parser
@@ -197,8 +265,8 @@ def test_a_good_configuration_starts_and_logs_what_it_chose(monkeypatch, clean_c
         assert client.get("/healthz").status_code == 200
 
     assert any(
-        "configuration ok store=memory llm_mode=mock auth_mode=off billing=off"
-        in r.getMessage()
+        "configuration ok store=memory llm_mode=mock auth_mode=off billing=off "
+        "search=off wikipedia=off" in r.getMessage()
         for r in caplog.records
     )
 

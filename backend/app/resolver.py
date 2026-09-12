@@ -183,7 +183,7 @@ def clean_sources(urls: list[str] | None) -> list[str]:
 
     The model's list is not taken as given: anything that is not an ordinary web
     address is dropped here, and what survives is still fetched through
-    :func:`app.fetcher._assert_public_url` like any other address.
+    :func:`app.fetcher.assert_public_url` like any other address.
     """
     found: list[str] = []
     for url in urls or []:

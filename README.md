@@ -7,10 +7,13 @@ The renderer (`js/app.js`) is election-agnostic; elections come from an injected
 provider and must pass the canonical schema validator in `js/election.js` before
 being rendered. The backend (`backend/`) stores imported elections.
 
-An imported page is untrusted input: it is fetched server-side, handed to a
-tool-less extraction agent as fenced data, validated against the canonical
-schema, and shown to the user for confirmation before anything is stored — and
-every extracted string reaches the DOM as text, never as markup. See
+Where the results are read from is decided server-side: the election is looked up
+in Wikipedia, whose article is read first where there is one, and the pages a
+resolver agent found are read after it. An imported page is untrusted input
+wherever it came from: it is fetched server-side, handed to a tool-less
+extraction agent as fenced data, validated against the canonical schema, and
+shown to the user for confirmation before anything is stored — and every
+extracted string reaches the DOM as text, never as markup. See
 [doc/threat-model.md](doc/threat-model.md).
 
 ## Who may do what

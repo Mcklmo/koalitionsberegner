@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from functools import lru_cache
 
 from . import ENV_FILE_LOADED, ENV_NAMES_LOADED
@@ -32,6 +33,7 @@ from .billing import Billing, DisabledBilling, StripeBilling
 from .parser import DEFAULT_PAGE_LIMIT, ElectionParser, UnavailableParser
 from .search import DEFAULT_SEARCH_LIMIT
 from .store import DEFAULT_STALE_AFTER_SECONDS, ElectionStore, InMemoryElectionStore
+from .wikipedia import DEFAULT_LANGUAGE
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ STORE_BACKENDS = ("firestore", "sqlite", "memory")
 LLM_MODES = ("mock", "live", "off")
 AUTH_MODES = ("firebase", "sqlite", "stub", "off")
 SEARCH_MODES = ("auto", "google", "anthropic", "off")
+WIKIPEDIA_MODES = ("on", "off")
 
 DEFAULT_SQLITE_PATH = "./data/elections.db"
 
@@ -212,6 +215,59 @@ def get_search():
     return AnthropicWebSearch()
 
 
+def wikipedia_mode() -> str:
+    """Whether an import looks the election up in Wikipedia first.
+
+    ``on`` by default: the lookup needs no credential, costs nothing, and an
+    encyclopedia article is the page most likely to *state seats* rather than
+    votes — see :meth:`app.parser.LlmElectionParser._candidates` for why that
+    earns it first place in the queue. ``WIKIPEDIA=off`` takes it out again, and
+    an import then reads the resolver's candidates as it did before.
+
+    Always ``off`` unless extraction is live, for the same reason searching is:
+    the mock extractor ignores the page it is handed, so fetching a real article
+    could only ever be a call made for nothing.
+    """
+    mode = _env_choice("WIKIPEDIA", WIKIPEDIA_MODES, "on")
+    if _env_choice("LLM_MODE", LLM_MODES, "mock") != "live":
+        return "off"
+    return mode
+
+
+def wikipedia_language() -> str:
+    """Which Wikipedia to search. A language code, because it becomes a hostname."""
+    language = _env_str("WIKIPEDIA_LANGUAGE").lower() or DEFAULT_LANGUAGE
+    if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})?", language):
+        raise ConfigError(
+            f"WIKIPEDIA_LANGUAGE must be a language code like 'en' or 'pt-br', got {language!r}"
+        )
+    return language
+
+
+@lru_cache(maxsize=1)
+def get_wikipedia():
+    """The Wikipedia seam, or ``None`` where it is switched off.
+
+    ``None`` rather than a disabled stand-in, because this seam is two things at
+    once — the candidate source the parser asks, and the fetcher that serves
+    those articles — and "no Wikipedia" means an import is wired exactly as it
+    was before either existed.
+
+    The language is validated whether or not this process will use it: like a
+    named ``SEARCH_MODE`` without its keys, a typo there is worth hearing about
+    at startup rather than on the one import that needed it.
+    """
+    language = wikipedia_language()
+    if wikipedia_mode() == "off":
+        return None
+
+    from .wikipedia import Wikipedia
+
+    # ``WIKIPEDIA_CONTACT`` only replaces the address in the User-Agent; there is
+    # always one, because a client that names nobody is refused outright.
+    return Wikipedia(language=language, contact=_env_str("WIKIPEDIA_CONTACT"))
+
+
 @lru_cache(maxsize=1)
 def get_parser() -> ElectionParser:
     """Wire the import pipeline: resolve the request, read pages, extract seats.
@@ -225,7 +281,8 @@ def get_parser() -> ElectionParser:
     ``IMPORT_SEARCH_LIMIT`` how many of those candidates a search engine may
     contribute beyond the ones the resolver named (see :func:`get_search`).
     Each page read costs a fetch and a model call, so both are small numbers;
-    ``IMPORT_PAGE_LIMIT=1`` reads only the resolver's best answer.
+    ``IMPORT_PAGE_LIMIT=1`` reads only the first candidate — which, with
+    Wikipedia on, is the article rather than the resolver's best answer.
     """
     from .extractor import AnthropicExtractor, MockExtractor
     from .fetcher import HttpPageFetcher
@@ -242,9 +299,18 @@ def get_parser() -> ElectionParser:
     if mode == "live":
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise ConfigError("LLM_MODE=live requires ANTHROPIC_API_KEY")
+        # Wikipedia is both halves of its seam: the source the parser asks for
+        # candidates, and the fetcher those candidates are served by. Wrapping
+        # rather than replacing keeps every other address on the ordinary path.
+        wikipedia = get_wikipedia()
+        fetcher = HttpPageFetcher()
+        if wikipedia is not None:
+            from .wikipedia import WikipediaFetcher
+
+            fetcher = WikipediaFetcher(wikipedia, fetcher)
         return LlmElectionParser(
-            HttpPageFetcher(), AnthropicExtractor(), AnthropicResolver(),
-            search=get_search(), **limits
+            fetcher, AnthropicExtractor(), AnthropicResolver(),
+            search=get_search(), wikipedia=wikipedia, **limits
         )
     # Mock: a page is still fetched and the whole pipeline runs, minus the models.
     return LlmElectionParser(
@@ -414,6 +480,9 @@ def describe_configuration() -> dict[str, str]:
         "auth_mode": auth_mode(),
         "billing": "stripe" if _env_str("STRIPE_API_KEY") else "off",
         "search": search_mode(),
+        "wikipedia": (
+            f"{wikipedia_language()}.wikipedia.org" if wikipedia_mode() == "on" else "off"
+        ),
     }
 
 
@@ -437,8 +506,9 @@ def validate_configuration() -> dict[str, str]:
     get_store()
     get_parser()
     # Not reached by ``get_parser`` when importing is off, and a misspelled
-    # SEARCH_MODE must still stop the boot.
+    # SEARCH_MODE or WIKIPEDIA_LANGUAGE must still stop the boot.
     get_search()
+    get_wikipedia()
     get_accounts()
     get_password_store()
     get_verifier()
@@ -449,8 +519,8 @@ def validate_configuration() -> dict[str, str]:
         # can obtain one, so sign-in is dead until this is set.
         log.warning("AUTH_MODE=firebase without FIREBASE_API_KEY: the page cannot sign anyone in")
     log.info(
-        "configuration ok store=%s llm_mode=%s auth_mode=%s billing=%s search=%s",
+        "configuration ok store=%s llm_mode=%s auth_mode=%s billing=%s search=%s wikipedia=%s",
         chosen["store"], chosen["llm_mode"], chosen["auth_mode"], chosen["billing"],
-        chosen["search"],
+        chosen["search"], chosen["wikipedia"],
     )
     return chosen

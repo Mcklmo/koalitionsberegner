@@ -94,7 +94,7 @@ def html_to_text(html: str) -> str:
     return parser.text()
 
 
-def _assert_public_url(url: str) -> str:
+def assert_public_url(url: str) -> str:
     """Reject anything that is not a public http(s) address.
 
     Without this a candidate URL is a server-side request forgery primitive:
@@ -134,7 +134,7 @@ class HttpPageFetcher:
         try:
             current = url
             for hop in range(MAX_REDIRECTS + 1):
-                current = _assert_public_url(current)
+                current = assert_public_url(current)
                 with io_span(log, "page", "get", url=current, hop=hop) as span:
                     response = await client.get(current)
                     span["status"] = response.status_code
