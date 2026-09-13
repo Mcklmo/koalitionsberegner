@@ -101,7 +101,7 @@ form.nationMissing,Angiv landet.,Enter the country.
 import.refusal.signIn,Log ind for at importere eller ønske et valg.,Sign in to import or request an election.
 import.refusal.subscription,Import kræver et abonnement. Vælg en plan ovenfor.,Importing requires a subscription. Pick a plan above.
 import.refusal.usedUp,Denne måneds importer er brugt op. Kvoten fornys ved månedsskiftet.,This month's imports are used up. They renew at the start of next month.
-import.requestNote,"Uden abonnement henter vi ikke valget automatisk. Vi skriver det op som et ønske, og det bliver importeret manuelt.","Without a subscription we don't fetch the election automatically. We note it down as a request, and it is imported by hand."
+import.requestNote,"Mangler dit valg? Vi skriver det op som et ønske, og det bliver importeret senere. Det kræver ingen konto.","Missing an election? We note it down as a request, and it is imported later. No account needed."
 import.remaining,"{remaining} {remaining, plural, one {import} other {importer}} tilbage denne måned.","{remaining} {remaining, plural, one {import} other {imports}} left this month."
 import.alreadyImported,Dette valg er allerede importeret.,This election has already been imported.
 import.alreadyImportedPick,Dette valg er allerede importeret. Vælg det i listen ovenfor.,This election has already been imported. Pick it in the list above.
@@ -112,8 +112,6 @@ busy.fetching,Henter…,Fetching…
 busy.requesting,Sender ønske…,Sending request…
 error.unexpected,Uventet fejl: {message},Unexpected error: {message}
 archive.unreachable,Valgarkivet kan ikke nås — viser kun det indbyggede valg.,The election archive can't be reached — showing only the built-in election.
-request.refusal.signIn,Log ind for at ønske et valg.,Sign in to request an election.
-request.refusal.confirmEmail,"Bekræft din e-mailadresse, før du kan ønske et valg.",Confirm your email address before requesting an election.
 request.refusal.unavailable,Ønskelisten er ikke tilgængelig lige nu. Prøv igen senere.,Requests aren't available right now. Please try again later.
 request.duplicate,Det valg er der allerede et ønske om (#{number}).,That election has already been requested (#{number}).
 request.filed,Ønsket er noteret som #{number}.,Your request is noted as #{number}.

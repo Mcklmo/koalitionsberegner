@@ -1,7 +1,7 @@
 """The other end of the paywall: asking for an election instead of importing it.
 
-An account with no subscription cannot make the server go and read pages, which
-is the part that costs money. What it can do is say which election it wanted,
+A caller who may not import cannot make the server go and read pages, which is
+the part that costs money. What anyone can do is say which election they wanted,
 and that is written down in the issue tracker to be imported by hand. These
 cases pin down three things: that the issue says enough to act on, that asking
 twice for the same election does not open a second one, and that neither
@@ -266,7 +266,9 @@ def client(store, accounts, wishlist, monkeypatch):
     overrides.clear()
 
 
-def test_an_account_with_no_subscription_may_ask_for_an_election(client, wishlist, accounts):
+def test_asking_costs_no_quota(client, wishlist, accounts):
+    client.get("/api/me", headers=FREE)  # the account exists, with its month untouched
+
     filed = client.post("/api/elections/requests", json=BODY, headers=FREE)
 
     assert filed.status_code == 201
@@ -275,6 +277,13 @@ def test_an_account_with_no_subscription_may_ask_for_an_election(client, wishlis
     }
     assert wishlist.filed == [ImportRequest(year=2022, nation="Danmark")]
     assert accounts.get("free-1").used_in(billing_period()) == 0, "asking costs no quota"
+
+
+def test_asking_does_not_even_create_an_account(client, wishlist, accounts):
+    """Nothing about this route is per-account, so it makes no row for one."""
+    client.post("/api/elections/requests", json=BODY, headers=FREE)
+
+    assert accounts.get("free-1") is None
 
 
 def test_a_region_is_carried_through_as_asked(client, wishlist):
@@ -316,10 +325,27 @@ def test_asking_for_an_election_already_imported_points_at_it_instead(
     assert wishlist.filed == []
 
 
-def test_asking_needs_an_account_and_a_confirmed_address(client, wishlist):
-    assert client.post("/api/elections/requests", json=BODY, headers=VISITOR).status_code == 401
-    assert client.post("/api/elections/requests", json=BODY, headers=UNVERIFIED).status_code == 403
-    assert wishlist.filed == []
+def test_a_signed_out_visitor_can_ask_too(client, wishlist):
+    """Asking needs no account.
+
+    Nothing here searches, fetches, extracts or spends, and a visitor who never
+    signs in is the person most likely to find an election missing.
+    """
+    filed = client.post("/api/elections/requests", json=BODY, headers=VISITOR)
+
+    assert filed.status_code == 201
+    assert wishlist.filed == [ImportRequest(year=2022, nation="Danmark")]
+
+
+def test_asking_reads_no_credential_at_all(client, wishlist):
+    """Whatever the caller presents, the route neither checks it nor records it."""
+    for headers in (UNVERIFIED, {"Authorization": "Bearer  :nobody"}):
+        wishlist.filed.clear()
+
+        filed = client.post("/api/elections/requests", json=BODY, headers=headers)
+
+        assert filed.status_code == 201
+        assert wishlist.filed == [ImportRequest(year=2022, nation="Danmark")]
 
 
 def test_a_year_that_is_not_a_year_never_reaches_the_tracker(client, wishlist):

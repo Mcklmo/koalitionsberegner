@@ -839,23 +839,24 @@ async def request_election(
     response: Response,
     background: BackgroundTasks,
     service: ImportService = Depends(get_service),
-    principal: Principal = Depends(require_verified),
-    _account: UserAccount = Depends(require_account),
     wishlist: Wishlist = Depends(get_wishlist_provider),
     usage: UsageRecorder = Depends(get_usage),
 ) -> ElectionRequestResponse:
-    """Ask for an election this account may not import itself.
+    """Ask for an election nobody has imported. Open to anyone who can see the page.
 
     The other end of the paywall. Importing makes the server go and read pages,
     which is what is sold; writing down *which* election was wanted costs
-    nothing and is worth more than a refusal, so an account without a
-    subscription ends up here and the election is filed in the issue tracker to
-    be imported by hand.
+    nothing and is worth more than a refusal — so instead of being turned away,
+    the asker has the election filed in the issue tracker to be imported by
+    hand.
 
-    Like ``/api/elections/lookup`` this is part of the import flow rather than
-    of viewing: it needs a confirmed account and no subscription. A subscriber
-    is not refused either — queueing something for later is not a worse thing
-    for them to do than for anyone else — but the page offers them the import.
+    Unlike every other route in the import flow this asks for no account at all,
+    which is a deliberate exception to "part of the import flow, so it needs an
+    account" (``/api/elections/lookup``). The reasoning that gates the rest does
+    not apply: nothing here searches, fetches, extracts or spends. What it does
+    do is *write*, to a public tracker, on behalf of a caller nobody
+    authenticated — bounded by one issue per election and by the rate limiting
+    in front of the app, and accepted as such (doc/threat-model.md T12).
 
     An election already held in the store is never filed: it is handed back the
     way the lookup would, because asking for it was a mistake about what is
@@ -871,7 +872,7 @@ async def request_election(
         )
 
     try:
-        # Only the election: the issue is public, so who asked stays out of it.
+        # Only the election: the issue is public, and nobody is asked who they are.
         filed = await wishlist.file(request)
     except WishlistUnavailable as exc:
         raise HTTPException(503, detail=str(exc)) from None
@@ -884,9 +885,8 @@ async def request_election(
         UsageEvent.REQUEST_DUPLICATE if filed.duplicate else UsageEvent.REQUEST_FILED,
     )
     log.info(
-        "election request %s uid=%s issue=%s%s",
+        "election request %s from anonymous issue=%s%s",
         scrub(request.describe()),
-        principal.uid[:12],
         filed.number,
         " (already open)" if filed.duplicate else "",
     )

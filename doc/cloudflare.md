@@ -119,6 +119,14 @@ answer directly again.
 
   This is roughly ten times what a person clicking around produces. Lower it once
   you have seen real traffic in *Security → Analytics*.
+
+  It matters more than it used to: `POST /api/elections/requests` takes an
+  election request from anyone, with no account, and opens a GitHub issue for it
+  (doc/threat-model.md T12). One election is one issue, so a repeated form is
+  already a no-op — but this rule is what bounds a caller working through made-up
+  ones. The free plan allows a single rule, so if the tracker ever does get
+  spammed, the move is to narrow this rule to that path at a much lower rate
+  (a handful per minute is generous for a form somebody fills in by hand).
 - **Leave Bot Fight Mode off.** It cannot be exempted for one path, and it
   would challenge Stripe's webhook deliveries. The rate limit, the origin secret
   and the app's own quotas cover what it would.

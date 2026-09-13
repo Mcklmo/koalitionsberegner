@@ -659,31 +659,35 @@ test('an incomplete form is not written down either', async () => {
   assert.ok(el.fieldErrors.year.textContent);
 });
 
-test('a subscriber who ran out for the month waits rather than wishing', async () => {
-  const { api, calls } = fakeApi();
-  const { el, ui } = harness({ api, config: asking });
-
-  await ui.setAccount({ tier: 'basic', limit: 10, remaining: 0, unlimited: false, mayImport: false, emailVerified: true });
-  fillValidForm(el);
-  await el.form.dispatch('submit');
-
-  assert.equal(el.submit.disabled, true, 'they bought imports; the allowance comes back');
-  assert.match(el.availability.textContent, /brugt op/);
-  assert.equal(calls.requestElection, 0);
-});
-
-test('an account waiting on its confirmation link is not offered the wish either', async () => {
+test('an account waiting on its confirmation link can still ask', async () => {
   const { api } = fakeApi();
   const { el, ui } = harness({ api, config: asking });
 
   await ui.setAccount({ ...FREE_ACCOUNT, emailVerified: false });
 
-  assert.equal(el.submit.disabled, true, 'the endpoint would refuse it anyway');
+  assert.equal(el.submit.disabled, false, 'asking needs no confirmed address');
+  assert.match(el.availability.textContent, /ønske/);
 });
 
-test('a signed-out visitor is asked to sign in, since a wish needs an account', async () => {
+test('a signed-out visitor can ask without signing in first', async () => {
   const { api, calls } = fakeApi();
   const { el, ui } = harness({ api, config: asking, account: undefined });
+  await ui.setAccount(null);
+
+  assert.equal(el.submit.disabled, false);
+  assert.match(el.availability.textContent, /ønske/);
+
+  fillValidForm(el);
+  await el.form.dispatch('submit');
+
+  assert.equal(calls.requestElection, 1);
+  assert.equal(calls.importElection, 0);
+  assert.match(el.message.textContent, /#12/);
+});
+
+test('a signed-out visitor with no tracker behind the page is told to sign in', async () => {
+  const { api, calls } = fakeApi();
+  const { el, ui } = harness({ api, config: { requestsEnabled: false }, account: undefined });
 
   await ui.setAccount(null);
 
