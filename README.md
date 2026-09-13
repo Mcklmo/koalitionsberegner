@@ -74,7 +74,7 @@ and the three combinations worth knowing.
 
 Then open <http://localhost:8000>.
 
-Frontend only — the bundled Folketing 2026 election renders, import is disabled:
+Frontend only — the bundled Denmark — 2026 election renders, import is disabled:
 
 ```sh
 uv run --no-project python -m http.server 8000   # or: npx wrangler dev

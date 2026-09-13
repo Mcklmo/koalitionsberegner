@@ -1,14 +1,14 @@
 import { createElectionProvider } from '../election.js';
 
 /**
- * The Folketing 2026 election — currently the only election source.
+ * The Denmark — 2026 election — currently the only election source.
  * Shaped as raw input; `createElectionProvider` validates it against the
  * canonical schema before it can reach the renderer.
  */
 const folketing2026 = {
   nation: 'Danmark',
   electionDate: '2026-03-25T08:26',
-  title: 'Koalitionsberegner — Folketing 2026',
+  title: 'Denmark — 2026',
   sourceUrl: 'https://www.dst.dk/valg',
   totalSeats: 179,
   majoritySeats: 90,

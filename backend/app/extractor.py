@@ -395,7 +395,7 @@ class AnthropicExtractor:
 
 # --- Mock ------------------------------------------------------------------
 # The 2021 Sachsen-Anhalt Landtag result: 97 seats, six parties, no blocks in
-# the source. A deliberately different shape from Folketing 2026 (179 seats,
+# the source. A deliberately different shape from Denmark — 2026 (179 seats,
 # sixteen parties, four blocks) so the renderer is exercised on both.
 SACHSEN_ANHALT_2021 = ExtractedElection(
     nation="Germany",

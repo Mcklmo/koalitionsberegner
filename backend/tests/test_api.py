@@ -250,7 +250,7 @@ def test_the_page_is_served_from_the_same_origin_as_the_api(client):
     """The frontend defaults to a same-origin API, so one server must serve both."""
     page = client.get("/")
     assert page.status_code == 200
-    assert "Koalitionsberegner" in page.text
+    assert "Denmark — 2026" in page.text
 
     assert client.get("/js/app.js").status_code == 200
     assert client.get("/api/elections").status_code == 200, "the mount must not shadow the API"

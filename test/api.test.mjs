@@ -7,7 +7,7 @@ const payload = {
   nation: 'Danmark',
   state: null,
   election_date: '2026-03-25',
-  title: 'Folketing 2026',
+  title: 'Denmark — 2026',
   source_url: 'https://www.dst.dk/valg',
   total_seats: 10,
   majority_seats: 6,

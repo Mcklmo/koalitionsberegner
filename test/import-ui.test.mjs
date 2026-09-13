@@ -7,7 +7,7 @@ import { validateElection } from '../js/election.js';
 const election = validateElection({
   nation: 'Danmark',
   electionDate: '2026-03-25',
-  title: 'Folketing 2026',
+  title: 'Denmark — 2026',
   sourceUrl: 'https://www.dst.dk/valg',
   totalSeats: 10,
   majoritySeats: 6,
@@ -161,7 +161,7 @@ test('an extraction is previewed and nothing is saved yet', async () => {
   assert.equal(calls.importElection, 1);
   assert.equal(calls.confirm, 0, 'nothing is saved without confirmation');
   assert.equal(el.preview.hidden, false);
-  assert.equal(el.previewTitle.textContent, 'Folketing 2026');
+  assert.equal(el.previewTitle.textContent, 'Denmark — 2026');
   assert.match(el.previewMeta.textContent, /10 mandater/);
   assert.equal(el.previewList.children.length, 2, 'every extracted party is shown');
   assert.deepEqual(selected, [], 'the renderer is untouched until the user confirms');

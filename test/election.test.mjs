@@ -30,7 +30,7 @@ function errorsFor(mutate) {
   assert.fail('expected validation to fail, but it passed');
 }
 
-test('the Folketing 2026 provider data passes validation', async () => {
+test('the Denmark — 2026 provider data passes validation', async () => {
   const election = await Folketing2026Provider.getElection();
   assert.equal(election.nation, 'Danmark');
   assert.equal(election.totalSeats, 179);
