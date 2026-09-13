@@ -300,6 +300,32 @@ def test_joining_an_extraction_somebody_else_started_costs_nothing(client, accou
     assert used(accounts, second) == 0
 
 
+def test_asking_again_for_a_running_import_needs_no_allowance_left(client, accounts, parser):
+    """The import being repeated may be the one that spent the month's last unit.
+
+    Reserving before looking would refuse the repeat outright — and with it the
+    way back to the preview that unit paid for.
+    """
+    uid = subscribe(accounts, SUBSCRIBER)
+    for n in range(BASIC_LIMIT - 1):
+        client.post("/api/elections/import?wait_seconds=2",
+                    json={"year": 2000 + n, "nation": "Danmark"}, headers=SUBSCRIBER)
+    parser.hold()
+    client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
+    assert used(accounts, uid) == BASIC_LIMIT
+
+    again = client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
+    parser.release()
+    after = client.post("/api/elections/import?wait_seconds=2", json=BODY, headers=SUBSCRIBER)
+
+    assert again.status_code == 202, again.text
+    assert again.json()["reused"] is True
+    assert after.status_code == 200, after.text
+    assert after.json()["state"] == "preview"
+    assert parser.call_count == BASIC_LIMIT
+    assert used(accounts, uid) == BASIC_LIMIT
+
+
 def test_a_failed_extraction_is_refunded(client, accounts, store):
     """An unreadable page produced nothing; charging for it would punish bad luck."""
     main.app.dependency_overrides[main.get_service] = lambda: ImportService(

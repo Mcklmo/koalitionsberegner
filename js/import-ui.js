@@ -62,6 +62,8 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
   let summaries = [];
   /** What the server last said this account may do; null when signed out. */
   let account = null;
+  /** True while a submit is under way, from the lookup to the last message. */
+  let submitting = false;
 
   const show = (node, visible) => {
     node.hidden = !visible;
@@ -79,13 +81,23 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
   }
 
   function busy(isBusy, label) {
-    el.submit.disabled = isBusy || !allowed();
+    submitting = isBusy;
+    renderSubmit();
     el.submit.textContent = isBusy ? label : 'Hent valgresultat';
   }
 
   /** Whether importing is worth offering. The server still decides. */
   function allowed() {
     return account === null ? false : account.mayImport;
+  }
+
+  /**
+   * The one place the button's state is decided. The account is re-read in the
+   * middle of a submit, and that must not hand the user a second click racing
+   * the first over the preview.
+   */
+  function renderSubmit() {
+    el.submit.disabled = submitting || !allowed();
   }
 
   /** The standing note under the form: why importing is or is not available. */
@@ -100,7 +112,7 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
       const noun = account.remaining === 1 ? 'import' : 'importer';
       el.availability.textContent = `${account.remaining} ${noun} tilbage denne måned.`;
     }
-    el.submit.disabled = !allowed();
+    renderSubmit();
   }
 
   function optionLabel(summary) {
@@ -234,6 +246,9 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
 
   async function submit(event) {
     event.preventDefault();
+    // The button is disabled meanwhile, but a second submit must not slip past
+    // it: it would clear the preview the first one is about to show.
+    if (submitting) return;
     clearPreview();
     clearChoices();
     setMessage('');
@@ -262,35 +277,19 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
         return;
       }
 
-      busy(true, 'Henter…');
-      const result = await api.importElection(values);
-      if (result.status === ImportStatus.READY) {
-        // It turned out to be an election we already hold, asked for another way.
-        setMessage('Dette valg er allerede importeret.', 'warn');
-        await refreshPicker(result.electionHash).catch(() => {});
-        return;
+      // An import already running, or already read and waiting to be checked —
+      // from an earlier click, a reload, another tab — is picked up where it
+      // is. Importing again would reserve quota just to join it, and be refused
+      // outright if that import spent the last of the month.
+      let result = existing;
+      if (existing.status === ImportStatus.PENDING) {
+        busy(true, 'Henter…');
+        result = await api.getImport(existing.requestKey);
+      } else if (existing.status !== ImportStatus.PREVIEW) {
+        busy(true, 'Henter…');
+        result = await api.importElection(values);
       }
-      if (result.status === ImportStatus.FAILED) {
-        setMessage(`Kunne ikke finde valgresultatet: ${result.error}`, 'error');
-        return;
-      }
-      if (result.status === ImportStatus.PENDING) {
-        setMessage('Behandling er stadig i gang. Prøv igen om lidt.', 'info');
-        return;
-      }
-      if (result.status === ImportStatus.CHOOSE) {
-        renderChoices(result);
-        await onImported();
-        return;
-      }
-      pending = result;
-      renderPreview(result.election);
-      // The import has now been charged for, so the allowance has moved.
-      await onImported();
-      setMessage(
-        'Kontrollér at det er det rigtige valg, og at tallene passer, før du gemmer.',
-        'info'
-      );
+      await handleResult(result);
     } catch (error) {
       setMessage(refusal(error), 'error');
       // A refusal usually means the allowance moved; take the server's word for it.
@@ -298,6 +297,37 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
     } finally {
       busy(false);
     }
+  }
+
+  /** Show what an import came back with, whether started now or picked up. */
+  async function handleResult(result) {
+    if (result.status === ImportStatus.READY) {
+      // It turned out to be an election we already hold, asked for another way.
+      setMessage('Dette valg er allerede importeret.', 'warn');
+      await refreshPicker(result.electionHash).catch(() => {});
+      return;
+    }
+    if (result.status === ImportStatus.FAILED) {
+      setMessage(`Kunne ikke finde valgresultatet: ${result.error}`, 'error');
+      return;
+    }
+    if (result.status === ImportStatus.PENDING) {
+      setMessage('Behandling er stadig i gang. Prøv igen om lidt.', 'info');
+      return;
+    }
+    if (result.status === ImportStatus.CHOOSE) {
+      renderChoices(result);
+      await onImported();
+      return;
+    }
+    pending = result;
+    renderPreview(result.election);
+    // The import has been charged for, so the allowance has moved.
+    await onImported();
+    setMessage(
+      'Kontrollér at det er det rigtige valg, og at tallene passer, før du gemmer.',
+      'info'
+    );
   }
 
   function refusal(error) {

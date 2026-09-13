@@ -595,7 +595,18 @@ async def import_election(
     The allowance is taken *before* the request is claimed and given back if the
     claim turns out not to need any work. Reserving first is what keeps two
     simultaneous imports from both spending the last unit of a month.
+
+    What is already there — a stored election, or an import running or waiting
+    for its importer — is handed back before the allowance is looked at at all.
+    Otherwise asking again for an import that spent the month's last unit is
+    refused, and with it the way back to the preview that unit paid for. A race
+    past this check is still caught by the claim, and refunded.
     """
+    request = body.to_request()
+    joined = await service.peek(request)
+    if joined is not None:
+        return await _answer(joined, response, service, wait_seconds)
+
     period = billing_period()
     limit = policy.limit(account.tier)
     charged = not principal.unmetered
@@ -639,7 +650,7 @@ async def import_election(
 
     try:
         result = await service.submit(
-            body.to_request(),
+            request,
             owner=principal.uid,
             on_parse_failed=partial(refund, keep_attempt=True),
         )
@@ -651,10 +662,17 @@ async def import_election(
         raise
 
     if result.reused:
-        # Served from the store, or joined to somebody else's running import:
-        # nothing was searched for or read on this caller's behalf.
+        # Joined to an import somebody started between the look above and the
+        # claim: nothing was searched for or read on this caller's behalf.
         await run_in_threadpool(refund)
 
+    return await _answer(result, response, service, wait_seconds)
+
+
+async def _answer(
+    result: ImportResult, response: Response, service: ImportService, wait_seconds: float
+) -> ImportResponse:
+    """Wait up to ``wait_seconds`` on an import still running, then say where it stands."""
     if result.state is ImportState.PENDING and wait_seconds > 0:
         result = await service.wait_for(
             result.request_key, min(wait_seconds, max_wait_seconds())

@@ -20,7 +20,7 @@ from .identity import election_hash, request_key
 from .observability import io_span, scrub
 from .parser import ElectionParser, ParseError
 from .schema import Election
-from .store import ClaimOutcome, ElectionStore, ImportRequest, JobStatus, StoredElection
+from .store import Claim, ClaimOutcome, ElectionStore, ImportRequest, JobStatus, StoredElection
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,9 @@ MAX_POLL_INTERVAL_SECONDS = 1.0
 
 #: What a failed import says when the failure was ours rather than the election's.
 IMPORT_FAILED = "the import failed on our side — please try again later"
+
+#: What an import says once it has gone quiet past its lease.
+IMPORT_STALLED = "the import stopped before it finished — please try again"
 
 
 def _user_message(exc: Exception) -> str:
@@ -99,6 +102,50 @@ class ImportService:
         """Firestore's client is blocking; keep it off the event loop."""
         return await anyio.to_thread.run_sync(fn, *args)
 
+    async def peek(self, request: ImportRequest) -> ImportResult | None:
+        """What asking for ``request`` would be handed without any work being started.
+
+        The stored election, or the import already running or waiting on its
+        importer — exactly what :meth:`submit` would return — or ``None`` when
+        asking would start an import. Nothing is claimed, so this can be
+        answered before anything is charged; a ``None`` still has to go through
+        :meth:`submit`, which decides again under the claim.
+        """
+        key = self.request_key_for(request)
+        claim = await self._in_thread(self._store.peek, key)
+        joined = self._joined(key, claim)
+        if joined is not None:
+            log.info("peek request=%s outcome=%s", key[:12], claim.outcome.value)
+        return joined
+
+    @staticmethod
+    def _joined(key: str, claim: Claim) -> ImportResult | None:
+        """The result for a claim that needs no import of its own; ``None`` if it does."""
+        if claim.outcome is ClaimOutcome.STORED:
+            # This request has been made before: no search, no fetch, no model call.
+            return ImportResult(
+                key, ImportState.READY, election=claim.election,
+                election_hash=claim.election_hash, reused=True,
+            )
+
+        if claim.outcome is ClaimOutcome.ATTACHED:
+            job = claim.job
+            if job is not None and job.status is JobStatus.AWAITING_CONFIRMATION:
+                return ImportResult(
+                    key, ImportState.PREVIEW, election=job.result,
+                    election_hash=identity_of(job.result) if job.result else None,
+                    attempt=job.attempt, reused=True,
+                )
+            if job is not None and job.status is JobStatus.AWAITING_CHOICE:
+                return ImportResult(
+                    key, ImportState.CHOOSE, forecasts=job.forecasts,
+                    attempt=job.attempt, reused=True,
+                )
+            return ImportResult(
+                key, ImportState.PENDING, attempt=job.attempt if job else None, reused=True
+            )
+        return None
+
     async def submit(
         self,
         request: ImportRequest,
@@ -125,29 +172,9 @@ class ImportService:
             key[:12], claim.outcome.value, scrub(request.describe()),
         )
 
-        if claim.outcome is ClaimOutcome.STORED:
-            # This request has been made before: no search, no fetch, no model call.
-            return ImportResult(
-                key, ImportState.READY, election=claim.election,
-                election_hash=claim.election_hash, reused=True,
-            )
-
-        if claim.outcome is ClaimOutcome.ATTACHED:
-            job = claim.job
-            if job is not None and job.status is JobStatus.AWAITING_CONFIRMATION:
-                return ImportResult(
-                    key, ImportState.PREVIEW, election=job.result,
-                    election_hash=identity_of(job.result) if job.result else None,
-                    attempt=job.attempt, reused=True,
-                )
-            if job is not None and job.status is JobStatus.AWAITING_CHOICE:
-                return ImportResult(
-                    key, ImportState.CHOOSE, forecasts=job.forecasts,
-                    attempt=job.attempt, reused=True,
-                )
-            return ImportResult(
-                key, ImportState.PENDING, attempt=job.attempt if job else None, reused=True
-            )
+        joined = self._joined(key, claim)
+        if joined is not None:
+            return joined
 
         task = asyncio.create_task(self._import(key, request, on_parse_failed))
         self._tasks.add(task)
@@ -234,18 +261,25 @@ class ImportService:
             await failed(IMPORT_FAILED)
 
     async def status(self, key: str) -> ImportResult:
-        job = await self._in_thread(self._store.get_job, key)
-        resolved = await self._in_thread(self._store.resolve_request, key)
-        if resolved is not None:
-            election = await self._in_thread(self._store.get_election, resolved)
-            if election is not None:
-                return ImportResult(
-                    key, ImportState.READY, election=election, election_hash=resolved
-                )
+        # The very read a claim decides on, so a poll and asking again cannot
+        # disagree about whether an import is still alive.
+        claim = await self._in_thread(self._store.peek, key)
+        if claim.outcome is ClaimOutcome.STORED:
+            return ImportResult(
+                key, ImportState.READY, election=claim.election,
+                election_hash=claim.election_hash,
+            )
+        job = claim.job
         if job is None:
             return ImportResult(key, ImportState.UNKNOWN)
         if job.status is JobStatus.FAILED:
             return ImportResult(key, ImportState.FAILED, error=job.error, attempt=job.attempt)
+        if job.status is JobStatus.PENDING and claim.outcome is ClaimOutcome.STARTED:
+            # Past its lease with nothing reported: the run died with its
+            # container. Waiting on it would never end; asking again reclaims it.
+            return ImportResult(
+                key, ImportState.FAILED, error=IMPORT_STALLED, attempt=job.attempt
+            )
         if job.status is JobStatus.AWAITING_CONFIRMATION and job.result is not None:
             return ImportResult(
                 key, ImportState.PREVIEW, election=job.result,

@@ -254,6 +254,41 @@ async def test_an_abandoned_preview_is_reclaimed_once_its_lease_expires():
     await wait_until(lambda: parser.call_count == 2)
 
 
+async def test_a_crashed_import_stops_being_reported_as_running_once_its_lease_expires():
+    """Asking again reclaims a dead run; a poll must not be left waiting on it forever."""
+    now = [1000.0]
+    parser = CountingParser()
+    parser.hold()
+    _, parser, service = build(parser, stale_after=60.0, clock=lambda: now[0])
+
+    first = await service.submit(make_request())
+    await parser.started.wait()
+    assert (await service.status(first.request_key)).state is ImportState.PENDING
+
+    now[0] += 61.0
+    stalled = await service.status(first.request_key)
+
+    assert stalled.state is ImportState.FAILED
+    assert stalled.error
+    assert await service.peek(make_request()) is None, "and asking again would start afresh"
+    parser.release()
+    await settle(service, first.request_key)
+
+
+async def test_peeking_hands_back_what_is_already_there_without_starting_anything():
+    _, parser, service = build()
+    assert await service.peek(make_request()) is None
+    assert parser.call_count == 0
+
+    first = await service.submit(make_request())
+    await settle(service, first.request_key)
+    peeked = await service.peek(make_request())
+
+    assert peeked.state is ImportState.PREVIEW
+    assert peeked.reused is True
+    assert parser.call_count == 1
+
+
 async def test_status_reports_unknown_for_an_unseen_request():
     _, _, service = build()
     result = await service.status("0" * 64)

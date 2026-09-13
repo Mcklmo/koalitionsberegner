@@ -212,3 +212,47 @@ def test_a_new_attempt_belongs_to_whoever_started_it(store):
     store.claim(KEY, make_request(), "uid-2")
 
     assert store.get_job(KEY).owner == "uid-2"
+
+
+# --- peeking: the claim decision without the claim -------------------------
+
+def test_peeking_decides_like_a_claim_but_claims_nothing(store):
+    assert store.peek(KEY).outcome is ClaimOutcome.STARTED
+    assert store.get_job(KEY) is None, "a peek starts no job"
+
+    store.claim(KEY, make_request())
+    peeked = store.peek(KEY)
+
+    assert peeked.outcome is ClaimOutcome.ATTACHED
+    assert peeked.job.status is JobStatus.PENDING
+    assert store.get_job(KEY).attempt == 1, "and joins nothing either"
+
+
+def test_peeking_sees_a_stored_election(store):
+    saved(store)
+
+    peeked = store.peek(KEY)
+
+    assert peeked.outcome is ClaimOutcome.STORED
+    assert peeked.election_hash == HASH
+    assert peeked.election is not None
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_a_job_past_its_lease_peeks_as_claimable(backend, tmp_path):
+    now = [1000.0]
+    clock = lambda: now[0]  # noqa: E731
+    store = (
+        InMemoryElectionStore(stale_after=60.0, clock=clock) if backend == "memory"
+        else SqliteElectionStore(tmp_path / "elections.db", stale_after=60.0, clock=clock)
+    )
+    store.claim(KEY, make_request())
+    now[0] += 61.0
+
+    peeked = store.peek(KEY)
+
+    assert peeked.outcome is ClaimOutcome.STARTED
+    assert peeked.job.status is JobStatus.PENDING, "the dead job is reported, not replaced"
+    assert store.get_job(KEY).attempt == 1
+    if backend == "sqlite":
+        store.close()

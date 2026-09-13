@@ -238,30 +238,41 @@ class SqliteElectionStore:
 
     # --- writes ------------------------------------------------------------
 
+    def _peek(self, conn: sqlite3.Connection, request_key: str) -> Claim:
+        resolved = conn.execute(
+            "SELECT election_hash FROM import_results WHERE request_key = ?",
+            (request_key,),
+        ).fetchone()
+        election_hash = resolved["election_hash"] if resolved else None
+        election = self._read_election(conn, election_hash) if election_hash else None
+
+        row = conn.execute(
+            "SELECT * FROM import_jobs WHERE request_key = ?", (request_key,)
+        ).fetchone()
+        job = _job_from_row(row) if row else None
+
+        outcome = _decide(election, job, self._clock(), self._stale_after)
+        if outcome is ClaimOutcome.STORED:
+            return Claim(outcome, request_key, election=election,
+                         election_hash=election_hash, job=job)
+        return Claim(outcome, request_key, job=job)
+
+    def peek(self, request_key: str) -> Claim:
+        with io_span(log, "sqlite", "peek", request=request_key[:12]) as span:
+            peeked = self._peek(self._connect(), request_key)
+            span["outcome"] = peeked.outcome.value
+            return peeked
+
     def claim(
         self, request_key: str, request: ImportRequest, owner: str | None = None
     ) -> Claim:
         with io_span(log, "sqlite", "claim", request=request_key[:12]) as span:
             with self._write() as conn:
-                resolved = conn.execute(
-                    "SELECT election_hash FROM import_results WHERE request_key = ?",
-                    (request_key,),
-                ).fetchone()
-                election_hash = resolved["election_hash"] if resolved else None
-                election = self._read_election(conn, election_hash) if election_hash else None
-
-                row = conn.execute(
-                    "SELECT * FROM import_jobs WHERE request_key = ?", (request_key,)
-                ).fetchone()
-                job = _job_from_row(row) if row else None
-
-                outcome = _decide(election, job, self._clock(), self._stale_after)
-                span["outcome"] = outcome.value
-                if outcome is ClaimOutcome.STORED:
-                    return Claim(outcome, request_key, election=election,
-                                 election_hash=election_hash, job=job)
-                if outcome is ClaimOutcome.ATTACHED:
-                    return Claim(outcome, request_key, job=job)
+                peeked = self._peek(conn, request_key)
+                span["outcome"] = peeked.outcome.value
+                if peeked.outcome is not ClaimOutcome.STARTED:
+                    return peeked
+                job = peeked.job
 
                 new_job = Job(
                     request_key=request_key,
@@ -282,7 +293,7 @@ class SqliteElectionStore:
                      new_job.started_at, new_job.attempt, new_job.owner),
                 )
                 span["attempt"] = new_job.attempt
-                return Claim(outcome, request_key, job=new_job)
+                return Claim(ClaimOutcome.STARTED, request_key, job=new_job)
 
     def stage(self, request_key: str, election: Election) -> None:
         with io_span(log, "sqlite", "stage", request=request_key[:12],

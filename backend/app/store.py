@@ -191,6 +191,16 @@ class ElectionStore(Protocol):
         self, request_key: str, request: ImportRequest, owner: str | None = None
     ) -> Claim: ...
 
+    def peek(self, request_key: str) -> Claim:
+        """What :meth:`claim` would decide right now, without claiming anything.
+
+        On ``STARTED`` the ``job`` is whatever is already there — failed,
+        abandoned, past its lease — rather than a new one. A read, not a
+        reservation: somebody may claim before the caller acts on it, so it can
+        spare a caller work but never stand in for the claim itself.
+        """
+        ...
+
     def stage(self, request_key: str, election: Election) -> None:
         """Record an extracted election as awaiting the user's confirmation."""
         ...
@@ -300,21 +310,30 @@ class InMemoryElectionStore:
         with self._lock:
             return self._resolved.get(request_key)
 
+    def _peek_locked(self, request_key: str) -> Claim:
+        election_hash = self._resolved.get(request_key)
+        stored = self._elections.get(election_hash) if election_hash else None
+        job = self._jobs.get(request_key)
+        outcome = _decide(
+            stored.election if stored else None, job, self._clock(), self._stale_after
+        )
+        if outcome is ClaimOutcome.STORED:
+            return Claim(outcome, request_key, election=stored.election,
+                         election_hash=election_hash, job=job)
+        return Claim(outcome, request_key, job=job)
+
+    def peek(self, request_key: str) -> Claim:
+        with self._lock:
+            return self._peek_locked(request_key)
+
     def claim(
         self, request_key: str, request: ImportRequest, owner: str | None = None
     ) -> Claim:
         with self._lock:
-            election_hash = self._resolved.get(request_key)
-            stored = self._elections.get(election_hash) if election_hash else None
-            job = self._jobs.get(request_key)
-            outcome = _decide(
-                stored.election if stored else None, job, self._clock(), self._stale_after
-            )
-            if outcome is ClaimOutcome.STORED:
-                return Claim(outcome, request_key, election=stored.election,
-                             election_hash=election_hash, job=job)
-            if outcome is ClaimOutcome.ATTACHED:
-                return Claim(outcome, request_key, job=job)
+            peeked = self._peek_locked(request_key)
+            if peeked.outcome is not ClaimOutcome.STARTED:
+                return peeked
+            job = peeked.job
             new_job = Job(
                 request_key=request_key,
                 status=JobStatus.PENDING,
@@ -324,7 +343,7 @@ class InMemoryElectionStore:
                 owner=owner,
             )
             self._jobs[request_key] = new_job
-            return Claim(outcome, request_key, job=new_job)
+            return Claim(ClaimOutcome.STARTED, request_key, job=new_job)
 
     def stage(self, request_key: str, election: Election) -> None:
         with self._lock:

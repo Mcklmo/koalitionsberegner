@@ -95,6 +95,18 @@ test('import sends the year and the place, and returns a validated preview', asy
   assert.ok(isValidatedElection(result.election));
 });
 
+test('an import under way is polled without starting another', async () => {
+  const { fetchImpl, calls } = fakeFetch([
+    { status: 200, body: { request_key: 'r1', election_hash: 'abc', state: 'preview', election: payload, reused: false } },
+  ]);
+  const result = await createApiClient({ fetch: fetchImpl }).getImport('r1');
+
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[0].url, '/api/elections/imports/r1?wait_seconds=25');
+  assert.equal(result.status, 'preview');
+  assert.ok(isValidatedElection(result.election));
+});
+
 test('confirm posts to the import it previewed', async () => {
   const { fetchImpl, calls } = fakeFetch([
     { status: 200, body: { request_key: 'r1', election_hash: 'abc', state: 'ready', election: payload, duplicate: false } },

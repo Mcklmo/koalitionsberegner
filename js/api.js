@@ -239,6 +239,15 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {
       return toResult(body);
     },
 
+    /** How an import already under way is getting on. Free: it never starts one. */
+    async getImport(requestKey, { waitSeconds = 25 } = {}) {
+      return toResult(
+        await request(
+          `/api/elections/imports/${encodeURIComponent(requestKey)}?${query({ wait_seconds: waitSeconds })}`
+        )
+      );
+    },
+
     /** The only path into storage. `option` picks one of an upcoming election's forecasts. */
     async confirm(requestKey, { option } = {}) {
       const suffix = option === undefined || option === null ? '' : `?${query({ option })}`;

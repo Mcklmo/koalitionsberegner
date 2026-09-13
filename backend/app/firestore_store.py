@@ -154,33 +154,43 @@ class FirestoreElectionStore:
             span["hash"] = resolved[:12] if resolved else "unresolved"
             return resolved
 
+    def _peek(self, request_key: str, transaction=None) -> Claim:
+        """The claim decision as read now — inside ``transaction`` when claiming."""
+        result_doc = self._result_ref(request_key).get(transaction=transaction)
+        election_hash = result_doc.to_dict().get("election_hash") if result_doc.exists else None
+        election = None
+        if election_hash:
+            election_doc = self._election_ref(election_hash).get(transaction=transaction)
+            if election_doc.exists:
+                election = Election.model_validate(election_doc.to_dict()["election"])
+
+        job_doc = self._job_ref(request_key).get(transaction=transaction)
+        job = _job_from_doc(request_key, job_doc.to_dict()) if job_doc.exists else None
+
+        outcome = _decide(election, job, self._clock(), self._stale_after)
+        if outcome is ClaimOutcome.STORED:
+            return Claim(outcome, request_key, election=election,
+                         election_hash=election_hash, job=job)
+        return Claim(outcome, request_key, job=job)
+
+    def peek(self, request_key: str) -> Claim:
+        with io_span(log, "firestore", "peek", request=request_key[:12]) as span:
+            peeked = self._peek(request_key)
+            span["outcome"] = peeked.outcome.value
+            return peeked
+
     def claim(
         self, request_key: str, request: ImportRequest, owner: str | None = None
     ) -> Claim:
         job_ref = self._job_ref(request_key)
-        result_ref = self._result_ref(request_key)
-        db, stale_after, clock = self._db, self._stale_after, self._clock
-        election_ref_for = self._election_ref
+        db, clock = self._db, self._clock
 
         @firestore.transactional
         def _claim(transaction):
-            result_doc = result_ref.get(transaction=transaction)
-            election_hash = result_doc.to_dict().get("election_hash") if result_doc.exists else None
-            election = None
-            if election_hash:
-                election_doc = election_ref_for(election_hash).get(transaction=transaction)
-                if election_doc.exists:
-                    election = Election.model_validate(election_doc.to_dict()["election"])
-
-            job_doc = job_ref.get(transaction=transaction)
-            job = _job_from_doc(request_key, job_doc.to_dict()) if job_doc.exists else None
-
-            outcome = _decide(election, job, clock(), stale_after)
-            if outcome is ClaimOutcome.STORED:
-                return Claim(outcome, request_key, election=election,
-                             election_hash=election_hash, job=job)
-            if outcome is ClaimOutcome.ATTACHED:
-                return Claim(outcome, request_key, job=job)
+            peeked = self._peek(request_key, transaction)
+            if peeked.outcome is not ClaimOutcome.STARTED:
+                return peeked
+            job = peeked.job
 
             new_job = Job(
                 request_key=request_key,
@@ -205,7 +215,7 @@ class FirestoreElectionStore:
                     "forecasts": None,
                 },
             )
-            return Claim(outcome, request_key, job=new_job)
+            return Claim(ClaimOutcome.STARTED, request_key, job=new_job)
 
         with io_span(log, "firestore", "claim", request=request_key[:12]) as span:
             claim = _claim(db.transaction())

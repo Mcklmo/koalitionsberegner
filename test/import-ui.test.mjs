@@ -95,11 +95,12 @@ function fillValidForm(el) {
 
 /** An API double that counts calls and returns queued results. */
 function fakeApi(overrides = {}) {
-  const calls = { lookup: 0, importElection: 0, confirm: 0, discardPreview: 0, getElection: 0, listElections: 0 };
+  const calls = { lookup: 0, importElection: 0, getImport: 0, confirm: 0, discardPreview: 0, getElection: 0, listElections: 0 };
   const api = {
     async listElections() { calls.listElections++; return overrides.summaries ?? []; },
     async lookup() { calls.lookup++; return overrides.lookup ?? { requestKey: 'p1', electionHash: null, status: 'unknown', election: null }; },
     async importElection() { calls.importElection++; return overrides.importElection ?? { requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false }; },
+    async getImport(requestKey) { calls.getImport++; calls.polledWith = requestKey; return overrides.getImport ?? { requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false }; },
     async confirm(requestKey) { calls.confirm++; calls.confirmedWith = requestKey; return overrides.confirm ?? { requestKey: 'p1', electionHash: 'h', status: 'ready', election, duplicate: false }; },
     async discardPreview(requestKey) { calls.discardPreview++; calls.discardedWith = requestKey; },
     async getElection() { calls.getElection++; return overrides.getElection ?? { electionHash: 'h', status: 'ready', election }; },
@@ -238,6 +239,83 @@ test('a failed extraction is reported and nothing is previewed', async () => {
   assert.equal(calls.confirm, 0);
   assert.match(el.message.textContent, /kunne ikke læses/);
   assert.equal(el.message.className, 'msg msg-error');
+});
+
+/** An importElection that stays open until the test settles it. */
+function heldImport(api, calls) {
+  const held = {};
+  api.importElection = () => {
+    calls.importElection++;
+    return new Promise((resolve) => { held.finish = resolve; });
+  };
+  return held;
+}
+
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+test('a second submit while one is under way starts nothing', async () => {
+  const { api, calls } = fakeApi();
+  const held = heldImport(api, calls);
+  const { el } = harness({ api });
+  fillValidForm(el);
+
+  const first = el.form.dispatch('submit');
+  await settled();
+  await el.form.dispatch('submit');
+  held.finish({ requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false });
+  await first;
+
+  assert.equal(calls.lookup, 1);
+  assert.equal(calls.importElection, 1);
+  assert.equal(el.preview.hidden, false, 'the first import’s preview is still shown');
+});
+
+test('re-reading the account mid-import does not re-enable the button', async () => {
+  const { api, calls } = fakeApi();
+  const held = heldImport(api, calls);
+  const { el, ui } = harness({ api });
+  fillValidForm(el);
+
+  const running = el.form.dispatch('submit');
+  await settled();
+  await ui.setAccount(SUBSCRIBER);
+  assert.equal(el.submit.disabled, true);
+
+  held.finish({ requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false });
+  await running;
+  assert.equal(el.submit.disabled, false);
+});
+
+test('an import still running is waited on, not paid for again', async () => {
+  const { api, calls } = fakeApi({
+    lookup: { requestKey: 'p1', electionHash: null, status: 'pending', election: null },
+  });
+  const { el } = harness({ api });
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.equal(calls.getImport, 1);
+  assert.equal(calls.polledWith, 'p1');
+  assert.equal(calls.importElection, 0, 'joining the running import must not reserve quota');
+  assert.equal(el.preview.hidden, false);
+});
+
+test('a preview left behind is shown again without a new import', async () => {
+  const { api, calls } = fakeApi({
+    lookup: { requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false },
+  });
+  const { el } = harness({ api });
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.equal(calls.importElection, 0);
+  assert.equal(calls.getImport, 0);
+  assert.equal(el.preview.hidden, false);
+
+  await el.confirm.dispatch('click');
+  assert.equal(calls.confirmedWith, 'p1', 'and it can still be saved');
 });
 
 test('the picker lists the bundled election plus everything stored', async () => {
