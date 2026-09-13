@@ -652,24 +652,55 @@ test('a subscriber who ran out for the month waits rather than wishing', async (
   assert.equal(calls.requestElection, 0);
 });
 
-test('an account waiting on its confirmation link is not offered the wish either', async () => {
+test('an account waiting on its confirmation link can still ask', async () => {
   const { api } = fakeApi();
   const { el, ui } = harness({ api, config: asking });
 
   await ui.setAccount({ ...FREE_ACCOUNT, emailVerified: false });
 
-  assert.equal(el.submit.disabled, true, 'the endpoint would refuse it anyway');
+  assert.equal(el.submit.disabled, false, 'asking needs no confirmed address');
+  assert.match(el.availability.textContent, /ønske/);
 });
 
-test('a signed-out visitor is asked to sign in, since a wish needs an account', async () => {
+test('a signed-out visitor can ask without signing in first', async () => {
   const { api, calls } = fakeApi();
   const { el, ui } = harness({ api, config: asking, account: undefined });
+  await ui.setAccount(null);
+
+  assert.equal(el.submit.disabled, false);
+  assert.match(el.availability.textContent, /ønske/);
+
+  fillValidForm(el);
+  await el.form.dispatch('submit');
+
+  assert.equal(calls.requestElection, 1);
+  assert.equal(calls.importElection, 0);
+  assert.match(el.message.textContent, /#12/);
+});
+
+test('a signed-out visitor with no tracker behind the page is told to sign in', async () => {
+  const { api, calls } = fakeApi();
+  const { el, ui } = harness({ api, config: { requestsEnabled: false }, account: undefined });
 
   await ui.setAccount(null);
 
   assert.equal(el.submit.disabled, true);
   assert.match(el.availability.textContent, /Log ind/);
   assert.equal(calls.requestElection, 0);
+});
+
+test('a session that expired mid-form says so rather than asking for a login', async () => {
+  const { api } = fakeApi({
+    requestElection: new ApiError('sign in to use this', 401),
+  });
+  const { el, ui } = harness({ api, config: asking, account: undefined });
+  await ui.setAccount(null);
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.match(el.message.textContent, /udløbet/);
+  assert.equal(el.message.className, 'msg msg-error');
 });
 
 test('where the backend offers no tracker, a free account is pointed at a subscription', async () => {

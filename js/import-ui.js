@@ -45,15 +45,18 @@ const LOCAL_VALUE = 'local';
 
 /** Why the server turned an import down, in the page's own words. */
 const REFUSALS = {
-  401: 'Log ind for at importere eller ønske et valg.',
+  401: 'Log ind for at importere valg.',
   402: 'Import kræver et abonnement. Vælg en plan ovenfor.',
   429: 'Denne måneds importer er brugt op. Kvoten fornys ved månedsskiftet.',
 };
 
-/** The same, for the request path, whose refusals are not the import's. */
+/**
+ * The same, for the request path, whose refusals are not the import's. Asking
+ * needs no account, so the only 401 left is a session that expired while the
+ * page was open — the request itself would have been fine without it.
+ */
 const REQUEST_REFUSALS = {
-  401: 'Log ind for at ønske et valg.',
-  403: 'Bekræft din e-mailadresse, før du kan ønske et valg.',
+  401: 'Din session er udløbet. Genindlæs siden og prøv igen.',
   503: 'Ønskelisten er ikke tilgængelig lige nu. Prøv igen senere.',
 };
 
@@ -118,21 +121,21 @@ export function mountImportUi({
   }
 
   /**
-   * Whether this account is one the request path is for: signed in, confirmed,
-   * and on a tier that buys no imports at all.
+   * Whether the button should write the election down instead of importing it.
+   *
+   * Everyone who cannot import can, signed out included — asking needs no
+   * account, because nothing about it searches, fetches or spends. A visitor
+   * who never signs in is exactly the person most likely to find the election
+   * missing, and turning them away would lose the one signal this exists for.
    *
    * A subscriber who has merely run out for the month is deliberately *not*
    * one of them. They bought the imports, the allowance comes back at the
    * month's end, and the message under the form says so — turning that into a
    * hand-written issue would be a worse answer than waiting.
-   *
-   * Signed out is not one either: the request is filed against an account, and
-   * the endpoint says so. The note under the form asks them to sign in, which
-   * is free.
    */
   function canRequest() {
-    if (!config.requestsEnabled || account === null) return false;
-    if (account.emailVerified === false) return false;
+    if (!config.requestsEnabled) return false;
+    if (account === null) return true;
     return !account.mayImport && !account.unlimited && account.limit <= 0;
   }
 
@@ -147,14 +150,15 @@ export function mountImportUi({
 
   /** The standing note under the form: why importing is or is not available. */
   function renderAvailability() {
-    if (account === null) {
+    if (canRequest()) {
+      // The button still works; it does something else. Saying which is the
+      // difference between an offer and a dead end. Checked before the rest
+      // because it is true of a signed-out visitor too.
+      el.availability.textContent = REQUEST_NOTE;
+    } else if (account === null) {
       el.availability.textContent = REFUSALS[401];
     } else if (account.unlimited) {
       el.availability.textContent = '';
-    } else if (canRequest()) {
-      // The button still works; it does something else. Saying which is the
-      // difference between an offer and a dead end.
-      el.availability.textContent = REQUEST_NOTE;
     } else if (!account.mayImport) {
       el.availability.textContent = account.limit > 0 ? REFUSALS[429] : REFUSALS[402];
     } else {

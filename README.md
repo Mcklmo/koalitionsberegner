@@ -30,7 +30,7 @@ server fetch a page and run the extraction agent.
 
 | Caller | Sees | May import | May ask for an election |
 | --- | --- | --- | --- |
-| Signed out | the curated selection | no | no |
+| Signed out | the curated selection | no | yes |
 | Free account | every stored election | no | yes |
 | Basic subscriber | every stored election | a fixed number per month | — it imports |
 | Premium subscriber | every stored election | a larger number per month | — it imports |
@@ -47,19 +47,30 @@ free — which is the point of a shared store. A failed extraction is refunded.
 
 ### Asking for an election instead
 
-An account with no subscription reaches the same form and presses the same
-button. What it cannot do is make the server go and read pages, which is the
-part that costs money — so the election it named is filed as an issue on this
+Anyone who cannot import reaches the same form and presses the same button.
+What they cannot do is make the server go and read pages, which is the part
+that costs money — so the election they named is filed as an issue on this
 repository instead (`label:election-request`) and imported by hand later. The
 tracker *is* that queue: asking twice for the same election finds the open
 issue and points at it rather than opening a second one.
 
-It needs a confirmed account and no subscription, the same rule
-`/api/elections/lookup` already follows: this is part of the import flow rather
-than of viewing, and filing against an account is what keeps a public write to
-the issue tracker from being an open one. A subscriber who has merely run out
-for the month is not sent here — the allowance comes back at the month's end,
-which is a better answer than a hand-written issue.
+**No account is needed**, and that is the one route in the import flow where
+none is — `/api/elections/lookup` and everything past it need one. The
+reasoning that gates the rest does not apply here: nothing about asking
+searches, fetches, extracts or spends, and a visitor who never signs in is the
+person most likely to find an election missing. What it does mean is a public
+write on behalf of a caller nobody authenticated, bounded by one issue per
+election and by the rate limiting in front of the app; see
+[T12](doc/threat-model.md) for what that does and does not cover.
+
+A signed-in requester is named in the issue so they can be told when the
+election lands — but only if their address is confirmed. An unconfirmed one was
+merely typed by somebody, and naming it would publish a stranger's address on a
+public issue, so those are filed anonymously like a signed-out request.
+
+A subscriber who has merely run out for the month is not sent here — the
+allowance comes back at the month's end, which is a better answer than a
+hand-written issue.
 
 Requests need `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO`; without them
 `/api/config` says so and the page does not offer it.

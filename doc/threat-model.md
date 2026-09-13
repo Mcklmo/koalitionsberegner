@@ -376,19 +376,29 @@ GitHub issue on this repository (`app.wishlist`). It is the app's only outbound
 *write*, and the only one where a user's own words end up somewhere other than
 the store, so it is worth its own section.
 
-- **It is not an open endpoint.** `POST /api/elections/requests` needs a
-  confirmed account, the same rule `/api/elections/lookup` follows — filing is
-  part of the import flow, not of viewing. Signing up is free, which is the
-  point, but it is what stands between the tracker and a script: an account
-  costs a deliverable address, and Firebase's own abuse controls are in front of
-  that. This is deliberately the *same* answer the rest of the app gives
-  (`Accepted risks`: request-rate limiting belongs at the proxy, and the
-  expensive paths are gated by accounts instead).
+- **It is an open endpoint, deliberately.** `POST /api/elections/requests` asks
+  for no account — the only route in the import flow that does not. The
+  reasoning that gates the rest does not apply: nothing here searches, fetches,
+  extracts or spends, and the visitor most likely to find an election missing is
+  the one who never signs in. The cost is that this is a public write on behalf
+  of a caller nobody authenticated, and the account requirement that bounds
+  every other path is not available to bound this one. What is left is the
+  bullets below, plus the rate limiting in front of the app — which is where
+  this app puts per-client limits generally. The residual is accepted below.
+- **A bad credential is still refused.** Open to nobody-in-particular is not
+  open to a broken token: one that does not verify is a 401, not a quiet
+  demotion to anonymous.
+- **An unconfirmed address is never published.** A signed-in requester is named
+  in the issue so they can be told when the election lands, but only once the
+  address is confirmed. Signing up proves that somebody typed an address, not
+  that it is theirs, and naming it would put a stranger's address on a public
+  issue they never made — so those requests are filed anonymously, exactly as a
+  signed-out one is.
 - **One election is one issue.** A request is keyed by `identity.request_key`,
   the same key an import is, and the key is written into the issue as an HTML
   comment. Asking again finds the open issue and points at it, so the tracker
   cannot be filled by resubmitting the same form. What is left is a caller
-  enumerating *distinct* elections, which the account requirement bounds.
+  enumerating *distinct* elections, which nothing in the app bounds — see the accepted risk below.
 - **An election already stored is never filed.** The endpoint looks it up first
   and answers `409`, so the queue holds only elections that are actually
   missing.
@@ -418,10 +428,17 @@ These are known and deliberately not addressed here:
 - **CSS-hidden text still reaches the model.** Text hidden with `display: none`
   is text; stripping it reliably would need a full CSS cascade. It arrives
   inside the fence with no more authority than the rest of the page.
+- **Anyone can put an issue in the tracker.** Asking for an election needs no
+  account (T12), so a caller willing to invent distinct year-and-place pairs can
+  open an issue per pair. One election is one issue, an election already stored
+  is refused, and every field is length-bounded and escaped, so what this buys
+  an attacker is noise in a queue somebody reads by hand — not a write to the
+  store, not a fetch, not a model call, and nothing that costs money. The bound
+  on the rest of it is the proxy's, as below. Closing it again is one
+  dependency: `current_principal` back to `require_verified`.
 - **No request-rate limiting in the app.** Importing needs a paid, confirmed
-  account and is capped per month (T11); asking for an election needs a
-  confirmed account and is one issue per election (T12); everything else is
-  cheap and cached.
+  account and is capped per month (T11); asking for an election is one issue per
+  election (T12); everything else is cheap and cached.
   Limiting requests per client belongs at the proxy in front, which sees real
   client addresses — the app behind Cloud Run's front end cannot reliably.
 - **A DNS answer can change between the check and the connection.**
@@ -487,7 +504,8 @@ These are known and deliberately not addressed here:
 | Security headers, body caps, the origin secret, nothing served beside the page | `backend/tests/test_edge.py` |
 | Ungated auth modes refuse to start on Cloud Run | `backend/tests/test_config.py` |
 | An internal failure reaches the user as one fixed sentence | `backend/tests/test_service.py` |
-| A request needs a confirmed account, files one issue per election, and never repeats GitHub's words | `backend/tests/test_wishlist.py` |
+| A request needs no account, files one issue per election, and never repeats GitHub's words | `backend/tests/test_wishlist.py` |
+| A bad token is still refused, and an unconfirmed address is never published | `backend/tests/test_wishlist.py` |
 | A place name cannot restructure the issue it is written into | `backend/tests/test_wishlist.py` |
 | Checkout stays closed while payments are paused, and the portal does not | `backend/tests/test_wishlist.py` |
 

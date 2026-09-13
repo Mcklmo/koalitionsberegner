@@ -99,8 +99,8 @@ anywhere. `AUTH_MODE` is a separate question, about who a request *is*.
 | Billing on | Subscriptions are for sale; Stripe is the only thing that grants a tier. | `STRIPE_API_KEY`, `STRIPE_PRICE_BASIC` and/or `STRIPE_PRICE_PREMIUM`, `STRIPE_WEBHOOK_SECRET`, `PUBLIC_BASE_URL` |
 | Billing off | Free accounts work, nothing is for sale. The default. | — |
 | Checkout closed | Nothing can be bought whatever Stripe is configured for; the page says when to come back and points at requesting an election. The default while payments are being fixed. | `PAYMENTS_PAUSED=true` |
-| Requests on | An account with no subscription can ask for an election; it is filed as an issue and imported by hand. | `GITHUB_ISSUES_TOKEN`, `GITHUB_ISSUES_REPO` |
-| Requests off | Such an account is pointed at a subscription, as before. The default. | — |
+| Requests on | Anyone who cannot import — signed out included — can ask for an election; it is filed as an issue and imported by hand. | `GITHUB_ISSUES_TOKEN`, `GITHUB_ISSUES_REPO` |
+| Requests off | They are pointed at a subscription, or at signing in, as before. The default. | — |
 
 Each variable named here is described in full under
 [Environment variables](#environment-variables) below.
@@ -118,7 +118,9 @@ free tier, and free imports nothing. `POST /api/imports` answers `402` until a
 subscription raises the tier, and the only thing that raises a tier is a Stripe
 webhook — there is deliberately no endpoint that grants one. What such an
 account *can* do is ask for the election instead
-(`POST /api/elections/requests`), where `GITHUB_ISSUES_TOKEN` is configured. So those are the
+(`POST /api/elections/requests`), where `GITHUB_ISSUES_TOKEN` is configured —
+as can a caller with no account at all, which is the one route here that needs
+none. So those are the
 modes for watching the gate *refuse*, and for admin curation; `off` is the mode
 for driving a successful import; a successful *paid* import needs Stripe test
 mode, below.

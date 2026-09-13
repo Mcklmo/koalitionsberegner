@@ -269,15 +269,23 @@ def client(store, accounts, wishlist, monkeypatch):
     overrides.clear()
 
 
-def test_an_account_with_no_subscription_may_ask_for_an_election(client, wishlist, accounts):
+def test_asking_costs_no_quota(client, wishlist, accounts):
+    client.get("/api/me", headers=FREE)  # the account exists, with its month untouched
+
     filed = client.post("/api/elections/requests", json=BODY, headers=FREE)
 
     assert filed.status_code == 201
     assert filed.json() == {
         "url": "https://github.test/issues/1", "number": 1, "duplicate": False
     }
-    assert wishlist.filed == [(ImportRequest(year=2022, nation="Danmark"), "free@example.org")]
     assert accounts.get("free-1").used_in(billing_period()) == 0, "asking costs no quota"
+
+
+def test_asking_does_not_even_create_an_account(client, wishlist, accounts):
+    """Nothing about this route is per-account, so it makes no row for one."""
+    client.post("/api/elections/requests", json=BODY, headers=FREE)
+
+    assert accounts.get("free-1") is None
 
 
 def test_a_region_is_carried_through_as_asked(client, wishlist):
@@ -329,9 +337,48 @@ def test_asking_for_an_election_already_imported_points_at_it_instead(
     assert wishlist.filed == []
 
 
-def test_asking_needs_an_account_and_a_confirmed_address(client, wishlist):
-    assert client.post("/api/elections/requests", json=BODY, headers=VISITOR).status_code == 401
-    assert client.post("/api/elections/requests", json=BODY, headers=UNVERIFIED).status_code == 403
+def test_a_signed_out_visitor_can_ask_too(client, wishlist):
+    """The one route in the import flow that asks for no account.
+
+    Nothing here searches, fetches, extracts or spends, and a visitor who never
+    signs in is the person most likely to find an election missing.
+    """
+    filed = client.post("/api/elections/requests", json=BODY, headers=VISITOR)
+
+    assert filed.status_code == 201
+    assert wishlist.filed == [(ImportRequest(year=2022, nation="Danmark"), None)]
+
+
+def test_an_address_nobody_confirmed_is_not_published_on_a_public_issue(client, wishlist):
+    """Signing up proves only that somebody typed an address.
+
+    Naming it would put a stranger's address on a public issue they never made,
+    so an unconfirmed request is filed the way a signed-out one is.
+    """
+    filed = client.post("/api/elections/requests", json=BODY, headers=UNVERIFIED)
+
+    assert filed.status_code == 201
+    assert wishlist.filed == [(ImportRequest(year=2022, nation="Danmark"), None)]
+
+
+def test_a_confirmed_account_is_named_so_it_can_be_told(client, wishlist):
+    client.post("/api/elections/requests", json=BODY, headers=FREE)
+
+    assert wishlist.filed == [(ImportRequest(year=2022, nation="Danmark"), "free@example.org")]
+
+
+def test_a_credential_that_does_not_verify_is_still_refused(client, wishlist):
+    """Open to nobody-in-particular is not the same as open to a bad credential.
+
+    Presenting a broken token is refused outright rather than quietly demoted
+    to anonymous, which would hide a broken client — the same rule
+    ``current_principal`` applies everywhere else.
+    """
+    refused = client.post(
+        "/api/elections/requests", json=BODY, headers={"Authorization": "Bearer  :nobody"}
+    )
+
+    assert refused.status_code == 401
     assert wishlist.filed == []
 
 
