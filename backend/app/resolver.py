@@ -93,10 +93,11 @@ Then identify the election:
   "sainte_lague", whichever highest-averages method is closer to the real one.
   Leave all three null for an assembly that is not elected proportionally.
 
-An election that has not been held yet — today is before its date — is
-upcoming. Set upcoming to true, and give as its date the day it is scheduled
-for or, when no day has been set, the last day on which it can be held. It has
-no results, so instead of a seat distribution find its opinion polls: list the
+An election whose seats have not been allocated yet is upcoming: one still to
+be held, one being held today, and one whose votes are still being counted. Set
+upcoming to true, and give as its date the day it is held or scheduled for or,
+when no day has been set, the last day on which it can be held. It has no
+results, so instead of a seat distribution find its opinion polls: list the
 URLs of pages that publish recent polls or seat projections for this election —
 a poll aggregator, a public broadcaster's poll tracker, the pollsters' own
 pages, or an encyclopedia article listing the polls — the most complete and
@@ -118,15 +119,13 @@ If you cannot get to one election, fill in unresolved_reason instead and leave
 the rest as your best guess:
 - "unknown_place" when the nation or region is not a place you can identify;
 - "no_election" when that place holds no such election in that year;
-- "not_yet_held" when the election has been held but its seats have not been
-  allocated yet (an upcoming election is not this: set upcoming instead);
 - "ambiguous" when the request fits more than one election and nothing chooses
   between them.\
 """
 
 #: Why a request could not be turned into one election. A closed set: the code
 #: chooses which of our messages the user sees, and never writes one itself.
-UnresolvedReason = Literal["unknown_place", "no_election", "not_yet_held", "ambiguous"]
+UnresolvedReason = Literal["unknown_place", "no_election", "ambiguous"]
 
 #: What each code means, in the user's terms.
 UNRESOLVED_MESSAGES: dict[str, str] = {
@@ -138,7 +137,6 @@ UNRESOLVED_MESSAGES: dict[str, str] = {
         "no election of that kind was held there in that year — check the year, "
         "and whether it is the region's own parliament you mean"
     ),
-    "not_yet_held": "that election's seats have not been allocated yet",
     "ambiguous": (
         "more than one election fits that description — name the region whose "
         "own parliament you mean"
@@ -354,7 +352,7 @@ class MockResolver:
             sources=list(self.sources),
             # A year still to come is an upcoming election here too, so mock
             # mode walks through the forecast list as well as the result.
-            upcoming=held > self._clock(),
+            upcoming=held >= self._clock(),
             # The mock's parties are Saxony-Anhalt's, so its Landtag's rules.
             assembly_seats=97,
             threshold_percent=5.0,

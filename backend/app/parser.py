@@ -117,7 +117,9 @@ class LlmElectionParser:
     async def parse(self, request: ImportRequest) -> Election | list[Election]:
         resolved = await self._resolve(request)
         if self._upcoming(resolved):
-            return await self._forecasts(resolved, request)
+            # Wikipedia is searched for polling articles by the flag, so the
+            # calendar's answer is written into it.
+            return await self._forecasts(resolved.model_copy(update={"upcoming": True}), request)
         candidates = await self._candidates(resolved)
         if not candidates:
             raise ParseError(
@@ -167,9 +169,10 @@ class LlmElectionParser:
         """Whether this election is still to be held, and so has polls, not results.
 
         The resolver says so, and the date is checked as well: an election dated
-        after today has no results to read, whatever the flag was left at.
+        today or later has no seats to read, whatever the flag was left at — on
+        its day the votes are still being cast or counted.
         """
-        return resolved.upcoming or normalize_date(resolved.election_date) > self._clock()
+        return resolved.upcoming or normalize_date(resolved.election_date) >= self._clock()
 
     async def _forecasts(
         self, resolved: ResolvedElection, request: ImportRequest

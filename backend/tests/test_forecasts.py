@@ -86,12 +86,14 @@ class PollExtractor:
     def __init__(self, answers):
         self.answers = answers if isinstance(answers, dict) else {"": answers}
         self.pages: list[str] = []
+        self.wanted: list[ResolvedElection] = []
 
     async def extract(self, page, wanted):
         raise AssertionError("an upcoming election has no results to extract")
 
     async def extract_forecasts(self, page, wanted):
         self.pages.append(page.url)
+        self.wanted.append(wanted)
         for marker, answer in self.answers.items():
             if marker in page.text:
                 return answer
@@ -168,6 +170,18 @@ async def test_a_date_after_today_means_forecasts_whatever_the_flag_says():
         SiteFetcher({POLLS: "p"}), PollExtractor(polls(poll())), upcoming(upcoming=False)
     ).parse(request())
     assert forecasts[0].forecast is not None
+
+
+async def test_an_election_held_today_means_forecasts_too():
+    """While the votes are cast and counted no seats are allocated; the polls are the latest word."""
+    extractor = PollExtractor(polls(poll()))
+    forecasts = await parser(
+        SiteFetcher({POLLS: "p"}), extractor,
+        upcoming(upcoming=False, election_date=TODAY.isoformat()),
+    ).parse(make_request(year=TODAY.year, nation="Sverige"))
+
+    assert forecasts[0].forecast is not None
+    assert extractor.wanted[0].upcoming, "the calendar's answer is passed on as the flag"
 
 
 # --- the polls have to be for the election that was asked for ----------------
