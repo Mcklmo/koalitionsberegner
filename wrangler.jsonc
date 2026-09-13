@@ -1,14 +1,28 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "koalitionsberegner",
+  // The page from Cloudflare's edge, the API forwarded to Cloud Run.
+  // doc/cloudflare.md walks through the setup.
+  "main": "worker/index.js",
   "compatibility_date": "2025-09-27",
   "observability": {
     "enabled": true
   },
   "assets": {
-    "directory": "."
+    // The repo root. .assetsignore is what keeps everything but index.html and
+    // js/ from becoming a public URL — .env included.
+    "directory": ".",
+    // Only the API runs the Worker. Static files are served without it, and so
+    // never count against the Worker's request allowance.
+    "run_worker_first": ["/api/*"]
   },
-  "compatibility_flags": [
-    "nodejs_compat"
+  "vars": {
+    "ORIGIN_URL": "https://koalitionsberegner-711803377000.europe-north1.run.app"
+  },
+  "routes": [
+    {
+      "pattern": "koalitionsberegner.moritzmarcus.com",
+      "custom_domain": true
+    }
   ]
 }
