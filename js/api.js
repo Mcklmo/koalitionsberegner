@@ -45,9 +45,25 @@ export function toElection(payload) {
     sourceUrl: payload.source_url,
     totalSeats: payload.total_seats,
     majoritySeats: payload.majority_seats,
-    blocks: payload.blocks,
+    blocks: toBlocks(payload.blocks),
     forecast: toForecast(payload.forecast),
   });
+}
+
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** Blocks' wire shape, where only a party's local name is spelled differently. */
+function toBlocks(blocks) {
+  if (!Array.isArray(blocks)) return blocks;
+  return blocks.map((block) => (isObject(block) && Array.isArray(block.parties)
+    ? { ...block, parties: block.parties.map(toParty) }
+    : block));
+}
+
+function toParty(party) {
+  if (!isObject(party) || !('local_name' in party)) return party;
+  const { local_name: localName, ...rest } = party;
+  return { ...rest, localName };
 }
 
 /** A forecast's wire shape; left for the validator to judge. */

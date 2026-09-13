@@ -479,6 +479,7 @@ def forecast_election(poll, resolved: ResolvedElection, source_url: str, *, toda
                         "parties": [
                             {
                                 "name": party.name,
+                                "local_name": party.local_name,
                                 "abbr": party.abbr,
                                 "seats": count,
                                 "color": party.color,
@@ -539,6 +540,7 @@ def _validate(extracted, source_url: str) -> Election:
                         "parties": [
                             {
                                 "name": party.name,
+                                "local_name": party.local_name,
                                 "abbr": party.abbr,
                                 "seats": party.seats,
                                 "color": party.color,

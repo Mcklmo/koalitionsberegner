@@ -17,6 +17,16 @@ const payload = {
   ],
 };
 
+test('maps a party\'s local name onto the schema, and its absence onto null', () => {
+  const bilingual = structuredClone(payload);
+  bilingual.blocks[0].parties[0].local_name = 'Venstrepartiet';
+  const [left] = toElection(bilingual).blocks[0].parties;
+  assert.equal(left.localName, 'Venstrepartiet');
+  assert.equal(toElection(payload).blocks[0].parties[0].localName, null);
+  assert.throws(() => toElection({ ...bilingual, blocks: [{ ...bilingual.blocks[0], parties: [{ ...bilingual.blocks[0].parties[0], local_name: '' }] }] }),
+    /localName: must not be empty/);
+});
+
 /** Records requests and replies with queued responses. */
 function fakeFetch(responses) {
   const calls = [];

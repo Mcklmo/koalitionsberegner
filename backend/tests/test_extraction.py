@@ -654,3 +654,23 @@ async def test_a_failed_import_stores_nothing_and_stays_retryable():
     recovered = await service.wait_for(retry.request_key, timeout=2.0)
     assert recovered.state is ImportState.PREVIEW
     assert recovered.election.total_seats == 97
+
+
+async def test_a_partys_local_name_is_kept_beside_its_english_one():
+    extracted = seats(blocks=[{"name": "Landtag", "parties": [
+        {"name": "Christian Democratic Union", "local_name": "Christlich Demokratische Union",
+         "abbr": "CDU", "seats": 50, "color": "#000000"},
+        {"name": "Alternative for Germany", "abbr": "AfD", "seats": 47, "color": "#009EE0"},
+    ]}])
+    election = await parser(
+        SiteFetcher({SEATS: "Sitzverteilung"}), FixedExtractor(extracted)
+    ).parse(sachsen_anhalt_request())
+
+    cdu, afd = election.blocks[0].parties
+    assert (cdu.name, cdu.local_name) == ("Christian Democratic Union", "Christlich Demokratische Union")
+    assert (afd.name, afd.local_name) == ("Alternative for Germany", None), "unknown stays unknown"
+
+
+def test_the_mock_result_has_english_and_local_names():
+    for party in (p for b in SACHSEN_ANHALT_2021.blocks for p in b.parties):
+        assert party.local_name and party.local_name != party.name

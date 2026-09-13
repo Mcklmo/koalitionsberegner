@@ -119,3 +119,17 @@ test('createElectionProvider validates on every read', async () => {
   const asyncSource = createElectionProvider(async () => valid());
   assert.ok(isValidatedElection(await asyncSource.getElection()));
 });
+
+test('a party may carry a local name, which is optional and held to the same text rules', () => {
+  const plain = validateElection(valid());
+  assert.equal(plain.blocks[0].parties[0].localName, null, 'an omitted local name normalises to null');
+
+  const input = valid();
+  input.blocks[0].parties[0].localName = 'Venstrepartiet';
+  assert.equal(validateElection(input).blocks[0].parties[0].localName, 'Venstrepartiet');
+
+  assert.match(errorsFor((e) => { e.blocks[0].parties[0].localName = '  '; }).join('\n'), /localName: must not be empty/);
+  assert.match(errorsFor((e) => { e.blocks[0].parties[0].localName = 7; }).join('\n'), /localName: expected a string/);
+  assert.match(errorsFor((e) => { e.blocks[0].parties[0].localName = 'Left‮Party'; }).join('\n'),
+    /localName: must not contain invisible/);
+});

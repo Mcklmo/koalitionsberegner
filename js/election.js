@@ -8,7 +8,8 @@
  * checked types and bounds, and text that is safe to put in the DOM.
  *
  * @typedef {Object} Party
- * @property {string} name    Full party name.
+ * @property {string} name    Full party name, in English where it has an English one.
+ * @property {string|null} localName  Its name in the election's own language, or null.
  * @property {string} abbr    Short label shown in the list (e.g. "A").
  * @property {number} seats   Seats won; non-negative integer.
  * @property {string} color   `#rgb` or `#rrggbb` hex color for the party dot.
@@ -50,7 +51,7 @@ export class ElectionValidationError extends Error {
 const ELECTION_FIELDS = ['nation', 'state', 'electionDate', 'title', 'sourceUrl', 'totalSeats', 'majoritySeats', 'blocks', 'forecast'];
 const FORECAST_FIELDS = ['publisher', 'publishedOn', 'computed'];
 const BLOCK_FIELDS = ['name', 'parties'];
-const PARTY_FIELDS = ['name', 'abbr', 'seats', 'color'];
+const PARTY_FIELDS = ['name', 'localName', 'abbr', 'seats', 'color'];
 
 const MAX_TEXT = 200;
 const MAX_BLOCKS = 50;
@@ -137,6 +138,7 @@ function validateParty(errors, path, party) {
   if (!isPlainObject(party)) return errors.push(`${path}: expected an object, got ${describe(party)}`), 0;
   checkAllowlist(errors, path, party, PARTY_FIELDS);
   checkText(errors, `${path}.name`, party.name);
+  if (party.localName !== undefined && party.localName !== null) checkText(errors, `${path}.localName`, party.localName);
   checkText(errors, `${path}.abbr`, party.abbr);
   const seatsOk = checkInteger(errors, `${path}.seats`, party.seats, { min: 0, max: MAX_SEATS });
   if (typeof party.color !== 'string' || !HEX_COLOR.test(party.color)) {
@@ -216,7 +218,9 @@ export function validateElection(input) {
     majoritySeats: input.majoritySeats,
     blocks: input.blocks.map((b) => ({
       name: b.name,
-      parties: b.parties.map((p) => ({ name: p.name, abbr: p.abbr, seats: p.seats, color: p.color })),
+      parties: b.parties.map((p) => ({
+        name: p.name, localName: p.localName ?? null, abbr: p.abbr, seats: p.seats, color: p.color,
+      })),
     })),
     forecast: hasForecast
       ? {

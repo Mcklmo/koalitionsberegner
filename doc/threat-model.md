@@ -187,8 +187,8 @@ come from somewhere else.
 
 ### T6 — Extracted strings reaching the DOM
 
-Party names, block names and titles are attacker-influenced strings that the UI
-displays. They are never parsed as markup:
+Party names — English and local — block names and titles are attacker-influenced
+strings that the UI displays. They are never parsed as markup:
 
 - The renderer builds elements with `document.createElement` and sets text with
   `textContent`. `innerHTML` is assigned only the empty string, to clear a
@@ -198,6 +198,10 @@ displays. They are never parsed as markup:
   DOM stub that throws if any markup is ever written.
 - A party name of `<script>alert(1)</script>` is therefore a *wrong name*, not a
   vulnerability. It is stored verbatim and shown verbatim.
+- A party's local name may come from the extraction agent's own knowledge when
+  the page states only one of its names, so it can be wrong with no attack at
+  all. It passes the same text rules, and the preview shows both names side by
+  side for the user to check before anything is stored.
 - `color` is the only extracted value that reaches a style property, and it must
   be a hex colour, so it cannot escape into further CSS declarations.
 - `sourceUrl` must be `http(s)`, which excludes `javascript:` and `data:`.

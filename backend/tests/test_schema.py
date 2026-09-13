@@ -111,3 +111,22 @@ def test_survives_the_storage_round_trip():
 
     original = make_election(state="Nordjylland", election_date="2026-03-25T08:26")
     assert Election.model_validate(original.model_dump(mode="json")) == original
+
+
+def test_a_party_local_name_is_optional_and_cleaned_like_any_other_name():
+    blocks = make_election().model_dump()["blocks"]
+    assert blocks[0]["parties"][0]["local_name"] is None
+
+    blocks[0]["parties"][0]["local_name"] = "  Venstrepartiet "
+    assert make_election(blocks=blocks).blocks[0].parties[0].local_name == "Venstrepartiet"
+
+    blocks[0]["parties"][0]["local_name"] = "Left‮Party"
+    assert "invisible or direction-changing" in reject(blocks=blocks)
+
+
+def test_an_election_stored_before_local_names_still_loads():
+    stored = make_election().model_dump(mode="json")
+    for block in stored["blocks"]:
+        for party in block["parties"]:
+            del party["local_name"]
+    assert make_election(blocks=stored["blocks"]).blocks[0].parties[0].local_name is None

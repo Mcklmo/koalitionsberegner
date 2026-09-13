@@ -83,6 +83,12 @@ Rules:
   a single block named for the assembly.
 - majority_seats is the number of seats needed for a majority: normally
   floor(total_seats / 2) + 1, unless the document states a different threshold.
+- Give each party's name in English: the name English-language sources use for
+  it, or its own name where it has no English one. Give its local_name in the
+  language of the country or region holding the election, as the party itself
+  writes it. The document may state only one of the two; supply the other from
+  what you know of the party, since a name is a label and not a figure. Leave
+  local_name null when it is the same as name or when you do not know it.
 - Use each party's conventional colour as a hex code like "#c0392b".
 - If the document is not a set of election results, or does not state seat
   counts, return no parties at all rather than inventing them.
@@ -106,7 +112,11 @@ NoResultsReason = Literal["wrong_election", "votes_only", "identity_unclear", "n
 class ExtractedParty(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(description="Full party name as the document gives it.")
+    name: str = Field(description="Full party name in English, or its own name if it has none.")
+    local_name: str | None = Field(
+        default=None,
+        description="Full party name in the election's own language; null if the same as name or unknown.",
+    )
     abbr: str = Field(description="Short label, e.g. 'CDU'. Derive one if absent.")
     seats: int = Field(ge=0, description="Seats won, exactly as stated.")
     color: str = Field(description="Hex colour like '#c0392b'.")
@@ -179,6 +189,12 @@ Rules:
 - List every party the poll gives a figure for, with that figure exactly as
   stated. Leave out "others", "undecided", "don't know", lead margins, sample
   sizes, and any other column that is not a party.
+- Give each party's name in English: the name English-language sources use for
+  it, or its own name where it has no English one. Give its local_name in the
+  language of the country or region holding the election, as the party itself
+  writes it. The document may state only one of the two; supply the other from
+  what you know of the party, since a name is a label and not a figure. Leave
+  local_name null when it is the same as name or when you do not know it.
 - Use each party's colour as a hex code like "#c0392b": the colour the document
   shows for it where it shows one, otherwise the party's conventional colour.
 - If the document publishes no polls for the requested election, return no polls
@@ -197,7 +213,11 @@ NoPollsReason = Literal["wrong_election", "no_polls"]
 class PollParty(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(description="Full party name as the document gives it.")
+    name: str = Field(description="Full party name in English, or its own name if it has none.")
+    local_name: str | None = Field(
+        default=None,
+        description="Full party name in the election's own language; null if the same as name or unknown.",
+    )
     abbr: str = Field(description="Short label, e.g. 'CDU'. Derive one if absent.")
     value: float = Field(
         ge=0, description="Seats, or vote share in percent, exactly as the document states."
@@ -408,12 +428,36 @@ SACHSEN_ANHALT_2021 = ExtractedElection(
         ExtractedBlock(
             name="Landtag von Sachsen-Anhalt",
             parties=[
-                ExtractedParty(name="Christlich Demokratische Union", abbr="CDU", seats=40, color="#000000"),
-                ExtractedParty(name="Alternative für Deutschland", abbr="AfD", seats=23, color="#009EE0"),
-                ExtractedParty(name="Die Linke", abbr="Linke", seats=12, color="#BE3075"),
-                ExtractedParty(name="Sozialdemokratische Partei Deutschlands", abbr="SPD", seats=9, color="#E3000F"),
-                ExtractedParty(name="Freie Demokratische Partei", abbr="FDP", seats=7, color="#FFED00"),
-                ExtractedParty(name="Bündnis 90/Die Grünen", abbr="Grüne", seats=6, color="#1AA037"),
+                ExtractedParty(
+                    name="Christian Democratic Union",
+                    local_name="Christlich Demokratische Union",
+                    abbr="CDU", seats=40, color="#000000",
+                ),
+                ExtractedParty(
+                    name="Alternative for Germany",
+                    local_name="Alternative für Deutschland",
+                    abbr="AfD", seats=23, color="#009EE0",
+                ),
+                ExtractedParty(
+                    name="The Left",
+                    local_name="Die Linke",
+                    abbr="Linke", seats=12, color="#BE3075",
+                ),
+                ExtractedParty(
+                    name="Social Democratic Party of Germany",
+                    local_name="Sozialdemokratische Partei Deutschlands",
+                    abbr="SPD", seats=9, color="#E3000F",
+                ),
+                ExtractedParty(
+                    name="Free Democratic Party",
+                    local_name="Freie Demokratische Partei",
+                    abbr="FDP", seats=7, color="#FFED00",
+                ),
+                ExtractedParty(
+                    name="Alliance 90/The Greens",
+                    local_name="Bündnis 90/Die Grünen",
+                    abbr="Grüne", seats=6, color="#1AA037",
+                ),
             ],
         )
     ],
@@ -456,7 +500,7 @@ class MockExtractor:
                     published_on=today.isoformat(),
                     unit="seats",
                     parties=[
-                        PollParty(name=p.name, abbr=p.abbr, value=p.seats, color=p.color)
+                        PollParty(name=p.name, local_name=p.local_name, abbr=p.abbr, value=p.seats, color=p.color)
                         for p in parties
                     ],
                 ),
@@ -465,7 +509,7 @@ class MockExtractor:
                     published_on=(today - timedelta(days=7)).isoformat(),
                     unit="percent",
                     parties=[
-                        PollParty(name=p.name, abbr=p.abbr, value=share, color=p.color)
+                        PollParty(name=p.name, local_name=p.local_name, abbr=p.abbr, value=share, color=p.color)
                         for p, share in zip(parties, shares)
                     ],
                 ),

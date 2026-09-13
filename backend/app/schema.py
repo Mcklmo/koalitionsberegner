@@ -62,6 +62,10 @@ class Strict(BaseModel):
 
 class Party(Strict):
     name: str
+    """The party's name in English, or its own name where it has no English one."""
+    local_name: str | None = None
+    """Its name in the election's own language; None where unknown, and for
+    every election stored before parties had one."""
     abbr: str
     seats: int = Field(ge=0, le=MAX_SEATS)
     color: str
@@ -70,6 +74,11 @@ class Party(Strict):
     @classmethod
     def _text(cls, v: str, info) -> str:
         return clean_text(v, field=info.field_name)
+
+    @field_validator("local_name")
+    @classmethod
+    def _optional_text(cls, v: str | None) -> str | None:
+        return None if v is None else clean_text(v, field="local_name")
 
     @field_validator("color")
     @classmethod

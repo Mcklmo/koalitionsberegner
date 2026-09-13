@@ -275,3 +275,17 @@ def test_the_forecast_call_has_no_tools_and_fences_the_page():
 def test_the_agent_can_only_pick_a_reason_never_write_one():
     assert ExtractedForecasts.model_config["extra"] == "forbid"
     assert set(NO_POLLS_MESSAGES) == {"wrong_election", "no_polls"}
+
+
+async def test_a_polls_local_names_are_kept_beside_the_english_ones():
+    named = ExtractedPoll(
+        publisher="Voxmeter", published_on="2026-09-07", unit="seats",
+        parties=[
+            PollParty(name="Social Democrats", local_name="Socialdemokratiet", abbr="A", value=50, color="#C0392B"),
+            PollParty(name="Venstre", abbr="V", value=40, color="#2980B9"),
+        ],
+    )
+    [forecast] = await parser(SiteFetcher({POLLS: "p"}), PollExtractor(polls(named))).parse(request())
+
+    assert [(p.name, p.local_name) for b in forecast.blocks for p in b.parties] == [
+        ("Social Democrats", "Socialdemokratiet"), ("Venstre", None)]

@@ -190,7 +190,10 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
       const row = document.createElement('div');
       row.className = 'preview-row';
       const name = document.createElement('span');
-      name.textContent = `${party.abbr} · ${party.name}`;
+      // Both names are shown here, because this is where they are checked.
+      name.textContent = party.localName && party.localName !== party.name
+        ? `${party.abbr} · ${party.localName} (${party.name})`
+        : `${party.abbr} · ${party.name}`;
       const count = document.createElement('span');
       count.textContent = party.seats;
       row.append(name, count);

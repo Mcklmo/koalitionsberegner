@@ -19,6 +19,28 @@ function formatElectionDate(iso) {
   return time ? `${time.slice(0, 5)} ${dayMonthYear}` : dayMonthYear;
 }
 
+/** Where the choice between a party's two names is remembered. */
+const PARTY_NAMES_KEY = 'koalitionsberegner.partyNames';
+
+/** `local` (the default) or `english`; read once, kept for the visit even where storage fails. */
+let partyNames = null;
+
+function readPartyNames() {
+  try {
+    return globalThis.localStorage?.getItem(PARTY_NAMES_KEY) === 'english' ? 'english' : 'local';
+  } catch {
+    return 'local';
+  }
+}
+
+function savePartyNames(value) {
+  try {
+    globalThis.localStorage?.setItem(PARTY_NAMES_KEY, value);
+  } catch {
+    // Private windows and blocked storage: the choice lasts until the page is left.
+  }
+}
+
 /** Two thirds of the assembly, above which a coalition counts as a large majority. */
 const supermajorityOf = (totalSeats) => Math.floor(totalSeats * 2 / 3);
 
@@ -41,8 +63,24 @@ export function mountCoalitionCalculator(election, elements = {}) {
     totalOf: document.getElementById('total-of'),
     verdict: document.getElementById('verdict'),
     footerNote: document.getElementById('footer-note'),
+    names: document.getElementById('names'),
+    namesRow: document.getElementById('names-row'),
     ...elements,
   };
+
+  partyNames ??= readPartyNames();
+  // An election stored before parties had a local name has nothing to switch to.
+  const hasLocalNames = election.blocks.some((b) => b.parties.some((p) => p.localName && p.localName !== p.name));
+  if (el.namesRow) el.namesRow.hidden = !hasLocalNames;
+  if (el.names) {
+    el.names.value = partyNames;
+    el.names.onchange = () => {
+      partyNames = el.names.value === 'english' ? 'english' : 'local';
+      savePartyNames(partyNames);
+      render();
+    };
+  }
+  const nameOf = (party) => (partyNames === 'local' && party.localName) || party.name;
 
   const supermajoritySeats = supermajorityOf(election.totalSeats);
 
@@ -89,7 +127,7 @@ export function mountCoalitionCalculator(election, elements = {}) {
         abbr.textContent = p.abbr;
         const name = document.createElement('span');
         name.className = 'party-name';
-        name.textContent = p.name;
+        name.textContent = nameOf(p);
         const seats = document.createElement('span');
         seats.className = 'seats';
         seats.textContent = p.seats;
