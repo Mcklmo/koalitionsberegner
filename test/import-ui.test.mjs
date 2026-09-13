@@ -341,6 +341,21 @@ test('the picker lists the bundled election plus everything stored', async () =>
   assert.match(el.picker.children[2].textContent, /Nordjylland/);
 });
 
+test('the picker lists elections alphabetically', async () => {
+  const { api } = fakeApi({
+    summaries: [
+      { electionHash: 'se', nation: 'Sweden', state: null, electionDate: '2026-09-11', title: 'T', totalSeats: 349 },
+      { electionHash: 'de', nation: 'Germany', state: null, electionDate: '2025-02-23', title: 'T', totalSeats: 630 },
+      { electionHash: 'fi', nation: 'Finland', state: null, electionDate: '2023-04-02', title: 'T', totalSeats: 200 },
+    ],
+  });
+  const { el, ui } = harness({ api });
+
+  await ui.start();
+
+  assert.deepEqual(el.picker.children.map((o) => o.value), ['local', 'fi', 'de', 'se']);
+});
+
 test('choosing a stored election re-renders it', async () => {
   const { api, calls } = fakeApi({
     summaries: [{ electionHash: 'a', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 10 }],

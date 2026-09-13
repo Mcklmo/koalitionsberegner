@@ -186,16 +186,14 @@ export function mountImportUi({
 
   function renderPicker() {
     el.picker.innerHTML = '';
-    if (bundled) {
+    const entries = summaries.map((summary) => [summary.electionHash, optionLabel(summary)]);
+    if (bundled) entries.push([LOCAL_VALUE, bundled.title]);
+    // Ignoring the separators puts a nation's own election before its regions'.
+    entries.sort(([, a], [, b]) => a.localeCompare(b, undefined, { ignorePunctuation: true }));
+    for (const [value, label] of entries) {
       const option = document.createElement('option');
-      option.value = LOCAL_VALUE;
-      option.textContent = bundled.title;
-      el.picker.appendChild(option);
-    }
-    for (const summary of summaries) {
-      const option = document.createElement('option');
-      option.value = summary.electionHash;
-      option.textContent = optionLabel(summary);
+      option.value = value;
+      option.textContent = label;
       el.picker.appendChild(option);
     }
     show(el.pickerRow, el.picker.options.length > 1);
