@@ -17,3 +17,6 @@ venv/
 
 # agent worktrees
 .claude/worktrees/
+
+# personal deploy scripts
+*.local.sh
