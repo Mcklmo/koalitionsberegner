@@ -28,12 +28,12 @@ labelled as computed wherever it appears.
 Viewing is open; importing is what is sold, because an import is what makes the
 server fetch a page and run the extraction agent.
 
-| Caller | Sees | May import |
-| --- | --- | --- |
-| Signed out | the curated selection | no |
-| Free account | every stored election | no |
-| Basic subscriber | every stored election | a fixed number per month |
-| Premium subscriber | every stored election | a larger number per month |
+| Caller | Sees | May import | May ask for an election |
+| --- | --- | --- | --- |
+| Signed out | the curated selection | no | no |
+| Free account | every stored election | no | yes |
+| Basic subscriber | every stored election | a fixed number per month | — it imports |
+| Premium subscriber | every stored election | a larger number per month | — it imports |
 
 Accounts are free (Firebase Authentication, or a local SQLite store when there
 is no Firebase project); subscriptions are Stripe, and a
@@ -44,6 +44,35 @@ simply reads as zero.
 An import costs quota only when it starts a *new* extraction. An election
 somebody already imported, or one being extracted right now, is served for
 free — which is the point of a shared store. A failed extraction is refunded.
+
+### Asking for an election instead
+
+An account with no subscription reaches the same form and presses the same
+button. What it cannot do is make the server go and read pages, which is the
+part that costs money — so the election it named is filed as an issue on this
+repository instead (`label:election-request`) and imported by hand later. The
+tracker *is* that queue: asking twice for the same election finds the open
+issue and points at it rather than opening a second one.
+
+It needs a confirmed account and no subscription, the same rule
+`/api/elections/lookup` already follows: this is part of the import flow rather
+than of viewing, and filing against an account is what keeps a public write to
+the issue tracker from being an open one. A subscriber who has merely run out
+for the month is not sent here — the allowance comes back at the month's end,
+which is a better answer than a hand-written issue.
+
+Requests need `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO`; without them
+`/api/config` says so and the page does not offer it.
+
+### Payments are closed right now
+
+Checkout is turned off (`PAYMENTS_PAUSED`, on by default): the card form does
+not work, so nothing is offered for sale, `POST /api/billing/checkout` answers
+`503`, and the account panel asks people to come back tomorrow and to request
+the election they wanted in the meantime. Nothing about an existing
+subscription changes — tiers keep working and Stripe's portal stays open, so
+nobody is trapped in a subscription they cannot cancel. Set `PAYMENTS_PAUSED`
+to `false` to sell again; it is the only thing that has to change.
 
 ## Run locally
 

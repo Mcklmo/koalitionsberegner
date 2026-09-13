@@ -121,6 +121,12 @@ function toConfig(body) {
     authProvider: body.auth_provider ?? 'none',
     firebase: body.firebase ?? {},
     billingEnabled: Boolean(body.billing_enabled),
+    // Checkout is closed for repairs. Older backends do not say, and the page
+    // must not invent an outage they are not having.
+    paymentsPaused: Boolean(body.payments_paused),
+    // Whether an account with no subscription can ask for an election instead
+    // of importing it.
+    requestsEnabled: Boolean(body.requests_enabled),
     tiers: (body.tiers ?? []).map((row) => ({
       tier: row.tier,
       monthlyImports: row.monthly_imports,
@@ -136,6 +142,17 @@ function toSession(body) {
     uid: body.uid,
     email: body.email ?? null,
     expiresAt: body.expires_at,
+  };
+}
+
+/** Where an election request was written down. */
+function toFiledRequest(body) {
+  return {
+    url: body.url,
+    number: body.number,
+    // True when somebody had already asked for this election: the existing
+    // issue is handed back rather than a second one opened.
+    duplicate: Boolean(body.duplicate),
   };
 }
 
@@ -253,6 +270,20 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {
         body: JSON.stringify({ year, nation, subnation: subnation ?? null }),
       });
       return toResult(body);
+    },
+
+    /**
+     * Ask for an election this account may not import itself. Costs no quota:
+     * nothing is searched for or read — the election is written down for
+     * somebody to import by hand.
+     */
+    async requestElection({ year, nation, subnation }) {
+      return toFiledRequest(
+        await request('/api/elections/requests', {
+          method: 'POST',
+          body: JSON.stringify({ year, nation, subnation: subnation ?? null }),
+        })
+      );
     },
 
     /** How an import already under way is getting on. Free: it never starts one. */

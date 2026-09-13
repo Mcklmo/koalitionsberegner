@@ -34,6 +34,7 @@ from .parser import DEFAULT_PAGE_LIMIT, ElectionParser, UnavailableParser
 from .search import DEFAULT_SEARCH_LIMIT
 from .store import DEFAULT_STALE_AFTER_SECONDS, ElectionStore, InMemoryElectionStore
 from .wikipedia import DEFAULT_LANGUAGE
+from .wishlist import DisabledWishlist, GithubWishlist, Wishlist
 
 log = logging.getLogger(__name__)
 
@@ -466,6 +467,51 @@ def get_billing() -> Billing:
     return StripeBilling(api_key, prices=prices, webhook_secret=webhook_secret)
 
 
+#: Repository that election requests are filed against, as ``owner/name``.
+_REPO_PATTERN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
+@lru_cache(maxsize=1)
+def get_wishlist() -> Wishlist:
+    """Where an account without a subscription can ask for an election.
+
+    Optional in the same way billing is: with no ``GITHUB_ISSUES_TOKEN`` there
+    is nowhere to file a request, and the page is told so by ``/api/config``
+    and stops offering it. A token with no repository to file against is a
+    configuration error rather than a default, because guessing which
+    repository to open issues on is not something to get wrong quietly.
+
+    Named ``GITHUB_ISSUES_*`` rather than ``GITHUB_TOKEN``: that name is
+    already taken — GitHub Actions sets it in every workflow run, and so do
+    several agent runtimes — and a token that happens to be in the environment
+    is not a decision to file issues with it.
+    """
+    token = _env_str("GITHUB_ISSUES_TOKEN")
+    repo = _env_str("GITHUB_ISSUES_REPO")
+    if not token:
+        if repo:
+            raise ConfigError("GITHUB_ISSUES_REPO is set but GITHUB_ISSUES_TOKEN is not")
+        return DisabledWishlist()
+    if not repo:
+        raise ConfigError("GITHUB_ISSUES_TOKEN is set but GITHUB_ISSUES_REPO is not (owner/name)")
+    if not _REPO_PATTERN.match(repo):
+        raise ConfigError(f"GITHUB_ISSUES_REPO must be owner/name, not {repo!r}")
+    owner, name = repo.split("/", 1)
+    return GithubWishlist(token, owner=owner, repo=name)
+
+
+def payments_paused() -> bool:
+    """Whether checkout is closed while payments are being fixed.
+
+    Defaults to *paused*, which is the state this was added in: the deploy that
+    carries this code is the one saying the card form does not work. Set
+    ``PAYMENTS_PAUSED=false`` to open it again — one variable, no code change.
+    Only new checkouts stop; an existing subscriber keeps their tier and can
+    still reach Stripe's portal to change or cancel it.
+    """
+    return _env_str("PAYMENTS_PAUSED", "true").lower() not in {"false", "0", "no", "off"}
+
+
 def public_base_url() -> str:
     """Where Stripe sends the user back to. No trailing slash."""
     return _env_str("PUBLIC_BASE_URL").rstrip("/")
@@ -506,7 +552,12 @@ def describe_configuration() -> dict[str, str]:
         "store": _store_backend(),
         "llm_mode": _env_choice("LLM_MODE", LLM_MODES, "mock"),
         "auth_mode": auth_mode(),
-        "billing": "stripe" if _env_str("STRIPE_API_KEY") else "off",
+        "billing": (
+            "paused"
+            if _env_str("STRIPE_API_KEY") and payments_paused()
+            else ("stripe" if _env_str("STRIPE_API_KEY") else "off")
+        ),
+        "requests": "github" if _env_str("GITHUB_ISSUES_TOKEN") else "off",
         "search": search_mode(),
         "wikipedia": (
             f"{wikipedia_language()}.wikipedia.org" if wikipedia_mode() == "on" else "off"
@@ -542,6 +593,7 @@ def validate_configuration() -> dict[str, str]:
     get_verifier()
     get_quota_policy()
     get_billing()
+    get_wishlist()
     if origin_secret() and len(origin_secret()) < MIN_ORIGIN_SECRET_CHARS:
         raise ConfigError(
             f"ORIGIN_SECRET must be at least {MIN_ORIGIN_SECRET_CHARS} characters"
@@ -551,8 +603,9 @@ def validate_configuration() -> dict[str, str]:
         # can obtain one, so sign-in is dead until this is set.
         log.warning("AUTH_MODE=firebase without FIREBASE_API_KEY: the page cannot sign anyone in")
     log.info(
-        "configuration ok store=%s llm_mode=%s auth_mode=%s billing=%s search=%s wikipedia=%s",
+        "configuration ok store=%s llm_mode=%s auth_mode=%s billing=%s requests=%s "
+        "search=%s wikipedia=%s",
         chosen["store"], chosen["llm_mode"], chosen["auth_mode"], chosen["billing"],
-        chosen["search"], chosen["wikipedia"],
+        chosen["requests"], chosen["search"], chosen["wikipedia"],
     )
     return chosen

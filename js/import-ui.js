@@ -28,6 +28,14 @@
  * Importing is also the part that is sold. This module shows what the account
  * allows but never decides it: the form is disabled as a courtesy, and the
  * server refuses regardless — the two can disagree only in the safe direction.
+ *
+ * An account with no subscription behind it reaches the same form and is not
+ * turned away at it. What it cannot do is make the server go and read pages,
+ * which is the part that costs money; the election it wanted is still worth
+ * knowing about, so the same button writes it down as an issue in the tracker
+ * to be imported by hand (`POST /api/elections/requests`). The user types the
+ * same three fields either way and the button keeps its name — from where they
+ * stand they asked for an election, and the app did the most it could.
  */
 
 import { ApiError, ImportStatus } from './api.js';
@@ -37,10 +45,21 @@ const LOCAL_VALUE = 'local';
 
 /** Why the server turned an import down, in the page's own words. */
 const REFUSALS = {
-  401: 'Log ind for at importere valg.',
+  401: 'Log ind for at importere eller ønske et valg.',
   402: 'Import kræver et abonnement. Vælg en plan ovenfor.',
   429: 'Denne måneds importer er brugt op. Kvoten fornys ved månedsskiftet.',
 };
+
+/** The same, for the request path, whose refusals are not the import's. */
+const REQUEST_REFUSALS = {
+  401: 'Log ind for at ønske et valg.',
+  403: 'Bekræft din e-mailadresse, før du kan ønske et valg.',
+  503: 'Ønskelisten er ikke tilgængelig lige nu. Prøv igen senere.',
+};
+
+/** What the button will do when there is no subscription behind the account. */
+const REQUEST_NOTE = 'Uden abonnement henter vi ikke valget automatisk. '
+  + 'Vi skriver det op som et ønske, og det bliver importeret manuelt.';
 
 const COMPUTED_NOTE = 'mandater beregnet ud fra stemmeandele';
 
@@ -50,7 +69,14 @@ const forecastLabel = (forecast) => `${forecast.publisher} · ${forecast.publish
 const placeOf = (election) =>
   election.state ? `${election.nation} — ${election.state}` : election.nation;
 
-export function mountImportUi({ api, elements, onSelect, bundled, onImported = () => {} }) {
+export function mountImportUi({
+  api,
+  elements,
+  onSelect,
+  bundled,
+  config = {},
+  onImported = () => {},
+}) {
   const el = elements;
   /**
    * What is held for confirmation, if anything. `option` is set when it is one
@@ -92,12 +118,31 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
   }
 
   /**
+   * Whether this account is one the request path is for: signed in, confirmed,
+   * and on a tier that buys no imports at all.
+   *
+   * A subscriber who has merely run out for the month is deliberately *not*
+   * one of them. They bought the imports, the allowance comes back at the
+   * month's end, and the message under the form says so — turning that into a
+   * hand-written issue would be a worse answer than waiting.
+   *
+   * Signed out is not one either: the request is filed against an account, and
+   * the endpoint says so. The note under the form asks them to sign in, which
+   * is free.
+   */
+  function canRequest() {
+    if (!config.requestsEnabled || account === null) return false;
+    if (account.emailVerified === false) return false;
+    return !account.mayImport && !account.unlimited && account.limit <= 0;
+  }
+
+  /**
    * The one place the button's state is decided. The account is re-read in the
    * middle of a submit, and that must not hand the user a second click racing
    * the first over the preview.
    */
   function renderSubmit() {
-    el.submit.disabled = submitting || !allowed();
+    el.submit.disabled = submitting || !(allowed() || canRequest());
   }
 
   /** The standing note under the form: why importing is or is not available. */
@@ -106,6 +151,10 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
       el.availability.textContent = REFUSALS[401];
     } else if (account.unlimited) {
       el.availability.textContent = '';
+    } else if (canRequest()) {
+      // The button still works; it does something else. Saying which is the
+      // difference between an offer and a dead end.
+      el.availability.textContent = REQUEST_NOTE;
     } else if (!account.mayImport) {
       el.availability.textContent = account.limit > 0 ? REFUSALS[429] : REFUSALS[402];
     } else {
@@ -264,6 +313,14 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
     setFieldErrors(errors);
     if (!valid) return;
 
+    // No subscription behind this account: the election is written down rather
+    // than fetched. Not preceded by a lookup — the server answers 409 if it
+    // already holds the election, which is the same round trip and one fewer.
+    if (!allowed() && canRequest()) {
+      await fileRequest(values);
+      return;
+    }
+
     try {
       // Ask first: an election somebody already imported must never be looked
       // up and read again, whoever asked for it.
@@ -300,6 +357,45 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
     } finally {
       busy(false);
     }
+  }
+
+  /**
+   * Write the election down instead of importing it. Costs no quota, so the
+   * account is not re-read afterwards: nothing about it changed.
+   */
+  async function fileRequest(values) {
+    try {
+      busy(true, 'Sender ønske…');
+      const filed = await api.requestElection(values);
+      const opening = filed.duplicate
+        ? `Det valg er der allerede et ønske om (#${filed.number}).`
+        : `Ønsket er noteret som #${filed.number}.`;
+      setMessage(`${opening} Valget bliver importeret manuelt.`, 'ok');
+      // The issue is public, so the number is worth something to follow.
+      const link = document.createElement('a');
+      link.href = filed.url;
+      link.target = '_blank';
+      link.rel = 'noreferrer noopener';
+      link.textContent = 'Se ønsket';
+      el.message.append(' ', link);
+      el.form.reset();
+      setFieldErrors({});
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        // Already imported. Showing it beats writing down a wish for it.
+        setMessage('Dette valg er allerede importeret. Vælg det i listen ovenfor.', 'warn');
+        await refreshPicker().catch(() => {});
+        return;
+      }
+      setMessage(requestRefusal(error), 'error');
+    } finally {
+      busy(false);
+    }
+  }
+
+  function requestRefusal(error) {
+    if (!(error instanceof ApiError)) return `Uventet fejl: ${error.message}`;
+    return REQUEST_REFUSALS[error.status] ?? `Kunne ikke sende ønsket: ${error.message}`;
   }
 
   /** Show what an import came back with, whether started now or picked up. */

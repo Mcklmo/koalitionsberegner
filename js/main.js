@@ -47,6 +47,10 @@ const config = await api.getConfig().catch(() => ({
   authProvider: 'none',
   firebase: {},
   billingEnabled: false,
+  // With no backend there is nothing to pay and nothing to ask for; both
+  // panels then offer neither rather than guessing.
+  paymentsPaused: false,
+  requestsEnabled: false,
   tiers: [],
 }));
 
@@ -63,6 +67,7 @@ auth = config.authProvider === 'password'
 const importUi = mountImportUi({
   api,
   bundled,
+  config,
   onSelect: render,
   onImported: () => accountUi.refresh(),
   elements: {
@@ -118,6 +123,7 @@ const accountUi = mountAccountUi({
     verifyResend: byId('verify-resend'),
     upgradeRow: byId('upgrade-row'),
     upgrades: byId('upgrades'),
+    upgradeNote: byId('upgrade-note'),
     manage: byId('account-manage'),
     message: byId('account-message'),
   },

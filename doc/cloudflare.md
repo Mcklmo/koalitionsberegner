@@ -72,6 +72,14 @@ the header yet, so nothing is locked down so far.
 `PUBLIC_BASE_URL=https://koalitionsberegner.moritzmarcus.com`, which is where
 Stripe sends people back to. Deploy the backend:
 
+If election requests are wanted (an account with no subscription asking for an
+election, filed as an issue — see the README), the revision also needs
+`GITHUB_ISSUES_TOKEN` mounted from Secret Manager the way `ORIGIN_SECRET` is,
+and `GITHUB_ISSUES_REPO=mcklmo/koalitionsberegner` as a plain variable. The
+token is a fine-grained PAT with **Issues: write** on that repository and
+nothing else. Without them the app runs exactly as before and the page simply
+does not offer requests.
+
 ```sh
 ./deploy.local.sh
 ```

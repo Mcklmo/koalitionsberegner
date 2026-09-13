@@ -1,5 +1,13 @@
 # A bare minimum Stripe account
 
+> **Checkout is closed right now.** `PAYMENTS_PAUSED` defaults to `true` while
+> payments are being fixed, so nothing below sells anything until it is set to
+> `false` — the app answers `503` to every checkout, offers no purchasable
+> tier, and asks people to come back tomorrow and request the election they
+> wanted instead. Existing subscriptions are untouched and Stripe's portal
+> stays open. Set up Stripe by all means; just expect to flip that variable
+> before a single card is charged.
+
 Everything needed to make `STRIPE_API_KEY`, `STRIPE_PRICE_BASIC`,
 `STRIPE_PRICE_PREMIUM` and `STRIPE_WEBHOOK_SECRET` real, in about fifteen
 minutes. Stay in **test mode** throughout: test mode is fully functional

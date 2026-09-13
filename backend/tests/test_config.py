@@ -25,6 +25,7 @@ def clean_config():
         config.get_verifier,
         config.get_quota_policy,
         config.get_billing,
+        config.get_wishlist,
     )
     for getter in cached:
         getter.cache_clear()
@@ -266,7 +267,7 @@ def test_a_good_configuration_starts_and_logs_what_it_chose(monkeypatch, clean_c
 
     assert any(
         "configuration ok store=memory llm_mode=mock auth_mode=off billing=off "
-        "search=off wikipedia=off" in r.getMessage()
+        "requests=off search=off wikipedia=off" in r.getMessage()
         for r in caplog.records
     )
 

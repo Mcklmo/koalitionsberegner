@@ -619,13 +619,18 @@ def fake_billing():
 
 
 @pytest.fixture
-def billing_client(client, fake_billing):
+def billing_client(client, fake_billing, monkeypatch):
     """The same client, with billing that reports whatever the test hands it.
 
     A separate fixture rather than a second definition of ``billing``: a
     redefined fixture would silently apply to every test in the module,
     including the ones asserting that nothing is for sale.
+
+    Checkout is open here. It is closed by default while payments are being
+    fixed (``PAYMENTS_PAUSED``), and these cases are about what Stripe is asked
+    for once it works again — the pause itself is asserted on its own below.
     """
+    monkeypatch.setenv("PAYMENTS_PAUSED", "false")
     main.app.dependency_overrides[main.get_billing_provider] = lambda: fake_billing
     return client
 

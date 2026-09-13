@@ -47,7 +47,7 @@ const SUBSCRIBER = {
   tier: 'basic', limit: 10, remaining: 7, used: 3, unlimited: false, mayImport: true,
 };
 
-function harness({ api, selected = [], account = SUBSCRIBER } = {}) {
+function harness({ api, selected = [], account = SUBSCRIBER, config = {} } = {}) {
   globalThis.document = { createElement: node };
   const el = {
     form: node('form'),
@@ -79,6 +79,7 @@ function harness({ api, selected = [], account = SUBSCRIBER } = {}) {
     api,
     elements: el,
     bundled,
+    config,
     onSelect: (e) => selected.push(e),
     onImported: () => imported.push(true),
   });
@@ -95,11 +96,17 @@ function fillValidForm(el) {
 
 /** An API double that counts calls and returns queued results. */
 function fakeApi(overrides = {}) {
-  const calls = { lookup: 0, importElection: 0, getImport: 0, confirm: 0, discardPreview: 0, getElection: 0, listElections: 0 };
+  const calls = { lookup: 0, importElection: 0, getImport: 0, confirm: 0, discardPreview: 0, getElection: 0, listElections: 0, requestElection: 0 };
   const api = {
     async listElections() { calls.listElections++; return overrides.summaries ?? []; },
     async lookup() { calls.lookup++; return overrides.lookup ?? { requestKey: 'p1', electionHash: null, status: 'unknown', election: null }; },
     async importElection() { calls.importElection++; return overrides.importElection ?? { requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false }; },
+    async requestElection(values) {
+      calls.requestElection++;
+      calls.requestedWith = values;
+      if (overrides.requestElection instanceof Error) throw overrides.requestElection;
+      return overrides.requestElection ?? { url: 'https://github.test/issues/12', number: 12, duplicate: false };
+    },
     async getImport(requestKey) { calls.getImport++; calls.polledWith = requestKey; return overrides.getImport ?? { requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false }; },
     async confirm(requestKey) { calls.confirm++; calls.confirmedWith = requestKey; return overrides.confirm ?? { requestKey: 'p1', electionHash: 'h', status: 'ready', election, duplicate: false }; },
     async discardPreview(requestKey) { calls.discardPreview++; calls.discardedWith = requestKey; },
@@ -522,4 +529,155 @@ test('a refused curation puts the checkbox back and says why', async () => {
   assert.equal(el.curate.disabled, false);
   assert.match(el.message.textContent, /administrator/);
   assert.equal(el.message.className, 'msg msg-error');
+});
+
+
+// --- asking for an election, with no subscription to import it -------------
+
+/** A confirmed account on a tier that buys no imports, where asking is on. */
+const FREE_ACCOUNT = {
+  tier: 'free', limit: 0, remaining: 0, unlimited: false, mayImport: false, emailVerified: true,
+};
+
+const asking = { requestsEnabled: true };
+
+test('a free account is offered the form rather than a dead button', async () => {
+  const { api } = fakeApi();
+  const { el, ui } = harness({ api, config: asking });
+
+  await ui.setAccount(FREE_ACCOUNT);
+
+  assert.equal(el.submit.disabled, false, 'the button still does something');
+  assert.match(el.availability.textContent, /ønske/, 'and says what');
+});
+
+test('submitting without a subscription writes the election down instead of importing it', async () => {
+  const { api, calls } = fakeApi();
+  const { el, ui, imported } = harness({ api, config: asking });
+  await ui.setAccount(FREE_ACCOUNT);
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.equal(calls.importElection, 0, 'nothing was fetched or read');
+  assert.equal(calls.lookup, 0, 'and the server answers 409 if it already has it');
+  assert.deepEqual(calls.requestedWith, { year: 2026, nation: 'Danmark', subnation: null });
+  assert.match(el.message.textContent, /#12/);
+  assert.equal(el.message.className, 'msg msg-ok');
+  assert.deepEqual(imported, [], 'no quota moved, so the account is not re-read');
+  assert.equal(el.submit.disabled, false, 'and the form is usable again');
+});
+
+test('the filed request is linked, not just numbered', async () => {
+  const { api } = fakeApi();
+  const { el, ui } = harness({ api, config: asking });
+  await ui.setAccount(FREE_ACCOUNT);
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  const [, link] = el.message.children;
+  assert.equal(link.href, 'https://github.test/issues/12');
+  assert.equal(link.rel, 'noreferrer noopener');
+});
+
+test('asking for something somebody already asked for says so', async () => {
+  const { api } = fakeApi({
+    requestElection: { url: 'https://github.test/issues/5', number: 5, duplicate: true },
+  });
+  const { el, ui } = harness({ api, config: asking });
+  await ui.setAccount(FREE_ACCOUNT);
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.match(el.message.textContent, /allerede et ønske om \(#5\)/);
+  assert.equal(el.message.className, 'msg msg-ok');
+});
+
+test('an election already imported is shown rather than wished for', async () => {
+  const { api, calls } = fakeApi({
+    requestElection: new ApiError('this election is already imported', 409),
+    summaries: [{ electionHash: 'a', nation: 'Danmark', electionDate: '2026-03-25', title: 'T', totalSeats: 10, selected: false, forecast: null }],
+  });
+  const { el, ui } = harness({ api, config: asking });
+  await ui.setAccount(FREE_ACCOUNT);
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.match(el.message.textContent, /allerede importeret/);
+  assert.equal(el.message.className, 'msg msg-warn');
+  assert.ok(calls.listElections > 0, 'the picker is refreshed so it can be chosen');
+});
+
+test('a refusal to file is reported in the page’s own words', async () => {
+  const { api } = fakeApi({
+    requestElection: new ApiError('election requests are not configured', 503),
+  });
+  const { el, ui } = harness({ api, config: asking });
+  await ui.setAccount(FREE_ACCOUNT);
+  fillValidForm(el);
+
+  await el.form.dispatch('submit');
+
+  assert.match(el.message.textContent, /ikke tilgængelig/);
+  assert.equal(el.message.className, 'msg msg-error');
+  assert.equal(el.submit.disabled, false);
+});
+
+test('an incomplete form is not written down either', async () => {
+  const { api, calls } = fakeApi();
+  const { el, ui } = harness({ api, config: asking });
+  await ui.setAccount(FREE_ACCOUNT);
+  el.year.value = '';
+  el.nation.value = '';
+
+  await el.form.dispatch('submit');
+
+  assert.equal(calls.requestElection, 0);
+  assert.ok(el.fieldErrors.year.textContent);
+});
+
+test('a subscriber who ran out for the month waits rather than wishing', async () => {
+  const { api, calls } = fakeApi();
+  const { el, ui } = harness({ api, config: asking });
+
+  await ui.setAccount({ tier: 'basic', limit: 10, remaining: 0, unlimited: false, mayImport: false, emailVerified: true });
+  fillValidForm(el);
+  await el.form.dispatch('submit');
+
+  assert.equal(el.submit.disabled, true, 'they bought imports; the allowance comes back');
+  assert.match(el.availability.textContent, /brugt op/);
+  assert.equal(calls.requestElection, 0);
+});
+
+test('an account waiting on its confirmation link is not offered the wish either', async () => {
+  const { api } = fakeApi();
+  const { el, ui } = harness({ api, config: asking });
+
+  await ui.setAccount({ ...FREE_ACCOUNT, emailVerified: false });
+
+  assert.equal(el.submit.disabled, true, 'the endpoint would refuse it anyway');
+});
+
+test('a signed-out visitor is asked to sign in, since a wish needs an account', async () => {
+  const { api, calls } = fakeApi();
+  const { el, ui } = harness({ api, config: asking, account: undefined });
+
+  await ui.setAccount(null);
+
+  assert.equal(el.submit.disabled, true);
+  assert.match(el.availability.textContent, /Log ind/);
+  assert.equal(calls.requestElection, 0);
+});
+
+test('where the backend offers no tracker, a free account is pointed at a subscription', async () => {
+  const { api } = fakeApi();
+  const { el, ui } = harness({ api, config: { requestsEnabled: false } });
+
+  await ui.setAccount(FREE_ACCOUNT);
+
+  assert.equal(el.submit.disabled, true);
+  assert.match(el.availability.textContent, /kræver et abonnement/);
 });

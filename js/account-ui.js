@@ -28,6 +28,18 @@ export const TIER_LABELS = {
 
 const MIN_PASSWORD_LENGTH = 6;
 
+/**
+ * Said wherever a plan could have been bought, while checkout is closed.
+ *
+ * It points at the one thing that still works for somebody who wanted to pay:
+ * the import form writes the election down as a request instead (see
+ * import-ui.js). The server refuses checkout regardless — this is the page
+ * being honest about it rather than the page deciding it.
+ */
+export const PAYMENTS_PAUSED_NOTE = 'Betaling virker ikke lige nu — prøv igen i morgen. '
+  + 'I mellemtiden kan du skrive under "Importér et valg", hvilket valg du mangler: '
+  + 'det bliver noteret som et ønske og importeret manuelt.';
+
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** What the form says in each mode. `autocomplete` is the part a password manager reads. */
@@ -142,9 +154,10 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
     // a second subscription, and the server refuses one.
     const subscribed = account?.tier !== 'free'
       && ['active', 'trialing'].includes(account?.subscriptionStatus);
-    const sellable = account?.unlimited || subscribed ? [] : (config.tiers ?? []).filter(
+    const buyer = !account?.unlimited && !subscribed;
+    const sellable = buyer ? (config.tiers ?? []).filter(
       (row) => row.purchasable && row.tier !== account?.tier
-    );
+    ) : [];
     for (const row of sellable) {
       const button = document.createElement('button');
       button.className = 'secondary';
@@ -153,7 +166,13 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
       button.addEventListener('click', () => checkout(row.tier));
       el.upgrades.appendChild(button);
     }
-    show(el.upgradeRow, sellable.length > 0);
+    // While checkout is closed the server marks every tier unpurchasable, so
+    // there are no buttons to render and the row would simply vanish. Somebody
+    // who came here to pay is owed better than silence: the note says when to
+    // come back and what works meanwhile.
+    const paused = buyer && Boolean(config.paymentsPaused);
+    el.upgradeNote.textContent = paused ? PAYMENTS_PAUSED_NOTE : '';
+    show(el.upgradeRow, sellable.length > 0 || paused);
     // Only somebody who has paid before has a subscription to manage.
     show(el.manage, Boolean(account?.billingEnabled && account?.subscriptionStatus));
   }
@@ -166,6 +185,7 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
     show(el.verifyRow, signedIn && !confirmed);
     if (!confirmed) {
       el.upgrades.innerHTML = '';
+      el.upgradeNote.textContent = '';
       show(el.upgradeRow, false);
       show(el.manage, false);
     }
@@ -318,6 +338,10 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
   }
 
   async function checkout(tier) {
+    if (config.paymentsPaused) {
+      setMessage(PAYMENTS_PAUSED_NOTE, 'warn');
+      return;
+    }
     setMessage('Åbner betaling…', 'info');
     try {
       const url = await api.startCheckout(tier);
@@ -325,6 +349,10 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
       // tells the backend so over a signed webhook.
       redirect(url);
     } catch (error) {
+      // Deliberately not read as a pause, even though a paused checkout answers
+      // 503: so does a deployment with no Stripe configured, and the two are
+      // not the same news. What the page knows about the pause it knows from
+      // /api/config above; the rest is reported as the server worded it.
       setMessage(`Kunne ikke starte betalingen: ${error.message}`, 'error');
     }
   }

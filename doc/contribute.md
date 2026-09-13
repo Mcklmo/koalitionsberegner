@@ -98,6 +98,9 @@ anywhere. `AUTH_MODE` is a separate question, about who a request *is*.
 | `WIKIPEDIA=off` | No lookup: an import reads the resolver's candidates, and a Wikipedia URL among them goes to the ordinary fetcher — which Wikimedia answers with a 403. | — |
 | Billing on | Subscriptions are for sale; Stripe is the only thing that grants a tier. | `STRIPE_API_KEY`, `STRIPE_PRICE_BASIC` and/or `STRIPE_PRICE_PREMIUM`, `STRIPE_WEBHOOK_SECRET`, `PUBLIC_BASE_URL` |
 | Billing off | Free accounts work, nothing is for sale. The default. | — |
+| Checkout closed | Nothing can be bought whatever Stripe is configured for; the page says when to come back and points at requesting an election. The default while payments are being fixed. | `PAYMENTS_PAUSED=true` |
+| Requests on | An account with no subscription can ask for an election; it is filed as an issue and imported by hand. | `GITHUB_ISSUES_TOKEN`, `GITHUB_ISSUES_REPO` |
+| Requests off | Such an account is pointed at a subscription, as before. The default. | — |
 
 Each variable named here is described in full under
 [Environment variables](#environment-variables) below.
@@ -113,7 +116,9 @@ backend means writing a store, not another verifier.
 One sharp edge shared by `sqlite` and `stub`: the account they create is on the
 free tier, and free imports nothing. `POST /api/imports` answers `402` until a
 subscription raises the tier, and the only thing that raises a tier is a Stripe
-webhook — there is deliberately no endpoint that grants one. So those are the
+webhook — there is deliberately no endpoint that grants one. What such an
+account *can* do is ask for the election instead
+(`POST /api/elections/requests`), where `GITHUB_ISSUES_TOKEN` is configured. So those are the
 modes for watching the gate *refuse*, and for admin curation; `off` is the mode
 for driving a successful import; a successful *paid* import needs Stripe test
 mode, below.
@@ -406,6 +411,9 @@ variables from `--set-env-vars` and Secret Manager.
 | `STRIPE_PRICE_BASIC` / `STRIPE_PRICE_PREMIUM` | with `STRIPE_API_KEY` | — | Recurring price IDs. The price on a subscription is what decides the tier. |
 | `STRIPE_WEBHOOK_SECRET` | with `STRIPE_API_KEY` | — | Signing secret for `/api/billing/webhook`. The signature is the only authentication that endpoint has. |
 | `PUBLIC_BASE_URL` | with `STRIPE_API_KEY` | — | Where Stripe returns the user after checkout, e.g. `https://koalitionsberegner.example`. |
+| `PAYMENTS_PAUSED` | no | `true` | Closes checkout while payments are being fixed: `POST /api/billing/checkout` answers `503`, `/api/config` reports no purchasable tier, and the page asks people to come back tomorrow and request the election instead. Existing subscriptions are untouched and the Stripe portal stays open. Set it to `false` to sell again. |
+| `GITHUB_ISSUES_TOKEN` | for election requests | — | Fine-grained PAT with **Issues: write** on `GITHUB_ISSUES_REPO` and nothing else. Unset means the page is told not to offer requests. Not named `GITHUB_TOKEN` on purpose: GitHub Actions and several agent runtimes export that name, and a token that happens to be in the environment is not a decision to open issues with it. |
+| `GITHUB_ISSUES_REPO` | with `GITHUB_ISSUES_TOKEN` | — | Repository the requests are filed on, as `owner/name`. Set without a token, or in any other shape, it is a startup error rather than a guess. |
 | `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
 | `ENV_FILE` | no | nearest `.env` walking up from the working directory | A different file to read variables from. Empty loads none. A path that does not exist is a startup error. |
 | `PORT` | no | `8080` | Set by Cloud Run. |

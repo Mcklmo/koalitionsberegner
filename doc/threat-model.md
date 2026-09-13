@@ -253,6 +253,12 @@ is worded for the user; any other failure — an API error body, a database
 message — reaches them as one fixed sentence (`service.IMPORT_FAILED`,
 `parser.READ_FAILED`).
 
+The GitHub PAT behind election requests (T12) is handled the same way: it is
+read from the environment into `app.wishlist` alone, never logged, and never
+described to a caller — what a failed filing shows is one fixed sentence. It is
+read from `GITHUB_ISSUES_TOKEN` rather than `GITHUB_TOKEN`, so a token another
+tool left in the environment is never picked up and used to open issues.
+
 The modes that let a caller be anyone, `AUTH_MODE=off` and `stub`, refuse to
 start on Cloud Run (`config.get_verifier`). `off` is also the default without a
 project id, so a deploy that loses that variable fails to boot rather than
@@ -363,6 +369,44 @@ cheapest subscription, and the goal is our bill or another user's payment.
   `Content-Security-Policy` allowing scripts from this origin alone and the two
   Google sign-in endpoints, and refusing to be framed — a backstop behind T6.
 
+### T12 — Writing into the issue tracker
+
+An account with no subscription can ask for an election, and that ask becomes a
+GitHub issue on this repository (`app.wishlist`). It is the app's only outbound
+*write*, and the only one where a user's own words end up somewhere other than
+the store, so it is worth its own section.
+
+- **It is not an open endpoint.** `POST /api/elections/requests` needs a
+  confirmed account, the same rule `/api/elections/lookup` follows — filing is
+  part of the import flow, not of viewing. Signing up is free, which is the
+  point, but it is what stands between the tracker and a script: an account
+  costs a deliverable address, and Firebase's own abuse controls are in front of
+  that. This is deliberately the *same* answer the rest of the app gives
+  (`Accepted risks`: request-rate limiting belongs at the proxy, and the
+  expensive paths are gated by accounts instead).
+- **One election is one issue.** A request is keyed by `identity.request_key`,
+  the same key an import is, and the key is written into the issue as an HTML
+  comment. Asking again finds the open issue and points at it, so the tracker
+  cannot be filled by resubmitting the same form. What is left is a caller
+  enumerating *distinct* elections, which the account requirement bounds.
+- **An election already stored is never filed.** The endpoint looks it up first
+  and answers `409`, so the queue holds only elections that are actually
+  missing.
+- **The user's words cannot restructure the issue.** Everything interpolated
+  goes through `wishlist._as_code`: backticks and pipes are removed and
+  whitespace is collapsed, so a place name cannot close its code span, add a
+  table row, or reach the title as more than one line. Same principle as T6 —
+  text from outside decides nothing about the shape of what surrounds it.
+- **GitHub's answer stays on our side of the boundary.** A refusal is logged
+  with its status and reaches the caller as one fixed sentence
+  (`WishlistUnavailable("could not file the request")`), so a mis-scoped or
+  expired token cannot describe itself into a browser. The PAT is used in
+  `app.wishlist` and nowhere else, and wants **Issues: write** on one repository
+  and nothing else.
+- **Failing to check for a duplicate is not failing to file.** A search that
+  errors lets the filing go ahead: a second issue is a far better outcome than
+  refusing somebody who asked for something reasonable.
+
 ## Accepted risks
 
 These are known and deliberately not addressed here:
@@ -375,7 +419,9 @@ These are known and deliberately not addressed here:
   is text; stripping it reliably would need a full CSS cascade. It arrives
   inside the fence with no more authority than the rest of the page.
 - **No request-rate limiting in the app.** Importing needs a paid, confirmed
-  account and is capped per month (T11); everything else is cheap and cached.
+  account and is capped per month (T11); asking for an election needs a
+  confirmed account and is one issue per election (T12); everything else is
+  cheap and cached.
   Limiting requests per client belongs at the proxy in front, which sees real
   client addresses — the app behind Cloud Run's front end cannot reliably.
 - **A DNS answer can change between the check and the connection.**
@@ -441,6 +487,9 @@ These are known and deliberately not addressed here:
 | Security headers, body caps, the origin secret, nothing served beside the page | `backend/tests/test_edge.py` |
 | Ungated auth modes refuse to start on Cloud Run | `backend/tests/test_config.py` |
 | An internal failure reaches the user as one fixed sentence | `backend/tests/test_service.py` |
+| A request needs a confirmed account, files one issue per election, and never repeats GitHub's words | `backend/tests/test_wishlist.py` |
+| A place name cannot restructure the issue it is written into | `backend/tests/test_wishlist.py` |
+| Checkout stays closed while payments are paused, and the portal does not | `backend/tests/test_wishlist.py` |
 
 The adversarial fixtures themselves are `test/adversarial/`:
 `injected-instructions.html` argues with the agent through five different

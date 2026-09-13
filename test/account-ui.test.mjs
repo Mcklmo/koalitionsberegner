@@ -152,7 +152,7 @@ function harness({ api = fakeApi(), auth = fakeAuth(), config = {} } = {}) {
     signOut: node('button'),
     email: node(), tier: node(), quota: node(),
     verifyRow: node(), verifyDone: node('button'), verifyResend: node('button'),
-    upgradeRow: node(), upgrades: node(), manage: node('button'),
+    upgradeRow: node(), upgrades: node(), upgradeNote: node(), manage: node('button'),
     message: node(),
   };
   const changes = [];
@@ -606,4 +606,64 @@ test('a deployment with no Firebase says so rather than showing a dead form', as
   assert.equal(el.panel.hidden, false);
   assert.equal(el.signedOut.hidden, true);
   assert.match(el.message.textContent, /ikke konfigureret/);
+});
+
+// --- while payments are down ------------------------------------------------
+
+/** What the backend reports with checkout closed: nothing is purchasable. */
+const PAUSED = {
+  paymentsPaused: true,
+  tiers: TIERS.map((row) => ({ ...row, purchasable: false })),
+};
+
+const freeAccount = {
+  ...basicAccount, tier: 'free', limit: 0, remaining: 0, mayImport: false, subscriptionStatus: null,
+};
+
+test('somebody who came to pay is told when to come back, not shown nothing', async () => {
+  const api = fakeApi({ account: freeAccount });
+  const { el, ui } = harness({ api, auth: fakeAuth({ signedIn: true }), config: PAUSED });
+
+  await ui.start();
+
+  assert.deepEqual(el.upgrades.children, [], 'no button can start a checkout that is closed');
+  assert.equal(el.upgradeRow.hidden, false, 'but the row does not silently vanish');
+  assert.match(el.upgradeNote.textContent, /prøv igen i morgen/);
+  assert.match(el.upgradeNote.textContent, /ønske/, 'and points at what still works');
+});
+
+test('a paused checkout is never opened, even from a stale page', async () => {
+  const api = fakeApi({ account: freeAccount });
+  const { el, ui, redirects } = harness({
+    api,
+    auth: fakeAuth({ signedIn: true }),
+    // A page that loaded before the pause still has purchasable tiers.
+    config: { paymentsPaused: true },
+  });
+  await ui.start();
+
+  await el.upgrades.children[0].dispatch('click');
+
+  assert.deepEqual(redirects, [], 'Stripe is not reached');
+  assert.deepEqual(api.calls.startCheckout, [], 'nor is our own checkout');
+  assert.match(el.message.textContent, /prøv igen i morgen/);
+});
+
+test('a subscriber is not told to come back tomorrow — they already paid', async () => {
+  const { el, ui } = harness({ auth: fakeAuth({ signedIn: true }), config: PAUSED });
+
+  await ui.start();
+
+  assert.equal(el.upgradeNote.textContent, '');
+  assert.equal(el.upgradeRow.hidden, true);
+});
+
+test('with payments working again the plans come back on their own', async () => {
+  const api = fakeApi({ account: freeAccount });
+  const { el, ui } = harness({ api, auth: fakeAuth({ signedIn: true }) });
+
+  await ui.start();
+
+  assert.equal(el.upgradeNote.textContent, '', 'no outage to report');
+  assert.equal(el.upgrades.children.length, 2);
 });

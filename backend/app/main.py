@@ -57,8 +57,10 @@ from .config import (
     get_quota_policy,
     get_store,
     get_verifier,
+    get_wishlist,
     max_wait_seconds,
     origin_secret,
+    payments_paused,
     public_base_url,
     validate_configuration,
 )
@@ -67,6 +69,7 @@ from .observability import configure_logging, io_span, scrub
 from .schema import Election, Forecast, clean_text
 from .service import ImportRequest, ImportResult, ImportService, ImportState
 from .store import StoredElection
+from .wishlist import Wishlist, WishlistUnavailable
 
 configure_logging()
 log = logging.getLogger(__name__)
@@ -241,6 +244,10 @@ def get_billing_provider() -> Billing:
 
 def get_policy() -> QuotaPolicy:
     return get_quota_policy()
+
+
+def get_wishlist_provider() -> Wishlist:
+    return get_wishlist()
 
 
 # --- identity ---------------------------------------------------------------
@@ -444,6 +451,10 @@ class PublicConfig(BaseModel):
     """Which sign-in flow the page should run: ``firebase``, ``password``, ``none``."""
     firebase: dict[str, str]
     billing_enabled: bool
+    payments_paused: bool
+    """Checkout is closed for repairs; existing subscriptions are unaffected."""
+    requests_enabled: bool
+    """Whether an account with no subscription can ask for an election instead."""
     tiers: list[TierInfo]
 
 
@@ -488,6 +499,15 @@ class CheckoutResponse(BaseModel):
     url: str
 
 
+class ElectionRequestResponse(BaseModel):
+    """Where an election request was written down, so the page can link to it."""
+
+    url: str
+    number: int
+    duplicate: bool = False
+    """True when somebody had already asked for this election."""
+
+
 class SelectedBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -530,6 +550,7 @@ def public_config(
     policy: QuotaPolicy = Depends(get_policy),
     billing: Billing = Depends(get_billing_provider),
     verifier: TokenVerifier = Depends(get_token_verifier),
+    wishlist: Wishlist = Depends(get_wishlist_provider),
 ) -> PublicConfig:
     """Public settings for the page: how to sign in, and what is for sale.
 
@@ -538,6 +559,7 @@ def public_config(
     is made server-side from the token it eventually produces.
     """
     purchasable = set(billing.tiers())
+    paused = payments_paused()
     return PublicConfig(
         # Asked of the verifier rather than the environment: it is the thing
         # that decides, and with gating off it hands out an identity to everyone.
@@ -547,11 +569,16 @@ def public_config(
         auth_provider=verifier.provider,
         firebase=firebase_web_config(),
         billing_enabled=billing.enabled,
+        payments_paused=paused,
+        requests_enabled=wishlist.enabled,
         tiers=[
             TierInfo(
                 tier=tier,
                 monthly_imports=policy.limit(tier),
-                purchasable=tier in purchasable,
+                # Nothing is purchasable while checkout is closed. Said here
+                # rather than left to the page: a client that had the old
+                # answer cached would otherwise offer a button that 503s.
+                purchasable=tier in purchasable and not paused,
             )
             for tier in Tier
         ],
@@ -731,6 +758,64 @@ async def lookup_request(
         election=stored.election,
         election_hash=stored.election_hash,
         reused=True,
+    )
+
+
+@app.post(
+    "/api/elections/requests",
+    response_model=ElectionRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def request_election(
+    body: ImportBody,
+    response: Response,
+    service: ImportService = Depends(get_service),
+    principal: Principal = Depends(require_verified),
+    account: UserAccount = Depends(require_account),
+    wishlist: Wishlist = Depends(get_wishlist_provider),
+) -> ElectionRequestResponse:
+    """Ask for an election this account may not import itself.
+
+    The other end of the paywall. Importing makes the server go and read pages,
+    which is what is sold; writing down *which* election was wanted costs
+    nothing and is worth more than a refusal, so an account without a
+    subscription ends up here and the election is filed in the issue tracker to
+    be imported by hand.
+
+    Like ``/api/elections/lookup`` this is part of the import flow rather than
+    of viewing: it needs a confirmed account and no subscription. A subscriber
+    is not refused either — queueing something for later is not a worse thing
+    for them to do than for anyone else — but the page offers them the import.
+
+    An election already held in the store is never filed: it is handed back the
+    way the lookup would, because asking for it was a mistake about what is
+    there, not a request for work.
+    """
+    request = body.to_request()
+    stored = await service.find_by_place(request.year, request.nation, request.subnation)
+    if stored is not None:
+        raise HTTPException(
+            409,
+            detail="this election is already imported — pick it in the list",
+        )
+
+    try:
+        filed = await wishlist.file(request, requester=account.email or principal.email)
+    except WishlistUnavailable as exc:
+        raise HTTPException(503, detail=str(exc)) from None
+
+    if filed.duplicate:
+        # Somebody asked first. Nothing was written, so this is not a creation.
+        response.status_code = status.HTTP_200_OK
+    log.info(
+        "election request %s uid=%s issue=%s%s",
+        scrub(request.describe()),
+        principal.uid[:12],
+        filed.number,
+        " (already open)" if filed.duplicate else "",
+    )
+    return ElectionRequestResponse(
+        url=filed.url, number=filed.number, duplicate=filed.duplicate
     )
 
 
@@ -930,7 +1015,23 @@ async def start_checkout(
     Nothing about the account changes here. The tier is granted only when
     Stripe reports a paid subscription over the webhook below, so abandoning
     the checkout page leaves the user exactly as they were.
+
+    Closed entirely while ``PAYMENTS_PAUSED`` is on — see
+    :func:`app.config.payments_paused`. Only new checkouts stop: the portal
+    below stays open, so anyone already subscribed can still change or cancel.
     """
+    if payments_paused():
+        # Ahead of every other check: while the card form does not work, the
+        # honest answer is the same whichever tier was asked for. 503 rather
+        # than 500 — this is a service that is down, and it is coming back.
+        raise HTTPException(
+            503,
+            detail=(
+                "payments are temporarily unavailable — please try again tomorrow. "
+                "In the meantime you can ask for an election and it will be added "
+                "to the issue tracker"
+            ),
+        )
     if body.tier not in billing.tiers():
         raise HTTPException(400, detail=f"the {body.tier.value} tier is not for sale")
     if account.tier is not Tier.FREE and account.subscription_status in ENTITLING_STATUSES:
