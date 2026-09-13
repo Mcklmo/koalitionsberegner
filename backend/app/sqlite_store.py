@@ -218,6 +218,16 @@ class SqliteElectionStore:
                 span["found"] = bool(changed)
                 return bool(changed)
 
+    def replace_election(self, election_hash: str, election: Election) -> bool:
+        with io_span(log, "sqlite", "replace_election", hash=election_hash[:12]) as span:
+            with self._write() as conn:
+                changed = conn.execute(
+                    "UPDATE elections SET election = ? WHERE election_hash = ?",
+                    (json.dumps(election.model_dump(mode="json")), election_hash),
+                ).rowcount
+                span["found"] = bool(changed)
+                return bool(changed)
+
     def get_job(self, request_key: str) -> Job | None:
         with io_span(log, "sqlite", "get_job", request=request_key[:12]) as span:
             row = self._connect().execute(

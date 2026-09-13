@@ -6,8 +6,8 @@ and a lookup reads them all. Firestore bills per document read, so without this
 a script reloading the front page turns straight into a bill.
 
 Only stored elections are cached, and only positively. They never change once
-stored except for the curation flag, so a copy up to :data:`TTL_SECONDS` old is
-right in everything but whether a visitor sees it yet. Jobs are never cached:
+stored except for the curation flag and a backfill's corrections, so a copy up to
+:data:`TTL_SECONDS` old is right in everything but whether a visitor sees it yet. Jobs are never cached:
 an import's progress has to be read fresh. An election that is *not* found is
 not cached either, so one confirmed on another instance is visible here at once.
 """
@@ -95,6 +95,12 @@ class CachedElectionStore:
     def set_selected(self, election_hash: str, selected: bool) -> bool:
         try:
             return self._inner.set_selected(election_hash, selected)
+        finally:
+            self._forget(election_hash)
+
+    def replace_election(self, election_hash: str, election: Election) -> bool:
+        try:
+            return self._inner.replace_election(election_hash, election)
         finally:
             self._forget(election_hash)
 

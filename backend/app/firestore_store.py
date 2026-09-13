@@ -140,6 +140,17 @@ class FirestoreElectionStore:
             span["found"] = True
             return True
 
+    def replace_election(self, election_hash: str, election: Election) -> bool:
+        with io_span(log, "firestore", "replace_election", hash=election_hash[:12]) as span:
+            ref = self._election_ref(election_hash)
+            if not ref.get().exists:
+                span["found"] = False
+                return False
+            # update, not a merge: the whole election is replaced, lists and all.
+            ref.update({"election": election.model_dump(mode="json")})
+            span["found"] = True
+            return True
+
     def get_job(self, request_key: str) -> Job | None:
         with io_span(log, "firestore", "get_job", request=request_key[:12]) as span:
             snapshot = self._job_ref(request_key).get()

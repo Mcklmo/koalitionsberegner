@@ -256,3 +256,16 @@ def test_a_job_past_its_lease_peeks_as_claimable(backend, tmp_path):
     assert store.get_job(KEY).attempt == 1
     if backend == "sqlite":
         store.close()
+
+
+def test_replacing_an_election_keeps_its_curation_and_age(store):
+    saved(store)
+    store.set_selected(HASH, True)
+    before = store.get_stored(HASH)
+    corrected = make_election(title="Corrected")
+
+    assert store.replace_election(HASH, corrected) is True
+    after = store.get_stored(HASH)
+    assert after.election == corrected
+    assert (after.selected, after.stored_at) == (True, before.stored_at)
+    assert store.replace_election("f" * 64, corrected) is False

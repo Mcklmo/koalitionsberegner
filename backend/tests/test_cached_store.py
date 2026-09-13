@@ -83,6 +83,19 @@ def test_curating_here_shows_at_once():
     assert cache.get_stored(election_hash).selected is True
 
 
+def test_a_replaced_election_shows_at_once():
+    inner, clock = CountingStore(), Clock()
+    cache = CachedElectionStore(inner, clock=clock)
+    election = make_election()
+    stored(inner, election)
+    election_hash = identity_of(election)
+    cache.get_election(election_hash)
+
+    corrected = make_election(title="Corrected")
+    assert cache.replace_election(election_hash, corrected)
+    assert cache.get_election(election_hash) == corrected
+
+
 def test_everything_else_passes_straight_through():
     inner = CountingStore()
     cache = CachedElectionStore(inner, clock=Clock())

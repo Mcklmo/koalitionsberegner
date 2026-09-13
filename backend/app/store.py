@@ -181,6 +181,15 @@ class ElectionStore(Protocol):
         """Mark an election visible to signed-out visitors. False if unknown."""
         ...
 
+    def replace_election(self, election_hash: str, election: Election) -> bool:
+        """Put a corrected copy in a stored election's place. False if unknown.
+
+        Keeps when it was stored and whether it is curated. The caller vouches
+        that ``election`` is the same election with better data — the store
+        files it under the hash it is handed, as it does on confirmation.
+        """
+        ...
+
     def get_job(self, request_key: str) -> Job | None: ...
 
     def resolve_request(self, request_key: str) -> str | None:
@@ -300,6 +309,14 @@ class InMemoryElectionStore:
             if stored is None:
                 return False
             self._elections[election_hash] = replace(stored, selected=selected)
+            return True
+
+    def replace_election(self, election_hash: str, election: Election) -> bool:
+        with self._lock:
+            stored = self._elections.get(election_hash)
+            if stored is None:
+                return False
+            self._elections[election_hash] = replace(stored, election=election)
             return True
 
     def get_job(self, request_key: str) -> Job | None:
