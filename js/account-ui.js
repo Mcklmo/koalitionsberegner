@@ -234,10 +234,13 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
         `Kontoen er oprettet. Vi har sendt et link til ${values.email} — åbn det for at bekræfte adressen.`,
         'ok'
       );
-    } catch (error) {
-      // The account exists either way; the panel is already offering to send
-      // the link again.
-      setMessage(`Kontoen er oprettet, men mailen med linket kunne ikke sendes: ${error.message}`, 'error');
+    } catch {
+      // The account exists either way, and the panel is already offering to
+      // send the link again: a hiccup to mention, not a failure to report.
+      setMessage(
+        'Kontoen er oprettet. Vi kunne ikke sende bekræftelsesmailen lige nu — tryk på »Send linket igen« om et øjeblik.',
+        'warn'
+      );
     }
   }
 
@@ -295,7 +298,16 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
       await auth.sendVerification();
       setMessage(`Vi har sendt et nyt link til ${account?.email ?? 'din e-mailadresse'}.`, 'ok');
     } catch (error) {
-      setMessage(error.message, 'error');
+      if (error.code === 'TOO_MANY_ATTEMPTS_TRY_LATER') {
+        // Firebase refuses a new link shortly after the last one, which by
+        // then is usually in the inbox already.
+        setMessage(
+          'Vi har for nylig sendt dig et link. Tjek din indbakke og spam-mappen, eller prøv igen om et par minutter.',
+          'info'
+        );
+      } else {
+        setMessage(error.message, 'error');
+      }
     } finally {
       busy(false);
     }

@@ -232,20 +232,17 @@ test('a mailed link brings the user back to the page', async () => {
   assert.equal(calls[0].body.continueUrl, 'https://koalitioner.test/');
 });
 
-test('a return address Firebase has not authorised is dropped rather than losing the mail', async () => {
+test('a refused mail is not retried on the spot, which Firebase counts as another attempt', async () => {
   const { fetchImpl, calls } = fakeFetch([
     { status: 400, body: { error: { message: 'UNAUTHORIZED_DOMAIN : Domain not allowlisted by project' } } },
-    { status: 200, body: {} },
   ]);
   const session = createAuth({
     apiKey: API_KEY, fetch: fetchImpl, storage: fakeStorage(), continueUrl: 'https://koalitioner.test/',
   });
 
-  await session.sendPasswordReset('a@example.org');
+  await assert.rejects(() => session.sendPasswordReset('a@example.org'), AuthError);
 
-  assert.equal(calls.length, 2);
-  assert.equal(calls[1].body.continueUrl, undefined);
-  assert.equal(calls[1].body.requestType, 'PASSWORD_RESET');
+  assert.equal(calls.length, 1);
 });
 
 test('a password reset does not reveal whether the address has an account', async () => {

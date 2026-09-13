@@ -23,9 +23,6 @@ const STORAGE_KEY = 'koalitionsberegner.session';
 /** Refresh this long before expiry, so a request never carries a dead token. */
 const REFRESH_MARGIN_MS = 60_000;
 
-/** How Firebase refuses a return address it has not been told to allow. */
-const CONTINUE_URL_REFUSALS = ['UNAUTHORIZED_DOMAIN', 'INVALID_CONTINUE_URI'];
-
 export class AuthError extends Error {
   constructor(message, code) {
     super(message);
@@ -216,22 +213,16 @@ export function createAuth({
   }
 
   /**
-   * Ask Firebase to mail a link. The link comes back to this page when its
-   * domain is authorised in the Firebase project. When it is not, Firebase
-   * refuses the whole request, so it is sent again without a return address and
-   * the link ends on Firebase's own page instead — a mail that arrives beats one
-   * that does not.
+   * Ask Firebase to mail a link that brings the user back to this page. The
+   * page's domain has to be authorised in the Firebase project for that.
+   *
+   * Sent once and never retried on the spot: Firebase counts a refused request
+   * against the user's allowance, so an immediate second try is only ever
+   * refused as too many attempts.
    */
   async function sendOobCode(body) {
     const url = `${IDENTITY_BASE}:sendOobCode?key=${encodeURIComponent(apiKey)}`;
-    if (!continueUrl) return call(url, body);
-    try {
-      return await call(url, { ...body, continueUrl });
-    } catch (error) {
-      const code = String(error.code ?? '').split(':')[0].trim();
-      if (!CONTINUE_URL_REFUSALS.includes(code)) throw error;
-      return call(url, body);
-    }
+    return call(url, continueUrl ? { ...body, continueUrl } : body);
   }
 
   load();

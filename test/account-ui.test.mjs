@@ -355,7 +355,8 @@ test('a confirmation mail that cannot be sent does not undo the sign-up', async 
   await fillAndSubmit(el, 'new@example.org');
 
   assert.equal(el.signedIn.hidden, false);
-  assert.match(el.message.textContent, /kunne ikke sendes: For mange forsøg/);
+  assert.match(el.message.textContent, /Kontoen er oprettet\. Vi kunne ikke sende bekræftelsesmailen lige nu/);
+  assert.doesNotMatch(el.message.className, /msg-error/, 'the account exists; nothing has failed');
   assert.equal(el.verifyRow.hidden, false, 'where the link can be sent again');
 });
 
@@ -418,6 +419,20 @@ test('the confirmation link can be sent again', async () => {
 
   assert.equal(auth.calls.sendVerification, 1);
   assert.match(el.message.textContent, /nyt link til new@example\.org/);
+});
+
+test('asking for another link too soon points to the one already sent', async () => {
+  const auth = fakeAuth({ signedIn: true });
+  auth.sendVerification = async () => {
+    throw Object.assign(new Error('For mange forsøg. Prøv igen om lidt.'), { code: 'TOO_MANY_ATTEMPTS_TRY_LATER' });
+  };
+  const { el, ui } = harness({ api: fakeApi({ account: unconfirmed }), auth });
+  await ui.start();
+
+  await el.verifyResend.dispatch('click');
+
+  assert.match(el.message.textContent, /Tjek din indbakke/);
+  assert.doesNotMatch(el.message.className, /msg-error/);
 });
 
 test('coming back to the tab picks up an address confirmed elsewhere', async () => {
