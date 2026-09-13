@@ -17,15 +17,25 @@ import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
-from functools import partial
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .accounts import (
@@ -52,23 +62,40 @@ from .config import (
     firebase_web_config,
     get_accounts,
     get_billing,
+    get_mailer,
     get_parser,
     get_password_store,
     get_quota_policy,
     get_store,
+    get_usage_recorder,
     get_verifier,
     get_wishlist,
     max_wait_seconds,
     origin_secret,
     payments_paused,
     public_base_url,
+    usage_report_secret,
     validate_configuration,
 )
 from .identity import normalize_year
+from .mailer import Mailer, MailUnavailable
 from .observability import configure_logging, io_span, scrub
 from .schema import Election, Forecast, clean_text
 from .service import ImportRequest, ImportResult, ImportService, ImportState
 from .store import StoredElection
+from .usage import (
+    ACTIVE_RETENTION_DAYS,
+    Period,
+    UsageEvent,
+    UsageRecorder,
+    build_report,
+    due_periods,
+    gather,
+    page_load_key,
+    period_range,
+    previous_range,
+    report_key,
+)
 from .wishlist import Wishlist, WishlistUnavailable
 
 configure_logging()
@@ -248,6 +275,14 @@ def get_policy() -> QuotaPolicy:
 
 def get_wishlist_provider() -> Wishlist:
     return get_wishlist()
+
+
+def get_usage() -> UsageRecorder:
+    return get_usage_recorder()
+
+
+def get_mailer_provider() -> Mailer:
+    return get_mailer()
 
 
 # --- identity ---------------------------------------------------------------
@@ -547,17 +582,25 @@ def healthz() -> dict[str, str]:
 
 @app.get("/api/config", response_model=PublicConfig)
 def public_config(
+    request: Request,
+    background: BackgroundTasks,
     policy: QuotaPolicy = Depends(get_policy),
     billing: Billing = Depends(get_billing_provider),
     verifier: TokenVerifier = Depends(get_token_verifier),
     wishlist: Wishlist = Depends(get_wishlist_provider),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> PublicConfig:
     """Public settings for the page: how to sign in, and what is for sale.
 
     The Firebase API key here identifies the project to Google's identity
     endpoints; it grants nothing on its own, and every authorisation decision
     is made server-side from the token it eventually produces.
+
+    Every page load asks for this exactly once, which makes it where page loads
+    are counted — by the language the browser already sends, and nothing else
+    about the visitor. No script was added to the page to do it.
     """
+    background.add_task(usage.record, page_load_key(request.headers.get("accept-language")))
     purchasable = set(billing.tiers())
     paused = payments_paused()
     return PublicConfig(
@@ -587,10 +630,12 @@ def public_config(
 
 @app.get("/api/me", response_model=AccountResponse)
 def me(
+    background: BackgroundTasks,
     principal: Principal = Depends(require_principal),
     accounts: AccountStore = Depends(get_account_store),
     policy: QuotaPolicy = Depends(get_policy),
     billing: Billing = Depends(get_billing_provider),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> AccountResponse:
     """The caller's tier and what is left of this month's allowance.
 
@@ -598,6 +643,9 @@ def me(
     to ask for the confirmation, which ``email_verified`` tells it.
     """
     account = accounts.ensure(principal.uid, principal.email)
+    # The page asks this on every load while signed in, so it is where an
+    # account counts as active that day.
+    background.add_task(usage.active, principal.uid)
     return _account_response(account, principal, policy, billing)
 
 
@@ -605,12 +653,14 @@ def me(
 async def import_election(
     body: ImportBody,
     response: Response,
+    background: BackgroundTasks,
     wait_seconds: float = Query(0.0, ge=0.0, description="Block for up to this long for a result."),
     service: ImportService = Depends(get_service),
     principal: Principal = Depends(require_principal),
     account: UserAccount = Depends(require_account),
     accounts: AccountStore = Depends(get_account_store),
     policy: QuotaPolicy = Depends(get_policy),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
     """Import an election named by year, nation and — optionally — region.
 
@@ -639,7 +689,10 @@ async def import_election(
     charged = not principal.unmetered
 
     if charged:
+        # Refusals are counted before raising: a response that is an error
+        # carries no background tasks.
         if limit <= 0:
+            await run_in_threadpool(usage.record, UsageEvent.REFUSED_NO_SUBSCRIPTION)
             raise HTTPException(
                 402,
                 detail=(
@@ -648,6 +701,7 @@ async def import_election(
                 ),
             )
         if not await run_in_threadpool(accounts.reserve_import, account.uid, period, limit):
+            await run_in_threadpool(usage.record, UsageEvent.REFUSED_LIMIT_REACHED)
             current = await run_in_threadpool(accounts.get, account.uid) or account
             if current.used_in(period) < limit:
                 raise HTTPException(
@@ -675,11 +729,15 @@ async def import_election(
         if charged:
             accounts.release_import(account.uid, period, keep_attempt=keep_attempt)
 
+    def parse_failed() -> None:
+        usage.record(UsageEvent.IMPORT_FAILED)
+        refund(keep_attempt=True)
+
     try:
         result = await service.submit(
             request,
             owner=principal.uid,
-            on_parse_failed=partial(refund, keep_attempt=True),
+            on_parse_failed=parse_failed,
         )
     except ValueError as exc:
         await run_in_threadpool(refund)
@@ -692,6 +750,8 @@ async def import_election(
         # Joined to an import somebody started between the look above and the
         # claim: nothing was searched for or read on this caller's behalf.
         await run_in_threadpool(refund)
+    else:
+        background.add_task(usage.record, UsageEvent.IMPORT_STARTED)
 
     return await _answer(result, response, service, wait_seconds)
 
@@ -769,10 +829,12 @@ async def lookup_request(
 async def request_election(
     body: ImportBody,
     response: Response,
+    background: BackgroundTasks,
     service: ImportService = Depends(get_service),
     principal: Principal = Depends(require_verified),
-    account: UserAccount = Depends(require_account),
+    _account: UserAccount = Depends(require_account),
     wishlist: Wishlist = Depends(get_wishlist_provider),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> ElectionRequestResponse:
     """Ask for an election this account may not import itself.
 
@@ -794,19 +856,25 @@ async def request_election(
     request = body.to_request()
     stored = await service.find_by_place(request.year, request.nation, request.subnation)
     if stored is not None:
+        await run_in_threadpool(usage.record, UsageEvent.REQUEST_ALREADY_IMPORTED)
         raise HTTPException(
             409,
             detail="this election is already imported — pick it in the list",
         )
 
     try:
-        filed = await wishlist.file(request, requester=account.email or principal.email)
+        # Only the election: the issue is public, so who asked stays out of it.
+        filed = await wishlist.file(request)
     except WishlistUnavailable as exc:
         raise HTTPException(503, detail=str(exc)) from None
 
     if filed.duplicate:
         # Somebody asked first. Nothing was written, so this is not a creation.
         response.status_code = status.HTTP_200_OK
+    background.add_task(
+        usage.record,
+        UsageEvent.REQUEST_DUPLICATE if filed.duplicate else UsageEvent.REQUEST_FILED,
+    )
     log.info(
         "election request %s uid=%s issue=%s%s",
         scrub(request.describe()),
@@ -841,11 +909,13 @@ async def get_import(
 @app.post("/api/elections/imports/{request_key}/confirm", response_model=ImportResponse)
 async def confirm_election(
     request_key: str,
+    background: BackgroundTasks,
     option: int | None = Query(
         None, ge=0, description="Which offered forecast to save, for an election not yet held."
     ),
     service: ImportService = Depends(get_service),
     _importer: Principal = Depends(require_importer),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
     """Save a previewed election under the identity that was read off the page.
 
@@ -868,6 +938,11 @@ async def confirm_election(
         raise HTTPException(
             status_code=409, detail=f"nothing awaiting confirmation (state: {result.state.value})"
         )
+    if not result.duplicate:
+        background.add_task(
+            usage.record,
+            UsageEvent.IMPORT_SAVED_RESULT if option is None else UsageEvent.IMPORT_SAVED_FORECAST,
+        )
     return ImportResponse.of(result)
 
 
@@ -878,6 +953,7 @@ async def discard_preview(
     request_key: str,
     service: ImportService = Depends(get_service),
     _importer: Principal = Depends(require_importer),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> Response:
     """Reject a previewed election, leaving the request free to import again.
 
@@ -885,7 +961,10 @@ async def discard_preview(
     """
     if not await service.discard(request_key):
         raise HTTPException(status_code=404, detail="no preview to discard for that import")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT,
+        background=BackgroundTask(usage.record, UsageEvent.PREVIEW_DISCARDED),
+    )
 
 
 @app.put("/api/elections/{election_hash}/selected", response_model=ElectionSummary)
@@ -904,8 +983,10 @@ async def set_selected(
 @app.get("/api/elections/{election_hash}", response_model=ImportResponse)
 async def get_election(
     election_hash: str,
+    background: BackgroundTasks,
     service: ImportService = Depends(get_service),
     principal: Principal | None = Depends(current_principal),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
     """Fetch a stored election by identity, for the picker."""
     stored = await service.get_stored(election_hash)
@@ -919,6 +1000,8 @@ async def get_election(
         )
     if not stored.selected and not is_member(principal):
         raise HTTPException(403, detail=EMAIL_NOT_VERIFIED)
+    # Only the picker asks for one election by hash, so this is a pick.
+    background.add_task(usage.record, UsageEvent.ELECTION_PICKED)
     return ImportResponse(
         request_key="",
         state=ImportState.READY,
@@ -1006,9 +1089,11 @@ async def logout(
 @app.post("/api/billing/checkout", response_model=CheckoutResponse)
 async def start_checkout(
     body: CheckoutBody,
+    background: BackgroundTasks,
     principal: Principal = Depends(require_principal),
     account: UserAccount = Depends(require_account),
     billing: Billing = Depends(get_billing_provider),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> CheckoutResponse:
     """A Stripe Checkout link for one tier.
 
@@ -1055,6 +1140,7 @@ async def start_checkout(
     except BillingUnavailable as exc:
         raise HTTPException(503, detail=str(exc)) from None
     log.info("checkout started uid=%s tier=%s", principal.uid[:12], body.tier.value)
+    background.add_task(usage.record, UsageEvent.CHECKOUT_STARTED)
     return CheckoutResponse(url=session.url)
 
 
@@ -1077,11 +1163,21 @@ async def open_portal(
     return CheckoutResponse(url=url)
 
 
+def _paying(account: UserAccount | None) -> bool:
+    return (
+        account is not None
+        and account.tier is not Tier.FREE
+        and account.subscription_status in ENTITLING_STATUSES
+    )
+
+
 @app.post("/api/billing/webhook")
 async def stripe_webhook(
     request: Request,
+    background: BackgroundTasks,
     billing: Billing = Depends(get_billing_provider),
     accounts: AccountStore = Depends(get_account_store),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> dict[str, bool]:
     """Apply what Stripe says about a subscription.
 
@@ -1117,6 +1213,9 @@ async def stripe_webhook(
             await run_in_threadpool(accounts.link_customer, uid, event.customer_id)
         return {"handled": True}
 
+    # Read first, so the report can tell a subscription that started or ended
+    # from one of Stripe's many updates that change neither.
+    before = await run_in_threadpool(accounts.get, uid)
     updated = await run_in_threadpool(
         lambda: accounts.set_subscription(
             uid,
@@ -1130,7 +1229,111 @@ async def stripe_webhook(
         "billing uid=%s tier=%s status=%s applied=%s",
         uid[:12], event.tier.value, scrub(event.status), updated is not None,
     )
+    if updated is not None and _paying(updated) != _paying(before):
+        background.add_task(
+            usage.record,
+            UsageEvent.SUBSCRIPTION_STARTED if _paying(updated) else UsageEvent.SUBSCRIPTION_ENDED,
+        )
     return {"handled": updated is not None}
+
+
+# --- usage reports ----------------------------------------------------------
+
+#: The header the scheduled caller (the Worker's cron) proves itself with.
+REPORT_SECRET_HEADER = "x-report-secret"
+
+
+class UsageReport(BaseModel):
+    subject: str
+    body: str
+
+
+class ReportRun(BaseModel):
+    sent: list[str]
+    skipped: list[str]
+    """Reports a previous run already sent."""
+
+
+def _usage_report(
+    period: Period, today: date, usage: UsageRecorder, accounts: AccountStore
+) -> tuple[str, UsageReport]:
+    """The report for the last complete ``period`` before ``today``, and its key."""
+    current = period_range(period, today)
+    previous = previous_range(period, current)
+    subject, body = build_report(
+        period,
+        current,
+        gather(usage.store, accounts, current),
+        previous,
+        gather(usage.store, accounts, previous),
+    )
+    return report_key(period, current), UsageReport(subject=subject, body=body)
+
+
+@app.post("/api/internal/usage-reports", response_model=ReportRun)
+async def send_usage_reports(
+    period: Period | None = Query(None, description="Send this report now instead of the due ones."),
+    x_report_secret: str | None = Header(default=None),
+    usage: UsageRecorder = Depends(get_usage),
+    accounts: AccountStore = Depends(get_account_store),
+    mailer: Mailer = Depends(get_mailer_provider),
+) -> ReportRun:
+    """Email the usage reports that are due. Called once a day by the Worker's cron.
+
+    Not an account's endpoint: the caller is a schedule, and it proves itself
+    with ``USAGE_REPORT_SECRET``. Without one configured the endpoint does not
+    exist, which is the honest answer on a deployment that sends no reports.
+
+    Each report is claimed before it is sent, so a run that is retried — or a
+    cron that fires twice — sends nothing twice; a report whose email failed
+    gives its claim back for the next run.
+
+    Retention runs first, whatever happens to the email: deleting old
+    active-account markers is an obligation, not a side effect of a report.
+    """
+    expected = usage_report_secret()
+    if not expected:
+        raise HTTPException(404, detail="Not Found")
+    if not hmac.compare_digest((x_report_secret or "").encode(), expected.encode()):
+        raise HTTPException(403, detail="this is for the report schedule")
+
+    today = usage.today()
+    await run_in_threadpool(
+        usage.store.forget_active_before, today - timedelta(days=ACTIVE_RETENTION_DAYS)
+    )
+
+    sent: list[str] = []
+    skipped: list[str] = []
+    for due in [period] if period else due_periods(today):
+        key, report = await run_in_threadpool(_usage_report, due, today, usage, accounts)
+        if not await run_in_threadpool(usage.store.claim_report, key):
+            skipped.append(key)
+            continue
+        try:
+            await run_in_threadpool(mailer.send, report.subject, report.body)
+        except MailUnavailable as exc:
+            await run_in_threadpool(usage.store.release_report, key)
+            raise HTTPException(502, detail=str(exc)) from None
+        log.info("usage report sent %s", key)
+        sent.append(key)
+    return ReportRun(sent=sent, skipped=skipped)
+
+
+@app.get("/api/admin/usage", response_model=UsageReport)
+async def preview_usage_report(
+    period: Period = Query(Period.DAILY),
+    before: date | None = Query(
+        None, description="Report the last complete period before this day; today by default."
+    ),
+    _admin: Principal = Depends(require_admin),
+    usage: UsageRecorder = Depends(get_usage),
+    accounts: AccountStore = Depends(get_account_store),
+) -> UsageReport:
+    """A usage report as it would be emailed, sent nowhere."""
+    _, report = await run_in_threadpool(
+        _usage_report, period, before or usage.today(), usage, accounts
+    )
+    return report
 
 
 # Serving the page from this app keeps the API same-origin, which is what the

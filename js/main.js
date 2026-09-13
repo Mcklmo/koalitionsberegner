@@ -37,6 +37,15 @@ for (const node of document.querySelectorAll('[data-i18n-placeholder]')) {
 }
 for (const node of document.querySelectorAll('[data-i18n-title]')) node.title = t(node.dataset.i18nTitle);
 
+// The privacy section is linked to as #privacy, from the page and from outside
+// it; arriving there opens it rather than scrolling to a closed heading.
+const privacy = byId('privacy');
+const openPrivacy = () => {
+  if (globalThis.location.hash === '#privacy') privacy.open = true;
+};
+globalThis.addEventListener('hashchange', openPrivacy);
+openPrivacy();
+
 // One option per column of the sheet, each language named in itself.
 const languagePicker = byId('language');
 for (const locale of languages()) {

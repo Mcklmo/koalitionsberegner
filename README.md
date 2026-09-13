@@ -52,7 +52,8 @@ button. What it cannot do is make the server go and read pages, which is the
 part that costs money — so the election it named is filed as an issue on this
 repository instead (`label:election-request`) and imported by hand later. The
 tracker *is* that queue: asking twice for the same election finds the open
-issue and points at it rather than opening a second one.
+issue and points at it rather than opening a second one. The issue names the
+election and nothing about who asked: the tracker is public.
 
 It needs a confirmed account and no subscription, the same rule
 `/api/elections/lookup` already follows: this is part of the import flow rather
@@ -73,6 +74,41 @@ the election they wanted in the meantime. Nothing about an existing
 subscription changes — tiers keep working and Stripe's portal stays open, so
 nobody is trapped in a subscription they cannot cancel. Set `PAYMENTS_PAUSED`
 to `false` to sell again; it is the only thing that has to change.
+
+## Usage reports and privacy
+
+The owner gets a daily, weekly and monthly email about how the app is used:
+
+- page loads by language
+- elections picked
+- imports started, saved, discarded and failed
+- requests filed
+- imports the paywall refused
+- subscriptions started and ended
+- new and active accounts
+
+Only counts are stored. The one exception is a per-day hash of each active
+account id, deleted after 62 days, which is what lets an account active on
+several days count once. Nothing new runs in the browser: page loads are
+counted from the config request the page already makes. The page's
+*Privacy* section says what is processed and why. See `backend/app/usage.py`,
+and [doc/cloudflare.md](doc/cloudflare.md#7-usage-reports-by-email) for the
+schedule.
+
+Try it locally. Ungated, so every caller is an administrator; add the four
+`SMTP_*`/`REPORT_EMAIL_TO` variables from `.env.example` to really send email:
+
+```sh
+cd backend
+ELECTION_STORE=sqlite AUTH_MODE=off uv run uvicorn app.main:app --reload
+
+# in a second terminal: open http://localhost:8000 and click around, then
+TOMORROW=$(date -u -d tomorrow +%F 2>/dev/null || date -u -v+1d +%F)
+curl -s "localhost:8000/api/admin/usage?period=weekly&before=$TOMORROW" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"])'
+curl -s -X POST -H 'x-report-secret: local-report-secret-at-least-32-chars' 'localhost:8000/api/internal/usage-reports?period=daily'   # 502 until SMTP is set
+
+uv run pytest tests/test_usage.py   # the counting, the reports and the endpoints
+```
 
 ## Run locally
 

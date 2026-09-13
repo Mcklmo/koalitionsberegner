@@ -243,6 +243,12 @@
       color: #aaa
     }
 
+    .privacy p {
+      font-size: 13px;
+      color: #555;
+      line-height: 1.5
+    }
+
     .picker-row {
       display: flex;
       align-items: center;
@@ -584,7 +590,10 @@
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
       <span class="footer-note" id="footer-note"></span>
-      <button class="reset-btn" id="reset" data-i18n="reset">Ryd alle</button>
+      <span>
+        <a class="reset-btn" href="#privacy" data-i18n="privacy.link">Privatliv</a>
+        <button class="reset-btn" id="reset" data-i18n="reset">Ryd alle</button>
+      </span>
     </div>
   </div>
 
@@ -698,6 +707,21 @@
         <button class="secondary" id="preview-discard" type="button" data-i18n="discard">Forkast</button>
       </div>
     </div>
+  </details>
+
+  <!-- What is processed about a visitor, and on what basis. The wording lives
+       in strings.csv like every other text; the page links here as #privacy. -->
+  <details class="account privacy" id="privacy">
+    <summary data-i18n="privacy.summary">Privatliv og dine data</summary>
+    <p data-i18n="privacy.controller"></p>
+    <p data-i18n="privacy.account"></p>
+    <p data-i18n="privacy.logs"></p>
+    <p data-i18n="privacy.statistics"></p>
+    <p data-i18n="privacy.browser"></p>
+    <p data-i18n="privacy.requests"></p>
+    <p data-i18n="privacy.imports"></p>
+    <p data-i18n="privacy.transfers"></p>
+    <p data-i18n="privacy.rights"></p>
   </details>
 
   <script type="module" src="./js/main.js"></script>

@@ -288,3 +288,24 @@ def test_a_new_paid_subscription_takes_over(accounts):
     switched = accounts.set_subscription(UID, Tier.BASIC, subscription_id="sub_new", status="active")
 
     assert (switched.tier, switched.subscription_id) == (Tier.BASIC, "sub_new")
+
+
+# --- the usage report's new-accounts line -----------------------------------
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_new_accounts_are_counted_by_when_they_were_created(backend, tmp_path):
+    now = [1_000.0]
+    clock = lambda: now[0]  # noqa: E731
+    store = (
+        InMemoryAccountStore(clock=clock)
+        if backend == "memory"
+        else SqliteAccountStore(tmp_path / "accounts.db", clock=clock)
+    )
+    store.ensure("early", "early@example.org")
+    now[0] = 2_000.0
+    store.ensure("late", "late@example.org")
+    store.ensure("early", "early@example.org")  # seen again: not new again
+
+    assert store.count_created(0.0, 1_500.0) == 1
+    assert store.count_created(1_500.0, 2_000.0) == 0, "the end of a range is not in it"
+    assert store.count_created(0.0, 3_000.0) == 2

@@ -81,7 +81,7 @@ class FiledRequest:
 class Wishlist(Protocol):
     enabled: bool
 
-    async def file(self, request: ImportRequest, *, requester: str | None) -> FiledRequest: ...
+    async def file(self, request: ImportRequest) -> FiledRequest: ...
 
 
 class DisabledWishlist:
@@ -94,7 +94,7 @@ class DisabledWishlist:
 
     enabled = False
 
-    async def file(self, request: ImportRequest, *, requester: str | None) -> FiledRequest:
+    async def file(self, request: ImportRequest) -> FiledRequest:
         raise WishlistUnavailable("election requests are not configured")
 
 
@@ -118,15 +118,17 @@ def _as_code(value: object) -> str:
     return "`" + " ".join(str(value).translate(_MARKDOWN_BREAKERS).split()) + "`"
 
 
-def build_issue(
-    request: ImportRequest, *, requester: str | None, marker: str
-) -> dict[str, object]:
+def build_issue(request: ImportRequest, *, marker: str) -> dict[str, object]:
     """The exact JSON body posted to GitHub, as a pure function of the request.
 
     Everything interpolated here was typed by a user. It reaches the issue as
     markdown, so it is confined to code spans and to a single-line title —
     which is the same reason the extraction path treats a fetched page as data:
     text from outside decides nothing about the shape of what surrounds it.
+
+    Who asked is deliberately not part of it. The tracker is public, and an
+    email address in a public issue is personal data published to the world —
+    for the sake of a notification the person never asked for.
     """
     where = f"{request.nation} — {request.subnation}" if request.subnation else request.nation
     lines = [
@@ -139,10 +141,6 @@ def build_issue(
     ]
     if request.subnation:
         lines.append(f"| Region | {_as_code(request.subnation)} |")
-    if requester:
-        # Worth having: it is who to tell once the election is in, and it is
-        # the account that asked, not a name typed into a field.
-        lines.append(f"| Asked by | {_as_code(requester)} |")
     lines += [
         "",
         "Import it with the year and the place above, then close this issue.",
@@ -187,7 +185,7 @@ class GithubWishlist:
             "user-agent": "koalitionsberegner-wishlist",
         }
 
-    async def file(self, request: ImportRequest, *, requester: str | None) -> FiledRequest:
+    async def file(self, request: ImportRequest) -> FiledRequest:
         marker = marker_for(request)
         client = self._client or httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
         owns_client = self._client is None
@@ -195,7 +193,7 @@ class GithubWishlist:
             existing = await self._find_open(client, marker)
             if existing is not None:
                 return existing
-            return await self._create(client, request, requester=requester, marker=marker)
+            return await self._create(client, request, marker=marker)
         except httpx.HTTPError as exc:
             # The address and the token are in this module; what reaches the
             # caller is that it did not work.
@@ -249,10 +247,9 @@ class GithubWishlist:
         client: httpx.AsyncClient,
         request: ImportRequest,
         *,
-        requester: str | None,
         marker: str,
     ) -> FiledRequest:
-        payload = build_issue(request, requester=requester, marker=marker)
+        payload = build_issue(request, marker=marker)
         with io_span(log, "github", "create-issue", year=request.year) as span:
             response = await client.post(
                 self._issues_url, headers=self._headers(), json=payload

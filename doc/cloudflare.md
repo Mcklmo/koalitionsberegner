@@ -123,6 +123,52 @@ answer directly again.
   would challenge Stripe's webhook deliveries. The rate limit, the origin secret
   and the app's own quotas cover what it would.
 
+## 7. Usage reports by email
+
+The Worker's cron (`triggers.crons` in `wrangler.jsonc`, 06:00 UTC daily) calls
+`POST /api/internal/usage-reports` on the origin. The backend emails yesterday's
+report, plus last week's on a Monday and last month's on the 1st, and deletes
+active-account markers older than 62 days. A report is sent once however often
+the cron fires. `/api/internal/*` is never forwarded from the public side.
+
+The same one-value-in-both-places routine as step 3:
+
+```sh
+SECRET=$(openssl rand -hex 32)
+printf %s "$SECRET" | gcloud secrets create USAGE_REPORT_SECRET --project koalitionsberegner --replication-policy automatic --data-file=-
+printf %s "$SECRET" | npx wrangler@latest secret put USAGE_REPORT_SECRET
+unset SECRET
+
+printf %s "$SMTP_APP_PASSWORD" | gcloud secrets create smtp-password --project koalitionsberegner --replication-policy automatic --data-file=-
+```
+
+Grant the service account `roles/secretmanager.secretAccessor` on both, as for
+`ORIGIN_SECRET`. Then add these to `deploy.local.sh`:
+
+- secrets `USAGE_REPORT_SECRET=USAGE_REPORT_SECRET:latest` and
+  `SMTP_PASSWORD=smtp-password:latest`
+- plain variables `SMTP_HOST`, `SMTP_USERNAME` and `REPORT_EMAIL_TO`
+
+Redeploy the backend and the Worker. To try it without waiting for 06:00, make
+the call the cron makes, straight to Cloud Run. The secrets are piped in as
+headers, so they never appear in the command line or the shell history:
+
+```sh
+RUN=https://koalitionsberegner-711803377000.europe-north1.run.app
+{
+  printf 'x-origin-secret: %s\n' "$(gcloud secrets versions access latest --secret ORIGIN_SECRET --project koalitionsberegner)"
+  printf 'x-report-secret: %s\n' "$(gcloud secrets versions access latest --secret USAGE_REPORT_SECRET --project koalitionsberegner)"
+} | curl -s -X POST -H @- "$RUN/api/internal/usage-reports?period=daily"
+# {"sent":["daily:…"],"skipped":[]} and an email; run it again and it is "skipped"
+```
+
+A report sent this way is not sent again: the 06:00 run lists that day's daily
+report under `skipped`.
+
+What is counted, and why it is only counts, is in `backend/app/usage.py`.
+Page loads come from `/api/config`, so they include bots that run the page's
+scripts.
+
 ## Limits worth knowing on launch day
 
 - **Workers Free allows 100,000 Worker requests a day**, and only `/api/*`

@@ -101,6 +101,8 @@ anywhere. `AUTH_MODE` is a separate question, about who a request *is*.
 | Checkout closed | Nothing can be bought whatever Stripe is configured for; the page says when to come back and points at requesting an election. The default while payments are being fixed. | `PAYMENTS_PAUSED=true` |
 | Requests on | An account with no subscription can ask for an election; it is filed as an issue and imported by hand. | `GITHUB_ISSUES_TOKEN`, `GITHUB_ISSUES_REPO` |
 | Requests off | Such an account is pointed at a subscription, as before. The default. | — |
+| Reports on | Usage reports are emailed when the schedule calls `POST /api/internal/usage-reports`. Counting happens either way. | `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `REPORT_EMAIL_TO`; `USAGE_REPORT_SECRET` for the endpoint |
+| Reports off | Nothing is emailed; an administrator reads a report at `GET /api/admin/usage?period=daily\|weekly\|monthly`. The default. | — |
 
 Each variable named here is described in full under
 [Environment variables](#environment-variables) below.
@@ -295,8 +297,8 @@ minute rather than ten.
 
 1. A GCP project with the **Firestore** and **Cloud Run** APIs enabled.
 2. A Firestore database in **Native mode** — single-flight parsing relies on its
-   transactions. The `elections`, `extraction_jobs`, `pages` and `accounts`
-   collections are created on demand.
+   transactions. The `elections`, `extraction_jobs`, `pages`, `accounts`,
+   `usage_daily` and `usage_reports` collections are created on demand.
 3. A service account for the Cloud Run revision holding `roles/datastore.user`,
    plus `roles/secretmanager.secretAccessor` once `LLM_MODE=live`.
 4. For live extraction: an Anthropic API key in Secret Manager, mounted as
@@ -414,6 +416,12 @@ variables from `--set-env-vars` and Secret Manager.
 | `PAYMENTS_PAUSED` | no | `true` | Closes checkout while payments are being fixed: `POST /api/billing/checkout` answers `503`, `/api/config` reports no purchasable tier, and the page asks people to come back tomorrow and request the election instead. Existing subscriptions are untouched and the Stripe portal stays open. Set it to `false` to sell again. |
 | `GITHUB_ISSUES_TOKEN` | for election requests | — | Fine-grained PAT with **Issues: write** on `GITHUB_ISSUES_REPO` and nothing else. Unset means the page is told not to offer requests. Not named `GITHUB_TOKEN` on purpose: GitHub Actions and several agent runtimes export that name, and a token that happens to be in the environment is not a decision to open issues with it. |
 | `GITHUB_ISSUES_REPO` | with `GITHUB_ISSUES_TOKEN` | — | Repository the requests are filed on, as `owner/name`. Set without a token, or in any other shape, it is a startup error rather than a guess. |
+| `SMTP_HOST` | for emailed usage reports | — | Mail server the reports are submitted to, e.g. `smtp.gmail.com`. Set together with the three below, or not at all; a partial set is a startup error. |
+| `SMTP_PORT` | no | `587` | `465` is TLS from the first byte; any other port is upgraded with STARTTLS before the password is sent. |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | with `SMTP_HOST` | — | The login. With Gmail, an app password. Put the password in Secret Manager. |
+| `REPORT_EMAIL_TO` | with `SMTP_HOST` | — | Comma-separated addresses the reports go to. |
+| `REPORT_EMAIL_FROM` | no | `SMTP_USERNAME` | The sender address, where the server allows a different one. |
+| `USAGE_REPORT_SECRET` | for scheduled reports | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret`; unset, `POST /api/internal/usage-reports` does not exist. |
 | `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
 | `ENV_FILE` | no | nearest `.env` walking up from the working directory | A different file to read variables from. Empty loads none. A path that does not exist is a startup error. |
 | `PORT` | no | `8080` | Set by Cloud Run. |

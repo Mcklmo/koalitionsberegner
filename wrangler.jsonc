@@ -16,6 +16,11 @@
     // never count against the Worker's request allowance.
     "run_worker_first": ["/api/*"]
   },
+  // Once a day the Worker asks the origin to email whichever usage reports are
+  // due: daily always, weekly on Mondays, monthly on the 1st. 06:00 UTC.
+  "triggers": {
+    "crons": ["0 6 * * *"]
+  },
   "vars": {
     "ORIGIN_URL": "https://koalitionsberegner-711803377000.europe-north1.run.app"
   },

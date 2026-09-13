@@ -89,6 +89,20 @@ class FirestoreAccountStore:
                 return None
             return _account_from_doc(matches[0].id, matches[0].to_dict())
 
+    def count_created(self, start: float, end: float) -> int:
+        with io_span(log, "firestore", "count_created_accounts") as span:
+            # An aggregation query: Firestore counts on its side and bills it as
+            # a single read, rather than handing over every account document.
+            query = (
+                self._db.collection(ACCOUNTS_COLLECTION)
+                .where(filter=firestore.FieldFilter("created_at", ">=", start))
+                .where(filter=firestore.FieldFilter("created_at", "<", end))
+            )
+            result = query.count(alias="accounts").get()
+            count = int(result[0][0].value) if result and result[0] else 0
+            span["accounts"] = count
+            return count
+
     def ensure(self, uid: str, email: str | None) -> UserAccount:
         # Every authenticated request passes through here, and almost all of
         # them find an account that needs no change. Reading first keeps the

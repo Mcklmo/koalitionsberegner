@@ -54,28 +54,28 @@ REGIONAL = {"year": 2021, "nation": "Deutschland", "subnation": "Sachsen-Anhalt"
 
 # --- the issue itself -------------------------------------------------------
 
-def test_the_issue_says_which_election_and_who_asked():
+def test_the_issue_says_which_election_and_nothing_about_who_asked():
+    """The tracker is public; an address in it would be published to everyone."""
     request = ImportRequest(year=2022, nation="Danmark")
 
-    issue = build_issue(request, requester="who@example.org", marker="<!-- m -->")
+    issue = build_issue(request, marker="<!-- m -->")
 
     assert issue["title"] == "Election request: 2022 Danmark"
     assert issue["labels"] == ["election-request"]
     assert "| Year | `2022` |" in issue["body"]
     assert "| Nation | `Danmark` |" in issue["body"]
-    assert "| Asked by | `who@example.org` |" in issue["body"]
+    assert "Asked by" not in issue["body"]
+    assert "@" not in issue["body"] + issue["title"]
     assert issue["body"].endswith("<!-- m -->"), "the marker is what dedupes it"
 
 
-def test_a_regional_election_names_its_region_and_an_anonymous_one_says_nothing():
+def test_a_regional_election_names_its_region():
     regional = build_issue(
         ImportRequest(year=2021, nation="Deutschland", subnation="Sachsen-Anhalt"),
-        requester=None,
         marker="<!-- m -->",
     )
 
     assert "| Region | `Sachsen-Anhalt` |" in regional["body"]
-    assert "Asked by" not in regional["body"], "no line at all beats an empty one"
     assert regional["title"] == "Election request: 2021 Deutschland — Sachsen-Anhalt"
 
 
@@ -83,12 +83,10 @@ def test_what_a_user_typed_cannot_break_out_of_the_markdown_it_is_put_in():
     """The place name is somebody's input and the issue body is markdown."""
     issue = build_issue(
         ImportRequest(year=2022, nation="Danmark` **ignore this**"),
-        requester="a@b.dk\n| Asked by | `admin` |",
         marker="<!-- m -->",
     )
 
     assert "| Nation | `Danmark **ignore this**` |" in issue["body"]
-    assert issue["body"].count("| Asked by |") == 1, "a newline cannot add a row"
     assert "\n" not in issue["title"]
 
 
@@ -130,9 +128,7 @@ async def test_an_election_nobody_asked_for_yet_becomes_a_new_issue():
         posted.append(request)
         return httpx.Response(201, json=issue_json(7, "..."))
 
-    filed = await github(handle).file(
-        ImportRequest(year=2022, nation="Danmark"), requester="who@example.org"
-    )
+    filed = await github(handle).file(ImportRequest(year=2022, nation="Danmark"))
 
     assert filed == FiledRequest(
         url="https://github.com/mcklmo/koalitionsberegner/issues/7", number=7, duplicate=False
@@ -141,6 +137,7 @@ async def test_an_election_nobody_asked_for_yet_becomes_a_new_issue():
         "https://api.github.com/repos/mcklmo/koalitionsberegner/issues"
     )
     assert posted[0].headers["authorization"] == "Bearer ghp_secret"
+    assert b"@" not in posted[0].content, "nothing about who asked is sent to GitHub"
 
 
 async def test_asking_again_points_at_the_open_issue_instead_of_opening_a_second():
@@ -161,7 +158,7 @@ async def test_asking_again_points_at_the_open_issue_instead_of_opening_a_second
         posts.append(http_request)
         return httpx.Response(201, json=issue_json(9, "..."))
 
-    filed = await github(handle).file(request, requester=None)
+    filed = await github(handle).file(request)
 
     assert filed.number == 5
     assert filed.duplicate is True
@@ -178,7 +175,7 @@ async def test_a_search_that_fails_still_files_the_request():
         posts.append(request)
         return httpx.Response(201, json=issue_json(11, "..."))
 
-    filed = await github(handle).file(ImportRequest(year=2022, nation="Danmark"), requester=None)
+    filed = await github(handle).file(ImportRequest(year=2022, nation="Danmark"))
 
     assert (filed.number, filed.duplicate) == (11, False)
     assert len(posts) == 1
@@ -197,7 +194,7 @@ async def test_github_refusing_says_nothing_about_github_to_the_caller(response)
         return httpx.Response(200, json=[]) if request.method == "GET" else response
 
     with pytest.raises(WishlistUnavailable) as refused:
-        await github(handle).file(ImportRequest(year=2022, nation="Danmark"), requester=None)
+        await github(handle).file(ImportRequest(year=2022, nation="Danmark"))
 
     said = str(refused.value)
     assert said == "could not file the request"
@@ -209,13 +206,13 @@ async def test_a_network_that_is_not_there_is_the_same_refusal():
         raise httpx.ConnectError("no route to host")
 
     with pytest.raises(WishlistUnavailable, match="could not file the request"):
-        await github(handle).file(ImportRequest(year=2022, nation="Danmark"), requester=None)
+        await github(handle).file(ImportRequest(year=2022, nation="Danmark"))
 
 
 async def test_with_nothing_configured_there_is_nowhere_to_file():
     with pytest.raises(WishlistUnavailable, match="not configured"):
         await DisabledWishlist().file(
-            ImportRequest(year=2022, nation="Danmark"), requester=None
+            ImportRequest(year=2022, nation="Danmark")
         )
 
 
@@ -227,11 +224,11 @@ class FakeWishlist:
     enabled = True
 
     def __init__(self, answer: FiledRequest | Exception | None = None):
-        self.filed: list[tuple[ImportRequest, str | None]] = []
+        self.filed: list[ImportRequest] = []
         self.answer = answer or FiledRequest(url="https://github.test/issues/1", number=1)
 
-    async def file(self, request: ImportRequest, *, requester: str | None) -> FiledRequest:
-        self.filed.append((request, requester))
+    async def file(self, request: ImportRequest) -> FiledRequest:
+        self.filed.append(request)
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
@@ -276,7 +273,7 @@ def test_an_account_with_no_subscription_may_ask_for_an_election(client, wishlis
     assert filed.json() == {
         "url": "https://github.test/issues/1", "number": 1, "duplicate": False
     }
-    assert wishlist.filed == [(ImportRequest(year=2022, nation="Danmark"), "free@example.org")]
+    assert wishlist.filed == [ImportRequest(year=2022, nation="Danmark")]
     assert accounts.get("free-1").used_in(billing_period()) == 0, "asking costs no quota"
 
 
@@ -284,18 +281,8 @@ def test_a_region_is_carried_through_as_asked(client, wishlist):
     client.post("/api/elections/requests", json=REGIONAL, headers=FREE)
 
     assert wishlist.filed == [
-        (ImportRequest(year=2021, nation="Deutschland", subnation="Sachsen-Anhalt"), ANY_EMAIL)
+        ImportRequest(year=2021, nation="Deutschland", subnation="Sachsen-Anhalt")
     ]
-
-
-#: The stub verifier derives the address from the token, so only its presence
-#: matters to the case above.
-class _AnyEmail:
-    def __eq__(self, other):
-        return isinstance(other, str)
-
-
-ANY_EMAIL = _AnyEmail()
 
 
 def test_a_second_request_for_the_same_election_is_not_a_creation(client, wishlist):

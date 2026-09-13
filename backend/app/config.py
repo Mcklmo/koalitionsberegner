@@ -30,9 +30,11 @@ from .auth import (
     TokenVerifier,
 )
 from .billing import Billing, DisabledBilling, StripeBilling
+from .mailer import DisabledMailer, Mailer, SmtpMailer
 from .parser import DEFAULT_PAGE_LIMIT, ElectionParser, UnavailableParser
 from .search import DEFAULT_SEARCH_LIMIT
 from .store import DEFAULT_STALE_AFTER_SECONDS, ElectionStore, InMemoryElectionStore
+from .usage import InMemoryUsageStore, UsageRecorder, UsageStore
 from .wikipedia import DEFAULT_LANGUAGE
 from .wishlist import DisabledWishlist, GithubWishlist, Wishlist
 
@@ -345,6 +347,76 @@ def get_accounts() -> AccountStore:
 
 
 @lru_cache(maxsize=1)
+def get_usage() -> UsageStore:
+    """The usage counters live wherever the accounts do."""
+    backend = _store_backend()
+    if backend == "memory":
+        return InMemoryUsageStore()
+
+    if backend == "sqlite":
+        from .sqlite_usage import SqliteUsageStore
+
+        return SqliteUsageStore(os.environ.get("SQLITE_PATH", DEFAULT_SQLITE_PATH))
+
+    from google.cloud import firestore
+
+    from .firestore_usage import FirestoreUsageStore
+
+    client = firestore.Client(
+        project=os.environ["GOOGLE_CLOUD_PROJECT"],
+        database=os.environ.get("FIRESTORE_DATABASE", "(default)"),
+    )
+    return FirestoreUsageStore(client)
+
+
+@lru_cache(maxsize=1)
+def get_usage_recorder() -> UsageRecorder:
+    """One recorder per process, so its record of today's active accounts is shared."""
+    return UsageRecorder(get_usage())
+
+
+#: Everything sending the usage reports needs besides a port and a sender, both
+#: of which have defaults.
+SMTP_VARIABLES = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "REPORT_EMAIL_TO")
+
+DEFAULT_SMTP_PORT = 587
+
+
+@lru_cache(maxsize=1)
+def get_mailer() -> Mailer:
+    """Where the usage reports are emailed, when anywhere.
+
+    Optional in the way billing and requests are: with none of
+    :data:`SMTP_VARIABLES` set, the counting still happens and an administrator
+    can read a report at ``/api/admin/usage``. Some of them without the rest is
+    a configuration error, because a report that silently goes nowhere is what
+    this switch exists to prevent.
+    """
+    values = {name: _env_str(name) for name in SMTP_VARIABLES}
+    if not any(values.values()):
+        return DisabledMailer()
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise ConfigError(f"usage report email also needs {', '.join(missing)}")
+    recipients = [part.strip() for part in values["REPORT_EMAIL_TO"].split(",") if part.strip()]
+    if not recipients or any("@" not in address for address in recipients):
+        raise ConfigError("REPORT_EMAIL_TO must be one or more comma-separated addresses")
+    return SmtpMailer(
+        values["SMTP_HOST"],
+        _env_int("SMTP_PORT", DEFAULT_SMTP_PORT),
+        username=values["SMTP_USERNAME"],
+        password=values["SMTP_PASSWORD"],
+        sender=_env_str("REPORT_EMAIL_FROM") or values["SMTP_USERNAME"],
+        recipients=recipients,
+    )
+
+
+def usage_report_secret() -> str:
+    """What the scheduled caller presents to have the reports sent; empty for none."""
+    return _env_str("USAGE_REPORT_SECRET")
+
+
+@lru_cache(maxsize=1)
 def get_password_store() -> PasswordCredentialStore | None:
     """The store that owns passwords itself, when one is configured.
 
@@ -558,6 +630,7 @@ def describe_configuration() -> dict[str, str]:
             else ("stripe" if _env_str("STRIPE_API_KEY") else "off")
         ),
         "requests": "github" if _env_str("GITHUB_ISSUES_TOKEN") else "off",
+        "reports": "email" if _env_str("SMTP_HOST") else "off",
         "search": search_mode(),
         "wikipedia": (
             f"{wikipedia_language()}.wikipedia.org" if wikipedia_mode() == "on" else "off"
@@ -594,18 +667,19 @@ def validate_configuration() -> dict[str, str]:
     get_quota_policy()
     get_billing()
     get_wishlist()
-    if origin_secret() and len(origin_secret()) < MIN_ORIGIN_SECRET_CHARS:
-        raise ConfigError(
-            f"ORIGIN_SECRET must be at least {MIN_ORIGIN_SECRET_CHARS} characters"
-        )
+    get_usage()
+    get_mailer()
+    for name, secret in (("ORIGIN_SECRET", origin_secret()), ("USAGE_REPORT_SECRET", usage_report_secret())):
+        if secret and len(secret) < MIN_ORIGIN_SECRET_CHARS:
+            raise ConfigError(f"{name} must be at least {MIN_ORIGIN_SECRET_CHARS} characters")
     if chosen["auth_mode"] == "firebase" and not _env_str("FIREBASE_API_KEY"):
         # Not fatal: the API still verifies tokens. But nothing in the browser
         # can obtain one, so sign-in is dead until this is set.
         log.warning("AUTH_MODE=firebase without FIREBASE_API_KEY: the page cannot sign anyone in")
     log.info(
         "configuration ok store=%s llm_mode=%s auth_mode=%s billing=%s requests=%s "
-        "search=%s wikipedia=%s",
+        "reports=%s search=%s wikipedia=%s",
         chosen["store"], chosen["llm_mode"], chosen["auth_mode"], chosen["billing"],
-        chosen["requests"], chosen["search"], chosen["wikipedia"],
+        chosen["requests"], chosen["reports"], chosen["search"], chosen["wikipedia"],
     )
     return chosen

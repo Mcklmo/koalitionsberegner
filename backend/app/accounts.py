@@ -13,6 +13,7 @@ alongside the counter, and a counter belonging to a past period reads as zero
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from collections.abc import Mapping
@@ -154,6 +155,14 @@ class AccountStore(Protocol):
         """Webhooks identify the user by Stripe customer, not by uid."""
         ...
 
+    def count_created(self, start: float, end: float) -> int:
+        """How many accounts were created in ``[start, end)``, in epoch seconds.
+
+        A number for the usage report, answered from the creation time the
+        store keeps anyway — not a list of who.
+        """
+        ...
+
 
 def _reserved(account: UserAccount, period: str, limit: int) -> UserAccount | None:
     """The reserve rule, shared by every implementation so they cannot drift."""
@@ -209,8 +218,12 @@ def _subscribed(
 class InMemoryAccountStore:
     """Process-local accounts, for tests and for runs without a real database."""
 
-    def __init__(self, accounts: dict[str, UserAccount] | None = None):
+    def __init__(self, accounts: dict[str, UserAccount] | None = None, *, clock=time.time):
         self._accounts: dict[str, UserAccount] = dict(accounts or {})
+        # Only accounts this store created have a creation time; ones handed in
+        # already existed, and are not new to anyone.
+        self._created: dict[str, float] = {}
+        self._clock = clock
         self._lock = Lock()
 
     def get(self, uid: str) -> UserAccount | None:
@@ -222,6 +235,7 @@ class InMemoryAccountStore:
             account = self._accounts.get(uid)
             if account is None:
                 account = UserAccount(uid=uid, email=email, period=billing_period())
+                self._created[uid] = self._clock()
             elif email and account.email != email:
                 account = replace(account, email=email)
             self._accounts[uid] = account
@@ -276,3 +290,7 @@ class InMemoryAccountStore:
                 if account.stripe_customer_id == customer_id:
                     return account
             return None
+
+    def count_created(self, start: float, end: float) -> int:
+        with self._lock:
+            return sum(1 for created in self._created.values() if start <= created < end)

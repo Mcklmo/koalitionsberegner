@@ -131,6 +131,15 @@ class SqliteAccountStore:
             span["found"] = row is not None
             return _account_from_row(row) if row else None
 
+    def count_created(self, start: float, end: float) -> int:
+        with io_span(log, "sqlite", "count_created_accounts") as span:
+            row = self._connect().execute(
+                "SELECT COUNT(*) AS n FROM accounts WHERE created_at >= ? AND created_at < ?",
+                (start, end),
+            ).fetchone()
+            span["accounts"] = int(row["n"])
+            return int(row["n"])
+
     # --- writes ------------------------------------------------------------
 
     def _save(self, conn: sqlite3.Connection, account: UserAccount) -> None:
