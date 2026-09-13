@@ -13,6 +13,8 @@
  * row, so the two cannot disagree about what is acceptable.
  */
 
+import { t } from './i18n.js';
+
 /** The years an election may be asked for. Mirrors MIN_YEAR/MAX_YEAR. */
 export const MIN_YEAR = 1800;
 export const MAX_YEAR = 2100;
@@ -49,12 +51,12 @@ export function validateImportForm(input = {}) {
   const errors = {};
 
   if (!String(input.year ?? '').trim()) {
-    errors.year = 'Angiv valgåret.';
+    errors.year = t('form.yearMissing');
   } else if (year === null) {
-    errors.year = `Året skal være et årstal mellem ${MIN_YEAR} og ${MAX_YEAR}.`;
+    errors.year = t('form.yearInvalid', { min: MIN_YEAR, max: MAX_YEAR });
   }
   if (!nation) {
-    errors.nation = 'Angiv landet.';
+    errors.nation = t('form.nationMissing');
   }
 
   return { valid: Object.keys(errors).length === 0, values, errors };

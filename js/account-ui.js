@@ -19,12 +19,10 @@
  */
 
 import { ApiError } from './api.js';
+import { t } from './i18n.js';
 
-export const TIER_LABELS = {
-  free: 'Gratis',
-  basic: 'Basis',
-  premium: 'Premium',
-};
+/** The tiers the page has a name for; any other is shown as the server spells it. */
+const NAMED_TIERS = ['free', 'basic', 'premium'];
 
 const MIN_PASSWORD_LENGTH = 6;
 
@@ -36,30 +34,28 @@ const MIN_PASSWORD_LENGTH = 6;
  * import-ui.js). The server refuses checkout regardless — this is the page
  * being honest about it rather than the page deciding it.
  */
-export const PAYMENTS_PAUSED_NOTE = 'Betaling virker ikke lige nu — prøv igen i morgen. '
-  + 'I mellemtiden kan du skrive under "Importér et valg", hvilket valg du mangler: '
-  + 'det bliver noteret som et ønske og importeret manuelt.';
+export const paymentsPausedNote = () => t('payments.paused');
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** What the form says in each mode. `autocomplete` is the part a password manager reads. */
 const MODES = {
   signin: {
-    submit: 'Log ind',
+    submit: 'auth.signin.submit',
     autocomplete: 'current-password',
-    switchText: 'Ny her?',
-    switchLabel: 'Opret en konto',
+    switchText: 'auth.signin.switchText',
+    switchLabel: 'auth.signin.switchLabel',
   },
   signup: {
-    submit: 'Opret konto',
+    submit: 'auth.signup.submit',
     autocomplete: 'new-password',
-    switchText: 'Har du allerede en konto?',
-    switchLabel: 'Log ind',
+    switchText: 'auth.signup.switchText',
+    switchLabel: 'auth.signup.switchLabel',
   },
 };
 
 export function tierLabel(tier) {
-  return TIER_LABELS[tier] ?? tier;
+  return NAMED_TIERS.includes(tier) ? t(`tier.${tier}`) : tier;
 }
 
 /** What the quota line says, given what the server reported. */
@@ -67,22 +63,21 @@ export function quotaSummary(account) {
   if (!account) return '';
   if (account.unlimited) {
     return account.admin
-      ? 'Ubegrænsede importer som administrator.'
-      : 'Ubegrænsede importer (adgangskontrol er slået fra).';
+      ? t('quota.adminUnlimited')
+      : t('quota.unlimited');
   }
   if (account.limit <= 0) {
-    return 'Din plan giver ikke adgang til at importere nye valg.';
+    return t('quota.none');
   }
-  const noun = account.remaining === 1 ? 'import' : 'importer';
-  return `${account.remaining} af ${account.limit} ${noun} tilbage denne måned.`;
+  return t('quota.remaining', { remaining: account.remaining, limit: account.limit });
 }
 
 /** One address, checked locally. */
 export function validateEmail(email) {
   const value = (email ?? '').trim();
-  if (!value) return { value, error: 'Angiv din e-mailadresse.' };
+  if (!value) return { value, error: t('email.missing') };
   if (!EMAIL_PATTERN.test(value)) {
-    return { value, error: 'Adressen ser ikke ud til at være en e-mailadresse.' };
+    return { value, error: t('email.invalid') };
   }
   return { value, error: null };
 }
@@ -94,9 +89,9 @@ export function validateCredentials({ email, password } = {}) {
   const errors = {};
   if (address.error) errors.email = address.error;
   if (!values.password) {
-    errors.password = 'Angiv en adgangskode.';
+    errors.password = t('password.missing');
   } else if (values.password.length < MIN_PASSWORD_LENGTH) {
-    errors.password = `Adgangskoden skal være mindst ${MIN_PASSWORD_LENGTH} tegn.`;
+    errors.password = t('password.short', { min: MIN_PASSWORD_LENGTH });
   }
   return { valid: Object.keys(errors).length === 0, values, errors };
 }
@@ -135,10 +130,10 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
   function setMode(next) {
     mode = next;
     const copy = MODES[mode];
-    el.submit.textContent = copy.submit;
+    el.submit.textContent = t(copy.submit);
     el.passwordInput.autocomplete = copy.autocomplete;
-    el.switchText.textContent = copy.switchText;
-    el.switchMode.textContent = copy.switchLabel;
+    el.switchText.textContent = t(copy.switchText);
+    el.switchMode.textContent = t(copy.switchLabel);
     show(el.forgot, mode === 'signin' && canResetPassword);
     setFieldErrors({});
     setMessage('');
@@ -162,7 +157,7 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
       const button = document.createElement('button');
       button.className = 'secondary';
       button.type = 'button';
-      button.textContent = `${tierLabel(row.tier)} — ${row.monthlyImports} importer/md.`;
+      button.textContent = t('upgrade.button', { tier: tierLabel(row.tier), imports: row.monthlyImports });
       button.addEventListener('click', () => checkout(row.tier));
       el.upgrades.appendChild(button);
     }
@@ -171,7 +166,7 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
     // who came here to pay is owed better than silence: the note says when to
     // come back and what works meanwhile.
     const paused = buyer && Boolean(config.paymentsPaused);
-    el.upgradeNote.textContent = paused ? PAYMENTS_PAUSED_NOTE : '';
+    el.upgradeNote.textContent = paused ? paymentsPausedNote() : '';
     show(el.upgradeRow, sellable.length > 0 || paused);
     // Only somebody who has paid before has a subscription to manage.
     show(el.manage, Boolean(account?.billingEnabled && account?.subscriptionStatus));
@@ -217,7 +212,7 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
         return null;
       }
       account = null;
-      setMessage(`Kunne ikke hente kontoen: ${error.message}`, 'error');
+      setMessage(t('account.loadFailed', { message: error.message }), 'error');
     }
     render();
     onChange(account);
@@ -249,22 +244,16 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
 
     if (!creating) return;
     if (!canVerifyEmail) {
-      setMessage('Kontoen er oprettet.', 'ok');
+      setMessage(t('signup.created'), 'ok');
       return;
     }
     try {
       await auth.sendVerification();
-      setMessage(
-        `Kontoen er oprettet. Vi har sendt et link til ${values.email} — åbn det for at bekræfte adressen.`,
-        'ok'
-      );
+      setMessage(t('signup.linkSent', { email: values.email }), 'ok');
     } catch {
       // The account exists either way, and the panel is already offering to
       // send the link again: a hiccup to mention, not a failure to report.
-      setMessage(
-        'Kontoen er oprettet. Vi kunne ikke sende bekræftelsesmailen lige nu — tryk på »Send linket igen« om et øjeblik.',
-        'warn'
-      );
+      setMessage(t('signup.linkFailed'), 'warn');
     }
   }
 
@@ -278,10 +267,7 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
       await auth.sendPasswordReset(value);
       // Worded the same whether or not the address has an account: which ones
       // do is not something this form should answer.
-      setMessage(
-        `Hvis der findes en konto for ${value}, har vi sendt et link til at vælge en ny adgangskode.`,
-        'ok'
-      );
+      setMessage(t('reset.sent', { email: value }), 'ok');
     } catch (failure) {
       setMessage(failure.message, 'error');
     } finally {
@@ -309,9 +295,9 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
     const next = await refresh();
     if (!next) return;
     if (next.emailVerified !== false) {
-      setMessage('Tak, din e-mailadresse er bekræftet.', 'ok');
+      setMessage(t('verify.confirmed'), 'ok');
     } else if (!quiet) {
-      setMessage('Adressen er ikke bekræftet endnu. Åbn linket i mailen, og prøv igen.', 'warn');
+      setMessage(t('verify.notYet'), 'warn');
     }
   }
 
@@ -320,15 +306,12 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
     try {
       busy(true);
       await auth.sendVerification();
-      setMessage(`Vi har sendt et nyt link til ${account?.email ?? 'din e-mailadresse'}.`, 'ok');
+      setMessage(t('verify.resent', { email: account?.email ?? t('verify.yourAddress') }), 'ok');
     } catch (error) {
       if (error.code === 'TOO_MANY_ATTEMPTS_TRY_LATER') {
         // Firebase refuses a new link shortly after the last one, which by
         // then is usually in the inbox already.
-        setMessage(
-          'Vi har for nylig sendt dig et link. Tjek din indbakke og spam-mappen, eller prøv igen om et par minutter.',
-          'info'
-        );
+        setMessage(t('verify.recentlySent'), 'info');
       } else {
         setMessage(error.message, 'error');
       }
@@ -339,10 +322,10 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
 
   async function checkout(tier) {
     if (config.paymentsPaused) {
-      setMessage(PAYMENTS_PAUSED_NOTE, 'warn');
+      setMessage(paymentsPausedNote(), 'warn');
       return;
     }
-    setMessage('Åbner betaling…', 'info');
+    setMessage(t('checkout.opening'), 'info');
     try {
       const url = await api.startCheckout(tier);
       // Stripe hosts the payment page; nothing about the tier changes until it
@@ -353,16 +336,16 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
       // 503: so does a deployment with no Stripe configured, and the two are
       // not the same news. What the page knows about the pause it knows from
       // /api/config above; the rest is reported as the server worded it.
-      setMessage(`Kunne ikke starte betalingen: ${error.message}`, 'error');
+      setMessage(t('checkout.failed', { message: error.message }), 'error');
     }
   }
 
   async function manage() {
-    setMessage('Åbner abonnementet…', 'info');
+    setMessage(t('portal.opening'), 'info');
     try {
       redirect(await api.openBillingPortal());
     } catch (error) {
-      setMessage(`Kunne ikke åbne abonnementet: ${error.message}`, 'error');
+      setMessage(t('portal.failed', { message: error.message }), 'error');
     }
   }
 
@@ -416,7 +399,7 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
         show(el.panel, true);
         show(el.signedOut, false);
         show(el.signedIn, false);
-        setMessage('Login er ikke konfigureret på denne server.', 'warn');
+        setMessage(t('login.notConfigured'), 'warn');
         return;
       }
       show(el.panel, true);

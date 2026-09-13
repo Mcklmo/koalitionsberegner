@@ -1,4 +1,5 @@
 import { isValidatedElection } from './election.js';
+import { t } from './i18n.js';
 
 /**
  * Coalition calculator renderer.
@@ -8,14 +9,11 @@ import { isValidatedElection } from './election.js';
  * particular country, assembly size or majority threshold.
  */
 
-const DANISH_MONTHS = ['januar', 'februar', 'marts', 'april', 'maj', 'juni',
-  'juli', 'august', 'september', 'oktober', 'november', 'december'];
-
-/** Formats a schema-valid ISO date/date-time as e.g. "08:26 25. marts 2026". */
+/** Formats a schema-valid ISO date/date-time as e.g. "08:26 25. marts 2026", in the page's language. */
 function formatElectionDate(iso) {
   const [date, time] = iso.split('T');
   const [year, month, day] = date.split('-');
-  const dayMonthYear = `${Number(day)}. ${DANISH_MONTHS[Number(month) - 1]} ${year}`;
+  const dayMonthYear = t('date', { day: Number(day), month: Number(month), year });
   return time ? `${time.slice(0, 5)} ${dayMonthYear}` : dayMonthYear;
 }
 
@@ -90,16 +88,15 @@ export function mountCoalitionCalculator(election, elements = {}) {
 
   document.title = election.title;
   el.title.textContent = election.title;
-  el.subtitle.textContent = `Vælg partier og se om de tilsammen opnår flertal `
-    + `(${election.majoritySeats}+ ud af ${election.totalSeats} mandater)`;
-  el.totalOf.textContent = `af ${election.totalSeats} mandater`;
+  el.subtitle.textContent = t('calc.subtitle', { majority: election.majoritySeats, total: election.totalSeats });
+  el.totalOf.textContent = t('calc.totalOf', { total: election.totalSeats });
   // A forecast is not a result, and one whose seats we computed says so.
   const { forecast } = election;
-  el.footerNote.textContent = `Flertal kræver ${election.majoritySeats} mandater `
+  el.footerNote.textContent = `${t('calc.majorityNeeds', { majority: election.majoritySeats })} · `
     + (forecast
-      ? `· Prognose fra ${forecast.publisher}, ${formatElectionDate(forecast.publishedOn)}`
-        + (forecast.computed ? ' (mandater beregnet ud fra stemmeandele)' : '')
-      : `· Endelig resultat, ${formatElectionDate(election.electionDate)}`);
+      ? t('calc.forecastFrom', { publisher: forecast.publisher, date: formatElectionDate(forecast.publishedOn) })
+        + (forecast.computed ? ` (${t('seats.computed')})` : '')
+      : t('calc.finalResult', { date: formatElectionDate(election.electionDate) }));
 
   function render() {
     el.list.innerHTML = '';
@@ -149,12 +146,12 @@ export function mountCoalitionCalculator(election, elements = {}) {
       el.bar.style.background = large ? '#1D9E75' : '#378ADD';
       el.verdict.className = 'verdict ' + (large ? 'v-over' : 'v-yes');
       el.verdict.textContent = large
-        ? 'Stort flertal ✓'
-        : 'Flertal ✓ (+' + (total - election.majoritySeats) + ')';
+        ? t('calc.largeMajority')
+        : t('calc.majority', { over: total - election.majoritySeats });
     } else {
       el.bar.style.background = '#888780';
       el.verdict.className = 'verdict v-no';
-      el.verdict.textContent = 'Mangler ' + (election.majoritySeats - total);
+      el.verdict.textContent = t('calc.short', { missing: election.majoritySeats - total });
     }
     render();
   }

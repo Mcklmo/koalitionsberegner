@@ -12,6 +12,10 @@ import assert from 'node:assert/strict';
 import { ApiError, createApiClient } from '../js/api.js';
 import { AuthError, createAuth } from '../js/auth.js';
 import { createPasswordAuth } from '../js/password-auth.js';
+import { setLanguage } from '../js/i18n.js';
+
+// These tests read the Danish wording.
+setLanguage('da', { remember: false });
 
 const HOUR = 3600_000;
 

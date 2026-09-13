@@ -40,28 +40,23 @@
 
 import { ApiError, ImportStatus } from './api.js';
 import { validateImportForm } from './import-form.js';
+import { t } from './i18n.js';
 
 const LOCAL_VALUE = 'local';
 
-/** Why the server turned an import down, in the page's own words. */
+/** Why the server turned an import down, as the texts that say so in the page's own words. */
 const REFUSALS = {
-  401: 'Log ind for at importere eller ønske et valg.',
-  402: 'Import kræver et abonnement. Vælg en plan ovenfor.',
-  429: 'Denne måneds importer er brugt op. Kvoten fornys ved månedsskiftet.',
+  401: 'import.refusal.signIn',
+  402: 'import.refusal.subscription',
+  429: 'import.refusal.usedUp',
 };
 
 /** The same, for the request path, whose refusals are not the import's. */
 const REQUEST_REFUSALS = {
-  401: 'Log ind for at ønske et valg.',
-  403: 'Bekræft din e-mailadresse, før du kan ønske et valg.',
-  503: 'Ønskelisten er ikke tilgængelig lige nu. Prøv igen senere.',
+  401: 'request.refusal.signIn',
+  403: 'request.refusal.confirmEmail',
+  503: 'request.refusal.unavailable',
 };
-
-/** What the button will do when there is no subscription behind the account. */
-const REQUEST_NOTE = 'Uden abonnement henter vi ikke valget automatisk. '
-  + 'Vi skriver det op som et ønske, og det bliver importeret manuelt.';
-
-const COMPUTED_NOTE = 'mandater beregnet ud fra stemmeandele';
 
 /** "Voxmeter · 2026-09-07" */
 const forecastLabel = (forecast) => `${forecast.publisher} · ${forecast.publishedOn}`;
@@ -109,7 +104,7 @@ export function mountImportUi({
   function busy(isBusy, label) {
     submitting = isBusy;
     renderSubmit();
-    el.submit.textContent = isBusy ? label : 'Hent valgresultat';
+    el.submit.textContent = isBusy ? label : t('import.submit');
   }
 
   /** Whether importing is worth offering. The server still decides. */
@@ -148,18 +143,17 @@ export function mountImportUi({
   /** The standing note under the form: why importing is or is not available. */
   function renderAvailability() {
     if (account === null) {
-      el.availability.textContent = REFUSALS[401];
+      el.availability.textContent = t(REFUSALS[401]);
     } else if (account.unlimited) {
       el.availability.textContent = '';
     } else if (canRequest()) {
       // The button still works; it does something else. Saying which is the
       // difference between an offer and a dead end.
-      el.availability.textContent = REQUEST_NOTE;
+      el.availability.textContent = t('import.requestNote');
     } else if (!account.mayImport) {
-      el.availability.textContent = account.limit > 0 ? REFUSALS[429] : REFUSALS[402];
+      el.availability.textContent = t(account.limit > 0 ? REFUSALS[429] : REFUSALS[402]);
     } else {
-      const noun = account.remaining === 1 ? 'import' : 'importer';
-      el.availability.textContent = `${account.remaining} ${noun} tilbage denne måned.`;
+      el.availability.textContent = t('import.remaining', { remaining: account.remaining });
     }
     renderSubmit();
   }
@@ -167,10 +161,10 @@ export function mountImportUi({
   function optionLabel(summary) {
     const where = placeOf(summary);
     const label = summary.forecast
-      ? `${where} · prognose ${forecastLabel(summary.forecast)}`
+      ? t('picker.forecast', { where, label: forecastLabel(summary.forecast) })
       : `${where} · ${summary.electionDate}`;
     // Only an administrator is told, since only they can change it.
-    return account?.admin && summary.selected ? `${label} · offentlig` : label;
+    return account?.admin && summary.selected ? `${label} · ${t('picker.public')}` : label;
   }
 
   /** The stored election the picker is on; null for the bundled one. */
@@ -223,14 +217,14 @@ export function mountImportUi({
     const identity = `${placeOf(election)} · ${election.electionDate}`;
     const forecast = election.forecast;
     el.previewMeta.textContent =
-      (forecast ? `Prognose fra ${forecastLabel(forecast)} for valget ${identity}` : identity)
-      + ` · ${election.totalSeats} mandater`
-      + ` · flertal ved ${election.majoritySeats}`;
+      (forecast ? t('preview.forecastFor', { label: forecastLabel(forecast), identity }) : identity)
+      + ` · ${t('seats', { count: election.totalSeats })}`
+      + ` · ${t('preview.majorityAt', { majority: election.majoritySeats })}`;
     // Nobody chose this address: the server searched for it. Naming it is how
     // the numbers can be checked against their source.
     el.previewSource.textContent = forecast?.computed
-      ? `Stemmeandelene er læst fra ${election.sourceUrl}; mandaterne er beregnet ud fra dem og er et skøn.`
-      : `Tallene er læst fra ${election.sourceUrl}`;
+      ? t('preview.sourceComputed', { url: election.sourceUrl })
+      : t('preview.source', { url: election.sourceUrl });
     show(el.previewSource, true);
     el.previewList.innerHTML = '';
     for (const party of seats) {
@@ -247,7 +241,7 @@ export function mountImportUi({
       el.previewList.appendChild(row);
     }
     // From the list, stepping back is not throwing anything away.
-    el.discard.textContent = pending?.option === undefined ? 'Forkast' : 'Tilbage til listen';
+    el.discard.textContent = t(pending?.option === undefined ? 'discard' : 'preview.backToList');
     show(el.preview, true);
   }
 
@@ -260,7 +254,7 @@ export function mountImportUi({
   function renderChoices(result) {
     offered = { requestKey: result.requestKey, forecasts: result.forecasts };
     const [first] = result.forecasts;
-    el.choicesTitle.textContent = `${placeOf(first)} · valget afholdes senest ${first.electionDate}`;
+    el.choicesTitle.textContent = t('choices.title', { where: placeOf(first), date: first.electionDate });
     el.choicesList.innerHTML = '';
     result.forecasts.forEach((election, option) => {
       const button = document.createElement('button');
@@ -270,14 +264,14 @@ export function mountImportUi({
       who.textContent = forecastLabel(election.forecast);
       const what = document.createElement('span');
       what.className = 'choice-note';
-      what.textContent = `${election.totalSeats} mandater`
-        + (election.forecast.computed ? ` · ${COMPUTED_NOTE}` : '');
+      what.textContent = t('seats', { count: election.totalSeats })
+        + (election.forecast.computed ? ` · ${t('seats.computed')}` : '');
       button.append(who, what);
       button.addEventListener('click', () => choose(option));
       el.choicesList.appendChild(button);
     });
     show(el.choices, true);
-    setMessage('Valget er ikke afholdt endnu. Vælg en meningsmåling at regne på.', 'info');
+    setMessage(t('choices.message'), 'info');
   }
 
   function clearChoices() {
@@ -291,7 +285,7 @@ export function mountImportUi({
     pending = { requestKey: offered.requestKey, option, election };
     show(el.choices, false);
     renderPreview(election);
-    setMessage('Kontrollér tallene, før du gemmer prognosen.', 'info');
+    setMessage(t('choices.check'), 'info');
   }
 
   async function submit(event) {
@@ -322,10 +316,10 @@ export function mountImportUi({
     try {
       // Ask first: an election somebody already imported must never be looked
       // up and read again, whoever asked for it.
-      busy(true, 'Tjekker…');
+      busy(true, t('busy.checking'));
       const existing = await api.lookup(values);
       if (existing.status === ImportStatus.READY) {
-        setMessage('Dette valg er allerede importeret. Vælg det i listen ovenfor.', 'warn');
+        setMessage(t('import.alreadyImportedPick'), 'warn');
         await refreshPicker(existing.electionHash).catch(() => {});
         return;
       }
@@ -341,10 +335,10 @@ export function mountImportUi({
       // outright if that import spent the last of the month.
       let result = existing;
       if (existing.status === ImportStatus.PENDING) {
-        busy(true, 'Henter…');
+        busy(true, t('busy.fetching'));
         result = await api.getImport(existing.requestKey);
       } else if (existing.status !== ImportStatus.PREVIEW) {
-        busy(true, 'Henter…');
+        busy(true, t('busy.fetching'));
         result = await api.importElection(values);
       }
       await handleResult(result);
@@ -363,25 +357,25 @@ export function mountImportUi({
    */
   async function fileRequest(values) {
     try {
-      busy(true, 'Sender ønske…');
+      busy(true, t('busy.requesting'));
       const filed = await api.requestElection(values);
       const opening = filed.duplicate
-        ? `Det valg er der allerede et ønske om (#${filed.number}).`
-        : `Ønsket er noteret som #${filed.number}.`;
-      setMessage(`${opening} Valget bliver importeret manuelt.`, 'ok');
+        ? t('request.duplicate', { number: filed.number })
+        : t('request.filed', { number: filed.number });
+      setMessage(`${opening} ${t('request.byHand')}`, 'ok');
       // The issue is public, so the number is worth something to follow.
       const link = document.createElement('a');
       link.href = filed.url;
       link.target = '_blank';
       link.rel = 'noreferrer noopener';
-      link.textContent = 'Se ønsket';
+      link.textContent = t('request.link');
       el.message.append(' ', link);
       el.form.reset();
       setFieldErrors({});
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         // Already imported. Showing it beats writing down a wish for it.
-        setMessage('Dette valg er allerede importeret. Vælg det i listen ovenfor.', 'warn');
+        setMessage(t('import.alreadyImportedPick'), 'warn');
         await refreshPicker().catch(() => {});
         return;
       }
@@ -392,24 +386,25 @@ export function mountImportUi({
   }
 
   function requestRefusal(error) {
-    if (!(error instanceof ApiError)) return `Uventet fejl: ${error.message}`;
-    return REQUEST_REFUSALS[error.status] ?? `Kunne ikke sende ønsket: ${error.message}`;
+    if (!(error instanceof ApiError)) return t('error.unexpected', { message: error.message });
+    const key = REQUEST_REFUSALS[error.status];
+    return key ? t(key) : t('request.failed', { message: error.message });
   }
 
   /** Show what an import came back with, whether started now or picked up. */
   async function handleResult(result) {
     if (result.status === ImportStatus.READY) {
       // It turned out to be an election we already hold, asked for another way.
-      setMessage('Dette valg er allerede importeret.', 'warn');
+      setMessage(t('import.alreadyImported'), 'warn');
       await refreshPicker(result.electionHash).catch(() => {});
       return;
     }
     if (result.status === ImportStatus.FAILED) {
-      setMessage(`Kunne ikke finde valgresultatet: ${result.error}`, 'error');
+      setMessage(t('import.failed', { error: result.error }), 'error');
       return;
     }
     if (result.status === ImportStatus.PENDING) {
-      setMessage('Behandling er stadig i gang. Prøv igen om lidt.', 'info');
+      setMessage(t('import.pending'), 'info');
       return;
     }
     if (result.status === ImportStatus.CHOOSE) {
@@ -421,15 +416,13 @@ export function mountImportUi({
     renderPreview(result.election);
     // The import has been charged for, so the allowance has moved.
     await onImported();
-    setMessage(
-      'Kontrollér at det er det rigtige valg, og at tallene passer, før du gemmer.',
-      'info'
-    );
+    setMessage(t('preview.check'), 'info');
   }
 
   function refusal(error) {
-    if (!(error instanceof ApiError)) return `Uventet fejl: ${error.message}`;
-    return REFUSALS[error.status] ?? error.message;
+    if (!(error instanceof ApiError)) return t('error.unexpected', { message: error.message });
+    const key = REFUSALS[error.status];
+    return key ? t(key) : error.message;
   }
 
   async function confirm() {
@@ -442,13 +435,13 @@ export function mountImportUi({
       clearPreview();
       clearChoices();
       await refreshPicker(saved.electionHash).catch(() => {});
-      const noun = isForecast ? 'Prognosen' : 'Valget';
-      setMessage(saved.duplicate ? `${noun} var allerede gemt.` : `${noun} er gemt.`, 'ok');
+      const kind = isForecast ? 'forecast' : 'election';
+      setMessage(t(saved.duplicate ? `saved.${kind}Already` : `saved.${kind}`), 'ok');
       el.form.reset();
       setFieldErrors({});
       onSelect(saved.election);
     } catch (error) {
-      setMessage(`Kunne ikke gemme valget: ${error.message}`, 'error');
+      setMessage(t('saved.failed', { message: error.message }), 'error');
     } finally {
       el.confirm.disabled = false;
     }
@@ -465,7 +458,7 @@ export function mountImportUi({
     }
     const { requestKey } = pending;
     clearPreview();
-    setMessage('Forkastet. Intet blev gemt.', 'info');
+    setMessage(t('discarded'), 'info');
     await api.discardPreview(requestKey).catch(() => {});
   }
 
@@ -474,7 +467,7 @@ export function mountImportUi({
     const { requestKey } = offered;
     clearPreview();
     clearChoices();
-    setMessage('Forkastet. Intet blev gemt.', 'info');
+    setMessage(t('discarded'), 'info');
     await api.discardPreview(requestKey).catch(() => {});
   }
 
@@ -491,13 +484,13 @@ export function mountImportUi({
       renderCuration();
       setMessage(
         saved.selected
-          ? 'Valget er nu synligt for alle, også uden login.'
-          : 'Valget vises nu kun for brugere, der er logget ind.',
+          ? t('curate.nowPublic')
+          : t('curate.nowPrivate'),
         'ok'
       );
     } catch (error) {
       el.curate.checked = !wanted;
-      setMessage(`Kunne ikke ændre synligheden: ${refusal(error)}`, 'error');
+      setMessage(t('curate.failed', { message: refusal(error) }), 'error');
     } finally {
       el.curate.disabled = false;
     }
@@ -514,7 +507,7 @@ export function mountImportUi({
       const result = await api.getElection(value);
       if (result.election) onSelect(result.election);
     } catch (error) {
-      setMessage(`Kunne ikke hente valget: ${error.message}`, 'error');
+      setMessage(t('select.failed', { message: error.message }), 'error');
     }
   }
 
@@ -542,7 +535,7 @@ export function mountImportUi({
       try {
         await refreshPicker();
       } catch {
-        setMessage('Valgarkivet kan ikke nås — viser kun det indbyggede valg.', 'warn');
+        setMessage(t('archive.unreachable'), 'warn');
       }
     },
   };

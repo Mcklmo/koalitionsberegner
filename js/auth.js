@@ -15,6 +15,8 @@
  * who they are; the backend reads their tier and quota from its own store.
  */
 
+import { t } from './i18n.js';
+
 const IDENTITY_BASE = 'https://identitytoolkit.googleapis.com/v1/accounts';
 const TOKEN_BASE = 'https://securetoken.googleapis.com/v1/token';
 
@@ -31,27 +33,27 @@ export class AuthError extends Error {
   }
 }
 
-/** Firebase's error codes are shouty constants; these are what a user should read. */
+/** Firebase's error codes are shouty constants; these name what a user should read. */
 const MESSAGES = {
-  EMAIL_EXISTS: 'Der findes allerede en konto med den e-mailadresse.',
-  EMAIL_NOT_FOUND: 'Vi kunne ikke finde en konto med den e-mailadresse.',
-  INVALID_PASSWORD: 'Forkert adgangskode.',
-  INVALID_LOGIN_CREDENTIALS: 'Forkert e-mailadresse eller adgangskode.',
-  INVALID_EMAIL: 'Adressen ser ikke ud til at være en e-mailadresse.',
-  WEAK_PASSWORD: 'Adgangskoden skal være mindst 6 tegn.',
-  USER_DISABLED: 'Kontoen er deaktiveret.',
-  TOO_MANY_ATTEMPTS_TRY_LATER: 'For mange forsøg. Prøv igen om lidt.',
-  RESET_PASSWORD_EXCEED_LIMIT: 'For mange forsøg. Prøv igen om lidt.',
-  TOKEN_EXPIRED: 'Din session er udløbet. Log ind igen.',
-  USER_NOT_FOUND: 'Din session er udløbet. Log ind igen.',
+  EMAIL_EXISTS: ['auth.emailExists'],
+  EMAIL_NOT_FOUND: ['auth.emailNotFound'],
+  INVALID_PASSWORD: ['auth.wrongPassword'],
+  INVALID_LOGIN_CREDENTIALS: ['auth.wrongCredentials'],
+  INVALID_EMAIL: ['email.invalid'],
+  WEAK_PASSWORD: ['password.short', { min: 6 }],
+  USER_DISABLED: ['auth.disabled'],
+  TOO_MANY_ATTEMPTS_TRY_LATER: ['auth.tooManyAttempts'],
+  RESET_PASSWORD_EXCEED_LIMIT: ['auth.tooManyAttempts'],
+  TOKEN_EXPIRED: ['auth.sessionExpired'],
+  USER_NOT_FOUND: ['auth.sessionExpired'],
 };
 
 /** Firebase prefixes some codes with detail after a colon. */
 export function readableAuthError(code) {
   const key = String(code ?? '').split(':')[0].trim().toUpperCase();
-  if (MESSAGES[key]) return MESSAGES[key];
-  if (key.startsWith('WEAK_PASSWORD')) return MESSAGES.WEAK_PASSWORD;
-  return 'Log ind mislykkedes. Prøv igen.';
+  if (Object.hasOwn(MESSAGES, key)) return t(...MESSAGES[key]);
+  if (key.startsWith('WEAK_PASSWORD')) return t(...MESSAGES.WEAK_PASSWORD);
+  return t('auth.failed');
 }
 
 /** localStorage is absent in some embeddings; the session then lasts one page view. */
@@ -140,7 +142,7 @@ export function createAuth({
         body: JSON.stringify(body),
       });
     } catch (cause) {
-      throw new AuthError(`Kunne ikke nå login-tjenesten: ${cause.message}`);
+      throw new AuthError(t('auth.unreachable', { message: cause.message }));
     }
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
@@ -286,7 +288,7 @@ export function createAuth({
     /** Mail the signed-in user the link that confirms their address. */
     async sendVerification() {
       const token = await getIdToken();
-      if (!token) throw new AuthError('Log ind for at bekræfte din e-mailadresse.');
+      if (!token) throw new AuthError(t('auth.signInToConfirm'));
       await sendOobCode({ requestType: 'VERIFY_EMAIL', idToken: token });
     },
 

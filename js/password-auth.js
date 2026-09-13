@@ -17,6 +17,7 @@
 
 import { AuthError, readableAuthError } from './auth.js';
 import { ApiError } from './api.js';
+import { t } from './i18n.js';
 
 const STORAGE_KEY = 'koalitionsberegner.local-session';
 
@@ -124,7 +125,7 @@ export function createPasswordAuth({ api, storage, now = () => Date.now() } = {}
     } catch (error) {
       const code = codeFor(error);
       if (code) throw new AuthError(readableAuthError(code), code);
-      throw new AuthError(`Kunne ikke nå login-tjenesten: ${error.message}`);
+      throw new AuthError(t('auth.unreachable', { message: error.message }));
     }
   }
 

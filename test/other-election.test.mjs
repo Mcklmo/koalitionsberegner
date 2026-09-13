@@ -7,6 +7,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mountCoalitionCalculator } from '../js/app.js';
 import { toElection } from '../js/api.js';
+import { setLanguage } from '../js/i18n.js';
+
+// These tests read the Danish wording.
+setLanguage('da', { remember: false });
 
 /** Exactly what the backend serves for this election. */
 const payload = {

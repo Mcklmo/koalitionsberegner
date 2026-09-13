@@ -8,6 +8,10 @@ import {
   validateCredentials,
   validateEmail,
 } from '../js/account-ui.js';
+import { setLanguage } from '../js/i18n.js';
+
+// These tests read the Danish wording.
+setLanguage('da', { remember: false });
 
 // --- a DOM stub covering exactly what account-ui touches --------------------
 function node(tag = 'div') {

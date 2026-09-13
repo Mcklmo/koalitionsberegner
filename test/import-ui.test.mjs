@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { ApiError } from '../js/api.js';
 import { mountImportUi } from '../js/import-ui.js';
 import { validateElection } from '../js/election.js';
+import { setLanguage } from '../js/i18n.js';
+
+// These tests read the Danish wording.
+setLanguage('da', { remember: false });
 
 const election = validateElection({
   nation: 'Danmark',

@@ -546,11 +546,20 @@
 </head>
 
 <body>
+  <div class="picker-row" id="language-row">
+    <label for="language" data-i18n="language.label">Sprog</label>
+    <select id="language">
+      <option value="da">Dansk</option>
+      <option value="en">English</option>
+    </select>
+  </div>
+
   <div class="picker-row" id="picker-row" hidden>
-    <label for="picker">Valg</label>
+    <label for="picker" data-i18n="picker.label">Valg</label>
     <select id="picker"></select>
-    <label class="curate" id="curate-row" title="Vis valget for besøgende, der ikke er logget ind" hidden>
-      <input type="checkbox" id="curate"> Offentlig
+    <label class="curate" id="curate-row" title="Vis valget for besøgende, der ikke er logget ind"
+      data-i18n-title="curate.title" hidden>
+      <input type="checkbox" id="curate"> <span data-i18n="curate.label">Offentlig</span>
     </label>
   </div>
 
@@ -558,10 +567,10 @@
   <p class="sub" id="subtitle"></p>
 
   <div class="picker-row" id="names-row" hidden>
-    <label for="names">Partinavne</label>
+    <label for="names" data-i18n="names.label">Partinavne</label>
     <select id="names">
-      <option value="local">Originalsprog</option>
-      <option value="english">Engelsk</option>
+      <option value="local" data-i18n="names.local">Originalsprog</option>
+      <option value="english" data-i18n="names.english">Engelsk</option>
     </select>
   </div>
 
@@ -578,12 +587,12 @@
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
       <span class="footer-note" id="footer-note"></span>
-      <button class="reset-btn" id="reset">Ryd alle</button>
+      <button class="reset-btn" id="reset" data-i18n="reset">Ryd alle</button>
     </div>
   </div>
 
   <details class="account" id="account" hidden>
-    <summary>Konto og abonnement</summary>
+    <summary data-i18n="account.summary">Konto og abonnement</summary>
 
     <div id="account-signed-out" hidden>
       <!-- One form, submitted in either mode: a password manager offers to save
@@ -591,13 +600,13 @@
            the current one. account-ui.js switches the mode. -->
       <form id="auth-form" novalidate>
         <div class="field">
-          <label for="f-email">E-mail</label>
+          <label for="f-email" data-i18n="email.label">E-mail</label>
           <input id="f-email" name="email" type="email" autocomplete="username"
             autocapitalize="off" spellcheck="false">
           <div class="field-error" id="e-email"></div>
         </div>
         <div class="field">
-          <label for="f-password">Adgangskode</label>
+          <label for="f-password" data-i18n="password.label">Adgangskode</label>
           <input id="f-password" name="password" type="password" autocomplete="current-password">
           <div class="field-error" id="e-password"></div>
         </div>
@@ -608,9 +617,9 @@
       <div class="account-line">
         <span class="quota" id="auth-switch-text">Ny her?</span>
         <button class="link-btn" id="auth-switch" type="button">Opret en konto</button>
-        <button class="link-btn" id="auth-forgot" type="button" hidden>Glemt adgangskode?</button>
+        <button class="link-btn" id="auth-forgot" type="button" data-i18n="password.forgot" hidden>Glemt adgangskode?</button>
       </div>
-      <p class="footer-note">Det er gratis at oprette en konto. Abonnement kræves kun for at
+      <p class="footer-note" data-i18n="account.freeNote">Det er gratis at oprette en konto. Abonnement kræves kun for at
         importere nye valg.</p>
     </div>
 
@@ -620,11 +629,11 @@
         <span class="tier-badge" id="account-tier"></span>
       </div>
       <div id="verify-row" hidden>
-        <p class="quota">Bekræft din e-mailadresse med linket, vi har sendt dig, før du bruger
+        <p class="quota" data-i18n="verify.note">Bekræft din e-mailadresse med linket, vi har sendt dig, før du bruger
           kontoen. Kan du ikke finde mailen, så kig i spam.</p>
         <div class="account-line">
-          <button class="secondary" id="verify-done" type="button">Jeg har bekræftet</button>
-          <button class="link-btn" id="verify-resend" type="button">Send linket igen</button>
+          <button class="secondary" id="verify-done" type="button" data-i18n="verify.done">Jeg har bekræftet</button>
+          <button class="link-btn" id="verify-resend" type="button" data-i18n="verify.resend">Send linket igen</button>
         </div>
       </div>
       <p class="quota" id="account-quota"></p>
@@ -633,8 +642,8 @@
         <p class="quota" id="upgrade-note"></p>
       </div>
       <div class="account-line">
-        <button class="link-btn" id="account-manage" type="button" hidden>Administrér abonnement</button>
-        <button class="link-btn" id="account-signout" type="button">Log ud</button>
+        <button class="link-btn" id="account-manage" type="button" data-i18n="account.manage" hidden>Administrér abonnement</button>
+        <button class="link-btn" id="account-signout" type="button" data-i18n="account.signOut">Log ud</button>
       </div>
     </div>
 
@@ -642,31 +651,32 @@
   </details>
 
   <details class="import">
-    <summary>Importér et valg</summary>
+    <summary data-i18n="import.summary">Importér et valg</summary>
 
     <form id="import-form" novalidate>
       <div class="row-2">
         <div class="field">
-          <label for="f-year">Valgår</label>
+          <label for="f-year" data-i18n="import.year">Valgår</label>
           <input id="f-year" name="year" type="text" inputmode="numeric" placeholder="2026"
             autocomplete="off">
           <div class="field-error" id="e-year"></div>
         </div>
         <div class="field">
-          <label for="f-nation">Land</label>
-          <input id="f-nation" name="nation" type="text" placeholder="Danmark" autocomplete="off">
+          <label for="f-nation" data-i18n="import.nation">Land</label>
+          <input id="f-nation" name="nation" type="text" placeholder="Danmark" data-i18n-placeholder="import.nationPlaceholder" autocomplete="off">
           <div class="field-error" id="e-nation"></div>
         </div>
       </div>
       <div class="field">
-        <label for="f-subnation">Region (kun ved regionale valg)</label>
+        <label for="f-subnation" data-i18n="import.subnation">Region (kun ved regionale valg)</label>
         <input id="f-subnation" name="subnation" type="text" placeholder="fx Sachsen-Anhalt"
+          data-i18n-placeholder="import.subnationPlaceholder"
           autocomplete="off">
       </div>
-      <p class="footer-note">Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi
+      <p class="footer-note" data-i18n="import.hint">Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi
         fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt
         endnu, kan du vælge mellem de seneste meningsmålinger.</p>
-      <button class="primary" id="f-submit" type="submit">Hent valgresultat</button>
+      <button class="primary" id="f-submit" type="submit" data-i18n="import.submit">Hent valgresultat</button>
       <p class="quota" id="import-availability"></p>
     </form>
 
@@ -674,10 +684,10 @@
 
     <div class="preview" id="choices" hidden>
       <h3 id="choices-title"></h3>
-      <div class="preview-meta">Vælg en meningsmåling. Du ser tallene, før noget gemmes.</div>
+      <div class="preview-meta" data-i18n="choices.hint">Vælg en meningsmåling. Du ser tallene, før noget gemmes.</div>
       <div class="choices" id="choices-list"></div>
       <div class="preview-actions">
-        <button class="secondary" id="choices-discard" type="button">Forkast</button>
+        <button class="secondary" id="choices-discard" type="button" data-i18n="discard">Forkast</button>
       </div>
     </div>
 
@@ -687,8 +697,8 @@
       <p class="preview-source" id="preview-source" hidden></p>
       <div id="preview-list"></div>
       <div class="preview-actions">
-        <button class="primary" id="preview-confirm" type="button">Gem valget</button>
-        <button class="secondary" id="preview-discard" type="button">Forkast</button>
+        <button class="primary" id="preview-confirm" type="button" data-i18n="preview.confirm">Gem valget</button>
+        <button class="secondary" id="preview-discard" type="button" data-i18n="discard">Forkast</button>
       </div>
     </div>
   </details>
