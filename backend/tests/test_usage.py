@@ -9,7 +9,7 @@ break the request it counts.
 from __future__ import annotations
 
 import smtplib
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +19,7 @@ from app.accounts import InMemoryAccountStore, QuotaPolicy, Tier, billing_period
 from app.auth import StoreBackedVerifier, StubCredentials
 from app.billing import BillingEvent, DisabledBilling
 from app.config import SMTP_VARIABLES, ConfigError, get_mailer
+from app.firestore_usage import FirestoreUsageStore
 from app.mailer import MailUnavailable, SmtpMailer
 from app.service import ImportService
 from app.sqlite_usage import SqliteUsageStore
@@ -34,6 +35,7 @@ from app.usage import (
     account_marker,
     build_report,
     due_periods,
+    marker_expiry,
     language_bucket,
     period_range,
     previous_range,
@@ -165,6 +167,46 @@ def test_retention_forgets_old_markers_and_nothing_else(usage_store):
     assert usage_store.active_accounts(old, kept) == 0
     assert usage_store.active_accounts(kept, kept + timedelta(days=1)) == 1
     assert usage_store.daily(old, kept) == {old: {"election_picked": 1}}, "counters are kept"
+
+
+def test_a_marker_expires_on_the_day_retention_would_first_forget_it():
+    day = date(2026, 7, 1)
+    expires = marker_expiry(day)
+    assert expires.tzinfo is UTC and expires.time() == time()
+
+    store = InMemoryUsageStore()
+    store.mark_active(day, "aaaa")
+    run = lambda today: store.forget_active_before(today - timedelta(days=ACTIVE_RETENTION_DAYS))
+
+    run(expires.date() - timedelta(days=1))
+    assert store.active_accounts(day, day + timedelta(days=1)) == 1, "the run the day before keeps it"
+    run(expires.date())
+    assert store.active_accounts(day, day + timedelta(days=1)) == 0
+
+
+class FakeFirestoreRef:
+    """Just enough of a Firestore client to see what a document is written with."""
+
+    def __init__(self, writes, path=()):
+        self._writes, self._path = writes, path
+
+    def collection(self, name):
+        return FakeFirestoreRef(self._writes, (*self._path, name))
+
+    document = collection
+
+    def set(self, data, merge=False):
+        self._writes["/".join(self._path)] = data
+
+
+def test_a_firestore_marker_carries_the_expiry_its_ttl_policy_deletes_on():
+    """Retention must not hang on the daily schedule running."""
+    writes = {}
+    FirestoreUsageStore(FakeFirestoreRef(writes)).mark_active(date(2026, 7, 1), "aaaa")
+
+    assert writes == {
+        "usage_daily/2026-07-01/active/aaaa": {"expire_at": marker_expiry(date(2026, 7, 1))}
+    }
 
 
 def test_a_report_is_claimed_once_and_can_be_given_back(usage_store):

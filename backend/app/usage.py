@@ -88,6 +88,19 @@ def account_marker(uid: str) -> str:
     return hashlib.sha256(uid.encode()).hexdigest()[:16]
 
 
+def marker_expiry(day: date) -> datetime:
+    """The moment the marker for ``day`` is past its retention.
+
+    The same moment :meth:`UsageStore.forget_active_before` would first delete
+    it: the run on ``day + ACTIVE_RETENTION_DAYS + 1`` forgets every day before
+    ``day + 1``. Firestore's TTL policy deletes on this, which is what keeps the
+    promise when the daily schedule does not run.
+    """
+    return datetime.combine(
+        day + timedelta(days=ACTIVE_RETENTION_DAYS + 1), time(), tzinfo=timezone.utc
+    )
+
+
 class UsageStore(Protocol):
     """Storage seam for the counters. Ranges are ``[start, end)`` in UTC days."""
 

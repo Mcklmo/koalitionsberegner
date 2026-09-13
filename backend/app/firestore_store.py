@@ -338,7 +338,8 @@ class FirestoreElectionStore:
             transaction.set(result_ref, {"election_hash": election_hash, "linked_at": stored_at})
             transaction.set(
                 job_ref,
-                {"status": JobStatus.SUCCEEDED.value, "result": None, "finished_at": stored_at},
+                {"status": JobStatus.SUCCEEDED.value, "result": None, "owner": None,
+                 "finished_at": stored_at},
                 merge=True,
             )
             return Confirmation(election_hash, already or job.result, duplicate=duplicate)
@@ -364,7 +365,7 @@ class FirestoreElectionStore:
             batch.set(
                 self._job_ref(request_key),
                 {"status": JobStatus.SUCCEEDED.value, "result": None, "forecasts": None,
-                 "finished_at": linked_at},
+                 "owner": None, "finished_at": linked_at},
                 merge=True,
             )
             batch.commit()
@@ -396,6 +397,7 @@ class FirestoreElectionStore:
                     "error": error[:1000],
                     "result": None,
                     "forecasts": None,
+                    "owner": None,
                     "finished_at": self._clock(),
                 },
                 merge=True,

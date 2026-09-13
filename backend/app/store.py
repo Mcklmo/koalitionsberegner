@@ -95,7 +95,9 @@ class Job:
     """The polls of an upcoming election, awaiting the user's choice; newest first."""
     owner: str | None = None
     """The account that started this attempt — and paid for it, so the only one
-    besides an administrator who may throw its result away."""
+    besides an administrator who may throw its result away. Cleared once the
+    attempt is over — saved, linked or failed: nothing is left to throw away
+    then, and a lasting note of who imported what would serve no one."""
 
 
 @dataclass(frozen=True)
@@ -398,7 +400,6 @@ class InMemoryElectionStore:
                 query=job.query,
                 started_at=job.started_at,
                 attempt=job.attempt,
-                owner=job.owner,
             )
             stored = self._elections[election_hash]
             return Confirmation(election_hash, stored.election, duplicate=duplicate)
@@ -445,7 +446,6 @@ class InMemoryElectionStore:
                 query=job.query if job else "",
                 started_at=job.started_at if job else self._clock(),
                 attempt=job.attempt if job else 1,
-                owner=job.owner if job else None,
             )
 
     def discard(self, request_key: str) -> bool:
@@ -465,6 +465,5 @@ class InMemoryElectionStore:
                 query=job.query if job else "",
                 started_at=job.started_at if job else self._clock(),
                 attempt=job.attempt if job else 1,
-                owner=job.owner if job else None,
                 error=error,
             )

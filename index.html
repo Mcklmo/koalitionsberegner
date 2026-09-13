@@ -249,6 +249,11 @@
       line-height: 1.5
     }
 
+    .privacy .privacy-updated {
+      font-size: 11px;
+      color: #aaa
+    }
+
     .picker-row {
       display: flex;
       align-items: center;
@@ -710,18 +715,23 @@
   </details>
 
   <!-- What is processed about a visitor, and on what basis. The wording lives
-       in strings.csv like every other text; the page links here as #privacy. -->
+       in strings.csv like every other text; the page links here as #privacy.
+       The Danish is repeated here so the policy reads without scripts, and
+       test/i18n.test.mjs fails if the two drift apart. -->
   <details class="account privacy" id="privacy">
     <summary data-i18n="privacy.summary">Privatliv og dine data</summary>
-    <p data-i18n="privacy.controller"></p>
-    <p data-i18n="privacy.account"></p>
-    <p data-i18n="privacy.logs"></p>
-    <p data-i18n="privacy.statistics"></p>
-    <p data-i18n="privacy.browser"></p>
-    <p data-i18n="privacy.requests"></p>
-    <p data-i18n="privacy.imports"></p>
-    <p data-i18n="privacy.transfers"></p>
-    <p data-i18n="privacy.rights"></p>
+    <p><span data-i18n="privacy.controller">Koalitionsberegner drives af Moritz Marcus Hönscheidt. Skriv hertil, hvis du vil se, rette eller slette dine oplysninger:</span>
+      <a href="mailto:info@moritzmarcus.com">info@moritzmarcus.com</a></p>
+    <p data-i18n="privacy.account">Opretter du en konto, gemmer vi din e-mailadresse og dit abonnement, fordi vi skal bruge dem for at levere tjenesten (GDPR art. 6, stk. 1, litra b). Uden en e-mailadresse kan der ikke oprettes en konto. Login håndteres af Google Firebase. Kontoen gemmes, indtil du beder os slette den. En konto, der ikke har været brugt i 2 år, sletter vi automatisk sammen med login, e-mailadresse og adgangskode, medmindre der stadig løber et abonnement på den.</p>
+    <p data-i18n="privacy.payments">Betaling håndteres af Stripe, som får din e-mailadresse. Vi ser aldrig dine kortoplysninger. Bogføringsloven kræver, at betalingsoplysninger gemmes i 5 år fra udgangen af regnskabsåret (art. 6, stk. 1, litra c), så de slettes ikke før, heller ikke hvis du sletter din konto.</p>
+    <p data-i18n="privacy.logs">For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f). Vores egne logs nævner højst en forkortet konto-id.</p>
+    <p data-i18n="privacy.statistics">Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). For at tælle forskellige aktive konti gemmer vi pr. dag et pseudonymiseret konto-id: et forkortet hash, som ikke viser, hvem du er, men som kan føres tilbage til din konto. Det slettes automatisk efter omkring 62 dage. Der bruges ingen cookies eller sporing i browseren til dette.</p>
+    <p data-i18n="privacy.browser">Dit login og dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.</p>
+    <p data-i18n="privacy.requests">Beder du om et valg, oprettes det som et offentligt issue på GitHub. Det nævner kun valget og ikke dig.</p>
+    <p data-i18n="privacy.imports">Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig. En import, du starter, er knyttet til din konto, mens den kører eller venter på, at du gemmer eller forkaster den, og ikke længere.</p>
+    <p data-i18n="privacy.transfers">Din konto og tjenestens øvrige data opbevares hos Google Cloud i Finland. Google, Stripe og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.</p>
+    <p data-i18n="privacy.rights">Du har ret til indsigt, berigtigelse, sletning, begrænsning, dataportabilitet og til at gøre indsigelse. Vi træffer ingen automatiske afgørelser om dig. Du kan klage til Datatilsynet (datatilsynet.dk).</p>
+    <p class="privacy-updated" data-i18n="privacy.updated">Senest opdateret 13. september 2026</p>
   </details>
 
   <script type="module" src="./js/main.js"></script>

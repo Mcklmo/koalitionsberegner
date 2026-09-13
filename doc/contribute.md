@@ -298,7 +298,17 @@ minute rather than ten.
 1. A GCP project with the **Firestore** and **Cloud Run** APIs enabled.
 2. A Firestore database in **Native mode** — single-flight parsing relies on its
    transactions. The `elections`, `extraction_jobs`, `pages`, `accounts`,
-   `usage_daily` and `usage_reports` collections are created on demand.
+   `usage_daily` and `usage_reports` collections are created on demand. One
+   thing is not: the TTL policy that deletes active-account markers once their
+   62 days are up, whether or not the daily schedule runs. Create it once, for
+   the database in `FIRESTORE_DATABASE`:
+
+   ```sh
+   gcloud firestore fields ttls update expire_at --collection-group=active \
+     --enable-ttl --database=main --project koalitionsberegner
+   ```
+
+   Firestore deletes an expired marker within about a day of its `expire_at`.
 3. A service account for the Cloud Run revision holding `roles/datastore.user`,
    plus `roles/secretmanager.secretAccessor` once `LLM_MODE=live`, and
    `roles/firebaseauth.admin` (Firebase Authentication Admin) once accounts

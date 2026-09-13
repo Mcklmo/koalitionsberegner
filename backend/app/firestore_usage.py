@@ -5,7 +5,12 @@ with a server-side increment — so two instances counting at once never lose a
 count, and a day costs one document however much happened in it.
 
 Active-account markers are documents in that day's ``active`` subcollection,
-named by the marker, so writing one twice is the same as writing it once. The
+named by the marker, so writing one twice is the same as writing it once. Each
+carries ``expire_at`` (:func:`~app.usage.marker_expiry`), and a TTL policy on
+that field of the ``active`` collection group deletes it without waiting for
+the schedule — ``doc/contribute.md`` has the one command that creates it.
+:meth:`FirestoreUsageStore.forget_active_before` stays as the sweep for markers
+written before the field, and for a database the policy was never set up on. The
 report claim is ``create()``, which Firestore refuses for a document that
 exists: that is the whole of its atomicity.
 """
@@ -20,12 +25,16 @@ from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 
 from .observability import io_span
+from .usage import marker_expiry
 
 log = logging.getLogger(__name__)
 
 DAILY_COLLECTION = "usage_daily"
 ACTIVE_SUBCOLLECTION = "active"
 REPORTS_COLLECTION = "usage_reports"
+
+#: The timestamp field the ``active`` collection group's TTL policy deletes on.
+EXPIRE_FIELD = "expire_at"
 
 #: How many days before the cut-off a retention run looks at. The cron runs
 #: daily, so one day would do; the rest catches up after runs that were missed.
@@ -53,7 +62,9 @@ class FirestoreUsageStore:
 
     def mark_active(self, day: date, marker: str) -> None:
         with io_span(log, "firestore", "usage_active"):
-            self._day(day).collection(ACTIVE_SUBCOLLECTION).document(marker).set({})
+            self._day(day).collection(ACTIVE_SUBCOLLECTION).document(marker).set(
+                {EXPIRE_FIELD: marker_expiry(day)}
+            )
 
     def daily(self, start: date, end: date) -> dict[date, dict[str, int]]:
         refs = [self._day(day) for day in _days(start, end)]

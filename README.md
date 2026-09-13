@@ -73,7 +73,11 @@ not work, so nothing is offered for sale, `POST /api/billing/checkout` answers
 the election they wanted in the meantime. Nothing about an existing
 subscription changes — tiers keep working and Stripe's portal stays open, so
 nobody is trapped in a subscription they cannot cancel. Set `PAYMENTS_PAUSED`
-to `false` to sell again; it is the only thing that has to change.
+to `false` to sell again; it is the only thing that has to change in the code.
+Before that, add a postal address — and a CVR number, once there is one — next
+to the name in the page's privacy section (`privacy.controller` in
+`js/strings.csv`): Danish e-commerce law asks for both from anyone selling
+online.
 
 ## Usage reports and privacy
 
@@ -88,8 +92,9 @@ The owner gets a daily, weekly and monthly email about how the app is used:
 - new and active accounts
 
 Only counts are stored. The one exception is a per-day hash of each active
-account id, deleted after 62 days, which is what lets an account active on
-several days count once. Nothing new runs in the browser: page loads are
+account id, which is what lets an account active on several days count once.
+Firestore deletes each after 62 days through a TTL policy, so that does not
+depend on the schedule running. Nothing new runs in the browser: page loads are
 counted from the config request the page already makes. The page's
 *Privacy* section says what is processed and why. See `backend/app/usage.py`,
 and [doc/cloudflare.md](doc/cloudflare.md#7-usage-reports-by-email) for the
@@ -105,6 +110,10 @@ because bookkeeping rules require it. The same daily cron does this through
 sign-in cannot be deleted, its account is kept and retried the next day.
 Accounts created before activity was recorded count as used on the day of the
 first run. See `backend/app/retention.py`.
+
+A finished import no longer names the account that started it. When someone
+asks to see, correct or delete their data, follow
+[doc/privacy-requests.md](doc/privacy-requests.md).
 
 Try it locally. Ungated, so every caller is an administrator; add the four
 `SMTP_*`/`REPORT_EMAIL_TO` variables from `.env.example` to really send email:

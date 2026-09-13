@@ -31,6 +31,12 @@ test('every text the markup asks for exists', () => {
   for (const key of keys) assert.ok(everywhere(key), key);
 });
 
+test('the privacy section reads in Danish before the scripts run, word for word', () => {
+  const inline = [...read('../index.html').matchAll(/data-i18n="(privacy\.[^"]+)">([^<]*)</g)];
+  assert.ok(inline.length >= 10, 'the paragraphs carry their text');
+  for (const [, key, text] of inline) assert.equal(text, shipped.strings.da[key](), key);
+});
+
 test('every text the scripts ask for by name exists', () => {
   const scripts = readdirSync(new URL('../js/', import.meta.url)).filter((f) => f.endsWith('.js') && f !== 'i18n.js');
   const asked = new Set();

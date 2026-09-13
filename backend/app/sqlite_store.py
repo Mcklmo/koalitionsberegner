@@ -411,7 +411,7 @@ class SqliteElectionStore:
                     (request_key, election_hash, now),
                 )
                 conn.execute(
-                    "UPDATE import_jobs SET status = ?, result = NULL WHERE request_key = ?",
+                    "UPDATE import_jobs SET status = ?, result = NULL, owner = NULL WHERE request_key = ?",
                     (JobStatus.SUCCEEDED.value, request_key),
                 )
                 span["result"] = "duplicate" if duplicate else "stored"
@@ -435,7 +435,7 @@ class SqliteElectionStore:
                     "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, '', ?, 1, NULL, NULL)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status, result=NULL,"
-                    " forecasts=NULL",
+                    " forecasts=NULL, owner=NULL",
                     (request_key, JobStatus.SUCCEEDED.value, now),
                 )
                 span["linked"] = True
@@ -461,7 +461,7 @@ class SqliteElectionStore:
                     "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, ?, ?, ?, ?, NULL)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
-                    " error=excluded.error, result=NULL, forecasts=NULL",
+                    " error=excluded.error, result=NULL, forecasts=NULL, owner=NULL",
                     (request_key, JobStatus.FAILED.value,
                      row["query"] if row else "",
                      row["started_at"] if row else self._clock(),

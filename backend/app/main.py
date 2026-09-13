@@ -370,8 +370,9 @@ async def require_importer(
     away: saving a preview they would have rejected puts wrong numbers in front
     of every account, and discarding one makes them pay for the import again.
 
-    A job with no recorded importer predates the record and stays open to any
-    account; its lease runs out within minutes.
+    A job with no recorded importer stays open to any account. Either it
+    predates the record, and its lease runs out within minutes, or it is over —
+    saved or failed — and there is nothing left to accept or throw away.
     """
     owner = await service.owner_of(request_key)
     if owner is not None and owner != principal.uid and not principal.admin:

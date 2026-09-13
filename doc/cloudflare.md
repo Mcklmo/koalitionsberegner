@@ -128,8 +128,9 @@ answer directly again.
 The Worker's cron (`triggers.crons` in `wrangler.jsonc`, 06:00 UTC daily) calls
 `POST /api/internal/usage-reports` on the origin. The backend emails yesterday's
 report, plus last week's on a Monday and last month's on the 1st, and deletes
-active-account markers older than 62 days. A report is sent once however often
-the cron fires. `/api/internal/*` is never forwarded from the public side.
+active-account markers older than 62 days that Firestore's TTL policy has not
+already removed ([contribute.md](contribute.md#cloud-setup-deployment-only)).
+A report is sent once however often the cron fires. `/api/internal/*` is never forwarded from the public side.
 
 The same one-value-in-both-places routine as step 3:
 
