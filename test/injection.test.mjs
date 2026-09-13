@@ -182,6 +182,8 @@ test('the import preview shows an adversarial extraction as text', async () => {
     choicesDiscard: node('button'),
     picker: node('select'),
     pickerRow: node(),
+    curate: node('input'),
+    curateRow: node(),
   };
   globalThis.document = { createElement: node };
   const api = {
@@ -227,6 +229,8 @@ test('an error message from the backend is shown as text, never as markup', asyn
     choicesDiscard: node('button'),
     picker: node('select'),
     pickerRow: node(),
+    curate: node('input'),
+    curateRow: node(),
   };
   globalThis.document = { createElement: node };
   const failure = "the extracted results are not valid: title: <img src=x onerror='alert(1)'>";

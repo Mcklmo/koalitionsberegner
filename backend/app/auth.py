@@ -71,6 +71,11 @@ class Principal:
     trusts nothing about its address. :class:`PrincipalRules` is what sets it.
     """
 
+    @property
+    def unmetered(self) -> bool:
+        """Imports cost this caller nothing: gating is off, or they administer the app."""
+        return self.unlimited or self.admin
+
 
 @dataclass(frozen=True)
 class Credential:

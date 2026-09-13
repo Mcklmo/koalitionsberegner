@@ -20,6 +20,11 @@
  * both the list and the preview say so: those numbers are ours, not the
  * pollster's.
  *
+ * An administrator also decides which stored elections a signed-out visitor
+ * sees: a checkbox next to the picker says whether the chosen one is public and
+ * changes it. It is shown only to an account the server calls an administrator,
+ * and the server checks again.
+ *
  * Importing is also the part that is sold. This module shows what the account
  * allows but never decides it: the form is disabled as a courtesy, and the
  * server refuses regardless — the two can disagree only in the safe direction.
@@ -100,8 +105,22 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
 
   function optionLabel(summary) {
     const where = placeOf(summary);
-    if (summary.forecast) return `${where} · prognose ${forecastLabel(summary.forecast)}`;
-    return `${where} · ${summary.electionDate}`;
+    const label = summary.forecast
+      ? `${where} · prognose ${forecastLabel(summary.forecast)}`
+      : `${where} · ${summary.electionDate}`;
+    // Only an administrator is told, since only they can change it.
+    return account?.admin && summary.selected ? `${label} · offentlig` : label;
+  }
+
+  /** The stored election the picker is on; null for the bundled one. */
+  function chosen() {
+    return summaries.find((summary) => summary.electionHash === el.picker.value) ?? null;
+  }
+
+  function renderCuration() {
+    const summary = chosen();
+    show(el.curateRow, Boolean(account?.admin && summary));
+    el.curate.checked = Boolean(summary?.selected);
   }
 
   function renderPicker() {
@@ -119,6 +138,7 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
       el.picker.appendChild(option);
     }
     show(el.pickerRow, el.picker.options.length > 1);
+    renderCuration();
   }
 
   async function refreshPicker(selectHash) {
@@ -132,6 +152,7 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
     }
     renderPicker();
     if (selectHash) el.picker.value = selectHash;
+    renderCuration();
   }
 
   function renderPreview(election) {
@@ -330,7 +351,33 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
     await api.discardPreview(requestKey).catch(() => {});
   }
 
+  async function curate() {
+    const summary = chosen();
+    if (!summary) return;
+    const wanted = el.curate.checked;
+    el.curate.disabled = true;
+    try {
+      const saved = await api.setSelected(summary.electionHash, wanted);
+      summaries = summaries.map((s) => (s.electionHash === saved.electionHash ? saved : s));
+      renderPicker();
+      el.picker.value = saved.electionHash;
+      renderCuration();
+      setMessage(
+        saved.selected
+          ? 'Valget er nu synligt for alle, også uden login.'
+          : 'Valget vises nu kun for brugere, der er logget ind.',
+        'ok'
+      );
+    } catch (error) {
+      el.curate.checked = !wanted;
+      setMessage(`Kunne ikke ændre synligheden: ${refusal(error)}`, 'error');
+    } finally {
+      el.curate.disabled = false;
+    }
+  }
+
   async function select() {
+    renderCuration();
     const value = el.picker.value;
     if (value === LOCAL_VALUE) {
       onSelect(bundled);
@@ -349,6 +396,7 @@ export function mountImportUi({ api, elements, onSelect, bundled, onImported = (
   el.discard.addEventListener('click', discard);
   el.choicesDiscard.addEventListener('click', discardChoices);
   el.picker.addEventListener('change', select);
+  el.curate.addEventListener('change', curate);
 
   return {
     /**

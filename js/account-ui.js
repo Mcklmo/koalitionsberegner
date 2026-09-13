@@ -53,7 +53,11 @@ export function tierLabel(tier) {
 /** What the quota line says, given what the server reported. */
 export function quotaSummary(account) {
   if (!account) return '';
-  if (account.unlimited) return 'Ubegrænsede importer (adgangskontrol er slået fra).';
+  if (account.unlimited) {
+    return account.admin
+      ? 'Ubegrænsede importer som administrator.'
+      : 'Ubegrænsede importer (adgangskontrol er slået fra).';
+  }
   if (account.limit <= 0) {
     return 'Din plan giver ikke adgang til at importere nye valg.';
   }
@@ -128,10 +132,13 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
     setMessage('');
   }
 
-  /** One button per tier that is actually for sale and is not the current one. */
+  /**
+   * One button per tier that is actually for sale and is not the current one.
+   * An account with no limit has nothing to buy.
+   */
   function renderUpgrades() {
     el.upgrades.innerHTML = '';
-    const sellable = (config.tiers ?? []).filter(
+    const sellable = account?.unlimited ? [] : (config.tiers ?? []).filter(
       (row) => row.purchasable && row.tier !== account?.tier
     );
     for (const row of sellable) {

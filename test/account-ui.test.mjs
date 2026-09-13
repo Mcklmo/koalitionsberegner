@@ -188,6 +188,7 @@ test('the quota line says what is left, in the singular when it should', () => {
   assert.match(quotaSummary({ ...basicAccount, remaining: 1 }), /1 af 10 import tilbage/);
   assert.match(quotaSummary({ ...basicAccount, tier: 'free', limit: 0 }), /ikke adgang til at importere/);
   assert.match(quotaSummary({ ...basicAccount, unlimited: true }), /Ubegrænsede/);
+  assert.match(quotaSummary({ ...basicAccount, unlimited: true, admin: true }), /Ubegrænsede importer som administrator/);
   assert.equal(quotaSummary(null), '');
 });
 
@@ -485,6 +486,17 @@ test('only tiers that are for sale and are not the current one are offered', asy
   const labels = el.upgrades.children.map((child) => child.textContent);
   assert.deepEqual(labels, ['Premium — 200 importer/md.'], 'free is not for sale, basic is current');
   assert.equal(el.upgradeRow.hidden, false);
+});
+
+test('an administrator is offered nothing to buy', async () => {
+  const api = fakeApi({ account: { ...basicAccount, tier: 'free', admin: true, limit: -1, remaining: -1, unlimited: true, subscriptionStatus: null } });
+  const { el, ui } = harness({ api, auth: fakeAuth({ signedIn: true }) });
+
+  await ui.start();
+
+  assert.deepEqual(el.upgrades.children, []);
+  assert.equal(el.upgradeRow.hidden, true);
+  assert.match(el.quota.textContent, /administrator/);
 });
 
 test('a free account is offered both paid tiers', async () => {

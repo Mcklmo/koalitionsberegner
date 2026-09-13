@@ -8,6 +8,7 @@ Caller               Sees                        May import
 signed out           the curated selection       no
 free account         everything stored           no
 basic / premium      everything stored           within a monthly quota
+administrator        everything stored           without any quota
 ===================  ==========================  =========================
 
 The quota rule these tests exist to pin down: an import costs a unit only when
@@ -224,6 +225,15 @@ def test_a_spent_quota_says_when_it_comes_back(client, accounts):
     assert "next month" in refused.json()["detail"]
 
 
+def test_an_administrator_imports_without_a_quota(client, accounts, parser):
+    """On the free tier, which may import nothing, and more often than basic may."""
+    for body in (BODY, OTHER_BODY, {"year": 2022, "nation": "Danmark"}):
+        response = client.post("/api/elections/import?wait_seconds=2", json=body, headers=ADMIN)
+        assert response.status_code == 200, response.text
+
+    assert used(accounts, "admin-1") == 0
+
+
 def test_premium_gets_a_larger_allowance_than_basic(client, accounts):
     basic = subscribe(accounts, SUBSCRIBER, Tier.BASIC)
     premium = subscribe(accounts, OTHER_SUBSCRIBER, Tier.PREMIUM)
@@ -382,6 +392,14 @@ def test_me_on_a_first_sign_in_creates_a_free_account(client, accounts):
     assert body["may_import"] is False
     assert body["limit"] == 0
     assert accounts.get("free-1") is not None
+
+
+def test_me_reports_no_limit_to_an_administrator(client):
+    body = client.get("/api/me", headers=ADMIN).json()
+
+    assert body["admin"] is True
+    assert body["tier"] == "free", "administrator-ness is not a tier"
+    assert (body["limit"], body["remaining"], body["may_import"]) == (-1, -1, True)
 
 
 def test_me_needs_a_credential(client):

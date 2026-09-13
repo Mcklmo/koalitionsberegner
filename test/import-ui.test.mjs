@@ -71,6 +71,8 @@ function harness({ api, selected = [], account = SUBSCRIBER } = {}) {
     choicesDiscard: node('button'),
     picker: node('select'),
     pickerRow: node(),
+    curate: node('input'),
+    curateRow: node(),
   };
   const imported = [];
   const ui = mountImportUi({
@@ -381,4 +383,65 @@ test('signing in reloads the picker, because a visitor saw only the selection', 
 
   assert.equal(calls.listElections, before + 1);
   assert.deepEqual(el.picker.children.map((o) => o.value), ['local', 'a']);
+});
+
+// --- curation ----------------------------------------------------------------
+
+const ADMIN = { tier: 'free', limit: -1, remaining: -1, unlimited: true, admin: true, mayImport: true };
+
+const STORED = { electionHash: 'a', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179, selected: false };
+
+async function curating({ account = ADMIN, setSelected } = {}) {
+  const { api, calls } = fakeApi({ summaries: [STORED] });
+  calls.setSelected = [];
+  api.setSelected = setSelected ?? (async (hash, selected) => {
+    calls.setSelected.push([hash, selected]);
+    return { ...STORED, selected };
+  });
+  const { el, ui } = harness({ api, account: undefined });
+  await ui.setAccount(account);
+  el.picker.value = 'a';
+  await el.picker.dispatch('change');
+  return { el, ui, calls };
+}
+
+test('an administrator can make the chosen election visible to signed-out visitors', async () => {
+  const { el, calls } = await curating();
+  assert.equal(el.curateRow.hidden, false);
+  assert.equal(el.curate.checked, false);
+
+  el.curate.checked = true;
+  await el.curate.dispatch('change');
+
+  assert.deepEqual(calls.setSelected, [['a', true]]);
+  assert.equal(el.curate.checked, true);
+  assert.equal(el.picker.value, 'a', 'the picker stays on the election just changed');
+  assert.match(el.picker.children[1].textContent, /offentlig/);
+  assert.equal(el.message.className, 'msg msg-ok');
+});
+
+test('nobody but an administrator is offered curation', async () => {
+  const { el } = await curating({ account: SUBSCRIBER });
+  assert.equal(el.curateRow.hidden, true);
+});
+
+test('the bundled election cannot be curated', async () => {
+  const { el } = await curating();
+  el.picker.value = 'local';
+  await el.picker.dispatch('change');
+  assert.equal(el.curateRow.hidden, true);
+});
+
+test('a refused curation puts the checkbox back and says why', async () => {
+  const { el } = await curating({
+    setSelected: async () => { throw new ApiError('this needs an administrator', 403); },
+  });
+
+  el.curate.checked = true;
+  await el.curate.dispatch('change');
+
+  assert.equal(el.curate.checked, false);
+  assert.equal(el.curate.disabled, false);
+  assert.match(el.message.textContent, /administrator/);
+  assert.equal(el.message.className, 'msg msg-error');
 });

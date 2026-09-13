@@ -371,12 +371,12 @@ def _account_response(
         admin=principal.admin,
         period=period,
         used=account.used_in(period),
-        # A local run with gating off is not on any tier; say so as no limit
-        # rather than reporting the free tier's zero.
-        limit=-1 if principal.unlimited else limit,
-        remaining=-1 if principal.unlimited else account.remaining(policy, period),
+        # A local run with gating off, or an administrator, is not held to any
+        # tier; say so as no limit rather than reporting the free tier's zero.
+        limit=-1 if principal.unmetered else limit,
+        remaining=-1 if principal.unmetered else account.remaining(policy, period),
         may_import=principal.email_verified
-        and (principal.unlimited or account.may_import(policy, period)),
+        and (principal.unmetered or account.may_import(policy, period)),
         subscription_status=account.subscription_status,
         billing_enabled=billing.enabled,
     )
@@ -462,7 +462,7 @@ async def import_election(
     """
     period = billing_period()
     limit = policy.limit(account.tier)
-    charged = not principal.unlimited
+    charged = not principal.unmetered
 
     if charged:
         if limit <= 0:
