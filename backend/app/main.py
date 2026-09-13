@@ -159,15 +159,36 @@ def require_principal(principal: Principal | None = Depends(current_principal)) 
     return principal
 
 
+#: Why an unconfirmed caller is stopped, worded so the page can show it as is.
+EMAIL_NOT_VERIFIED = "confirm your email address before using your account"
+
+
+def require_verified(principal: Principal = Depends(require_principal)) -> Principal:
+    """A signed-in caller whose address is known to be theirs.
+
+    Signing up proves only that somebody typed an address. Until it is confirmed
+    the account may say who it is (``/api/me``) and nothing more: it cannot
+    spend, pay, curate, or see past the curated selection.
+    """
+    if not principal.email_verified:
+        raise HTTPException(403, detail=EMAIL_NOT_VERIFIED)
+    return principal
+
+
+def is_member(principal: Principal | None) -> bool:
+    """Whether a caller sees past the curated selection."""
+    return principal is not None and principal.email_verified
+
+
 def require_account(
-    principal: Principal = Depends(require_principal),
+    principal: Principal = Depends(require_verified),
     accounts: AccountStore = Depends(get_account_store),
 ) -> UserAccount:
     """The caller's account, created free on first sight. Accounts cost nothing."""
     return accounts.ensure(principal.uid, principal.email)
 
 
-def require_admin(principal: Principal = Depends(require_principal)) -> Principal:
+def require_admin(principal: Principal = Depends(require_verified)) -> Principal:
     if not principal.admin:
         raise HTTPException(403, detail="this needs an administrator")
     return principal
@@ -293,6 +314,7 @@ class PublicConfig(BaseModel):
 class AccountResponse(BaseModel):
     uid: str
     email: str | None
+    email_verified: bool
     tier: Tier
     admin: bool
     period: str
@@ -344,6 +366,7 @@ def _account_response(
     return AccountResponse(
         uid=account.uid,
         email=account.email,
+        email_verified=principal.email_verified,
         tier=account.tier,
         admin=principal.admin,
         period=period,
@@ -352,7 +375,8 @@ def _account_response(
         # rather than reporting the free tier's zero.
         limit=-1 if principal.unlimited else limit,
         remaining=-1 if principal.unlimited else account.remaining(policy, period),
-        may_import=principal.unlimited or account.may_import(policy, period),
+        may_import=principal.email_verified
+        and (principal.unlimited or account.may_import(policy, period)),
         subscription_status=account.subscription_status,
         billing_enabled=billing.enabled,
     )
@@ -401,11 +425,16 @@ def public_config(
 @app.get("/api/me", response_model=AccountResponse)
 def me(
     principal: Principal = Depends(require_principal),
-    account: UserAccount = Depends(require_account),
+    accounts: AccountStore = Depends(get_account_store),
     policy: QuotaPolicy = Depends(get_policy),
     billing: Billing = Depends(get_billing_provider),
 ) -> AccountResponse:
-    """The caller's tier and what is left of this month's allowance."""
+    """The caller's tier and what is left of this month's allowance.
+
+    Open to an unconfirmed address too: this is how the page learns that it has
+    to ask for the confirmation, which ``email_verified`` tells it.
+    """
+    account = accounts.ensure(principal.uid, principal.email)
     return _account_response(account, principal, policy, billing)
 
 
@@ -489,7 +518,7 @@ async def list_elections(
     """Every stored election — or only the curated ones, to a signed-out visitor."""
     return [
         ElectionSummary.of(stored)
-        for stored in await service.list_elections(selected_only=principal is None)
+        for stored in await service.list_elections(selected_only=not is_member(principal))
     ]
 
 
@@ -628,6 +657,8 @@ async def get_election(
             detail="sign in to view this election",
             headers=UNAUTHENTICATED,
         )
+    if not stored.selected and not is_member(principal):
+        raise HTTPException(403, detail=EMAIL_NOT_VERIFIED)
     return ImportResponse(
         request_key="",
         state=ImportState.READY,

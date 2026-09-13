@@ -86,7 +86,7 @@ anywhere. `AUTH_MODE` is a separate question, about who a request *is*.
 | `ELECTION_STORE=memory` | Forgets everything on exit. Default with no GCP project. | — |
 | `AUTH_MODE=firebase` | Verifies real Firebase ID tokens against Google's certificates. Default once a project id is set. | `FIREBASE_PROJECT_ID` (falls back to `GOOGLE_CLOUD_PROJECT`); `FIREBASE_API_KEY` for browser sign-in |
 | `AUTH_MODE=sqlite` | Real gating with no identity provider: this app holds the passwords and issues its own session tokens, in the same file as everything else. Sign-in works in the browser. | `SQLITE_PATH` (optional); pair it with `ELECTION_STORE=sqlite` |
-| `AUTH_MODE=stub` | The bearer token *is* the identity — `uid`, `uid:email`, `uid:email:admin`. Nothing is verified. Exercises signed-in state, quota accounting and admin curation; the browser cannot mint these tokens, so drive the API with `curl`. | — |
+| `AUTH_MODE=stub` | The bearer token *is* the identity — `uid`, `uid:email`, `uid:email:admin`, or `uid:email:unverified` for an address not yet confirmed. Nothing is verified. Exercises signed-in state, quota accounting and admin curation; the browser cannot mint these tokens, so drive the API with `curl`. | — |
 | `AUTH_MODE=off` | No gating at all: every request is one admin developer with no quota. Default with no project id. | — |
 | `LLM_MODE=mock` | Fetches the page, then returns a fixed Sachsen-Anhalt result instead of calling a model — or, for a year still to come, two fixed polls, one of them computed from vote shares. The default, and the whole pipeline except the model. | — |
 | `LLM_MODE=live` | Runs the real extraction agent. | `ANTHROPIC_API_KEY` |
@@ -255,7 +255,7 @@ sign-ins reach: the account row, its tier and the quota counter all live in
 above work, exactly as it would against a Firebase project.
 
 For a quick identity with no sign-up at all, `AUTH_MODE=stub` takes the identity
-straight out of the bearer token — `uid`, `uid:email`, or `uid:email:admin`:
+straight out of the bearer token — `uid`, `uid:email`, `uid:email:admin`, or `uid:email:unverified`:
 
 ```sh
 curl localhost:8000/api/me -H 'Authorization: Bearer u1:a@example.org'

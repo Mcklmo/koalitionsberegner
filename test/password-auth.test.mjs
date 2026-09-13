@@ -170,7 +170,10 @@ test('it is interchangeable with the Firebase provider', () => {
   const firebase = createAuth({ apiKey: 'AIza-test', storage: fakeStorage() });
   const local = createPasswordAuth({ api: fakeApi(), storage: fakeStorage() });
 
-  const surface = (auth) => Object.keys(auth).sort();
+  // Mailing links is Firebase's alone; the panel checks for these before
+  // offering them, so they are the one permitted difference.
+  const MAIL_ONLY = new Set(['reload', 'sendPasswordReset', 'sendVerification']);
+  const surface = (auth) => Object.keys(auth).filter((key) => !MAIL_ONLY.has(key)).sort();
   assert.deepEqual(surface(local), surface(firebase),
     'the account panel is written against one shape and handed either');
 });

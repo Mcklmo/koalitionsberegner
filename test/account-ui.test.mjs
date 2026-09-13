@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiError } from '../js/api.js';
-import { mountAccountUi, quotaSummary, tierLabel, validateCredentials } from '../js/account-ui.js';
+import {
+  mountAccountUi,
+  quotaSummary,
+  tierLabel,
+  validateCredentials,
+  validateEmail,
+} from '../js/account-ui.js';
 
 // --- a DOM stub covering exactly what account-ui touches --------------------
 function node(tag = 'div') {
@@ -11,6 +17,7 @@ function node(tag = 'div') {
     textContent: '',
     className: '',
     type: '',
+    autocomplete: '',
     hidden: false,
     disabled: false,
     children: [],
@@ -34,6 +41,7 @@ const TIERS = [
 const basicAccount = {
   uid: 'uid-1',
   email: 'a@example.org',
+  emailVerified: true,
   tier: 'basic',
   admin: false,
   period: '2026-09',
@@ -46,12 +54,29 @@ const basicAccount = {
   billingEnabled: true,
 };
 
-/** An auth double: a session that can be driven directly from a test. */
-function fakeAuth({ signedIn = false, enabled = true } = {}) {
+/** A Firebase sign-up whose owner has not opened the link yet. */
+const unconfirmed = {
+  ...basicAccount,
+  email: 'new@example.org',
+  emailVerified: false,
+  tier: 'free',
+  limit: 0,
+  remaining: 0,
+  mayImport: false,
+  subscriptionStatus: null,
+};
+
+/**
+ * An auth double: a session that can be driven directly from a test.
+ * `mails: false` is the self-hosted provider, which cannot send any links.
+ */
+function fakeAuth({ signedIn = false, enabled = true, mails = true } = {}) {
   const listeners = new Set();
   let current = signedIn;
-  const calls = { signIn: [], signUp: [], signOut: 0 };
-  return {
+  const calls = {
+    signIn: [], signUp: [], signOut: 0, sendVerification: 0, sendPasswordReset: [], reload: 0,
+  };
+  const auth = {
     enabled,
     calls,
     isSignedIn: () => current,
@@ -77,15 +102,26 @@ function fakeAuth({ signedIn = false, enabled = true } = {}) {
       this.signIn = async () => { throw error; };
     },
   };
+  if (mails) {
+    Object.assign(auth, {
+      async sendVerification() { calls.sendVerification += 1; },
+      async sendPasswordReset(email) { calls.sendPasswordReset.push(email); },
+      async reload() { calls.reload += 1; return 'fresh-token'; },
+    });
+  }
+  return auth;
 }
 
+/** `accounts` answers each `/api/me` in turn, repeating the last one. */
 function fakeApi(overrides = {}) {
   const calls = { getAccount: 0, startCheckout: [], openBillingPortal: 0 };
+  const queue = overrides.accounts ? [...overrides.accounts] : null;
   return {
     calls,
     async getAccount() {
       calls.getAccount += 1;
       if (overrides.accountError) throw overrides.accountError;
+      if (queue) return queue.length > 1 ? queue.shift() : queue[0];
       return overrides.account ?? basicAccount;
     },
     async startCheckout(tier) {
@@ -102,14 +138,20 @@ function fakeApi(overrides = {}) {
 
 function harness({ api = fakeApi(), auth = fakeAuth(), config = {} } = {}) {
   const redirects = [];
+  const focusHandlers = [];
   globalThis.document = { createElement: node };
   globalThis.location = { search: '', assign: (url) => redirects.push(url) };
+  globalThis.addEventListener = (type, fn) => {
+    if (type === 'focus') focusHandlers.push(fn);
+  };
   const el = {
     panel: node(), signedOut: node(), signedIn: node(),
     form: node('form'), emailInput: node('input'), passwordInput: node('input'),
     fieldErrors: { email: node(), password: node() },
-    signIn: node('button'), signUp: node('button'), signOut: node('button'),
+    submit: node('button'), switchMode: node('button'), switchText: node(), forgot: node('button'),
+    signOut: node('button'),
     email: node(), tier: node(), quota: node(),
+    verifyRow: node(), verifyDone: node('button'), verifyResend: node('button'),
     upgradeRow: node(), upgrades: node(), manage: node('button'),
     message: node(),
   };
@@ -121,7 +163,16 @@ function harness({ api = fakeApi(), auth = fakeAuth(), config = {} } = {}) {
     elements: el,
     onChange: (account) => changes.push(account),
   });
-  return { el, ui, api, auth, changes, redirects };
+  /** The window regaining focus, as when the user comes back from their mail. */
+  const focus = () => Promise.all(focusHandlers.map((fn) => fn()));
+  return { el, ui, api, auth, changes, redirects, focus };
+}
+
+/** Type into the form and submit it, the way pressing Enter or the button does. */
+async function fillAndSubmit(el, email = 'a@example.org', password = 'hunter22') {
+  el.emailInput.value = email;
+  el.passwordInput.value = password;
+  await el.form.dispatch('submit');
 }
 
 // --- the pure bits ----------------------------------------------------------
@@ -147,6 +198,12 @@ test('credentials are checked locally before a round trip', () => {
   assert.match(validateCredentials({ email: 'a@example.org', password: 'short' }).errors.password, /mindst 6/);
 });
 
+test('an address is checked on its own, trimmed', () => {
+  assert.deepEqual(validateEmail(' a@example.org '), { value: 'a@example.org', error: null });
+  assert.match(validateEmail('').error, /Angiv din e-mailadresse/);
+  assert.match(validateEmail('nope').error, /ser ikke ud/);
+});
+
 // --- the panel --------------------------------------------------------------
 
 test('a signed-out visitor is shown the form and nothing about tiers', async () => {
@@ -165,13 +222,12 @@ test('signing in shows the tier and what is left of the allowance', async () => 
   const { el, ui, auth, changes } = harness();
   await ui.start();
 
-  el.emailInput.value = 'a@example.org';
-  el.passwordInput.value = 'hunter22';
-  await el.signIn.dispatch('click');
+  await fillAndSubmit(el);
 
   assert.deepEqual(auth.calls.signIn, [['a@example.org', 'hunter22']]);
   assert.equal(el.signedIn.hidden, false);
   assert.equal(el.signedOut.hidden, true);
+  assert.equal(el.verifyRow.hidden, true);
   assert.equal(el.email.textContent, 'a@example.org');
   assert.equal(el.tier.textContent, 'Basis');
   assert.match(el.quota.textContent, /7 af 10/);
@@ -181,10 +237,8 @@ test('signing in shows the tier and what is left of the allowance', async () => 
 test('the password is cleared once it has been used', async () => {
   const { el, ui } = harness();
   await ui.start();
-  el.emailInput.value = 'a@example.org';
-  el.passwordInput.value = 'hunter22';
 
-  await el.signIn.dispatch('click');
+  await fillAndSubmit(el);
 
   assert.equal(el.passwordInput.value, '');
 });
@@ -192,50 +246,64 @@ test('the password is cleared once it has been used', async () => {
 test('an invalid form never reaches the identity service', async () => {
   const { el, ui, auth } = harness();
   await ui.start();
-  el.emailInput.value = 'nope';
-  el.passwordInput.value = 'x';
 
-  await el.signIn.dispatch('click');
+  await fillAndSubmit(el, 'nope', 'x');
 
   assert.deepEqual(auth.calls.signIn, []);
   assert.match(el.fieldErrors.email.textContent, /ser ikke ud/);
   assert.match(el.fieldErrors.password.textContent, /mindst 6/);
 });
 
+test('the form signs in unless the user chose to create an account', async () => {
+  const { el, ui, auth } = harness();
+  await ui.start();
+  assert.equal(el.submit.textContent, 'Log ind');
+
+  await fillAndSubmit(el);
+
+  assert.equal(auth.calls.signIn.length, 1);
+  assert.deepEqual(auth.calls.signUp, []);
+});
+
 test('creating an account uses sign-up, not sign-in', async () => {
   const { el, ui, auth } = harness();
   await ui.start();
-  el.emailInput.value = 'new@example.org';
-  el.passwordInput.value = 'hunter22';
 
-  await el.signUp.dispatch('click');
+  await el.switchMode.dispatch('click');
+  await fillAndSubmit(el, 'new@example.org');
 
   assert.deepEqual(auth.calls.signUp, [['new@example.org', 'hunter22']]);
   assert.deepEqual(auth.calls.signIn, []);
+});
+
+test('the password field tells a password manager whether the password is a new one', async () => {
+  const { el, ui } = harness();
+  await ui.start();
+  assert.equal(el.passwordInput.autocomplete, 'current-password');
+  assert.equal(el.forgot.hidden, false);
+
+  await el.switchMode.dispatch('click');
+
+  assert.equal(el.passwordInput.autocomplete, 'new-password', 'what makes a manager offer to save it');
+  assert.equal(el.submit.textContent, 'Opret konto');
+  assert.equal(el.switchMode.textContent, 'Log ind');
+  assert.equal(el.forgot.hidden, true, 'there is nothing to forget before there is an account');
+
+  await el.switchMode.dispatch('click');
+
+  assert.equal(el.passwordInput.autocomplete, 'current-password');
+  assert.equal(el.submit.textContent, 'Log ind');
 });
 
 test('a rejected sign-in is reported and leaves the form up', async () => {
   const { el, ui, auth } = harness();
   await ui.start();
   auth.failNext(new Error('Forkert adgangskode.'));
-  el.emailInput.value = 'a@example.org';
-  el.passwordInput.value = 'hunter22';
 
-  await el.signIn.dispatch('click');
+  await fillAndSubmit(el);
 
   assert.match(el.message.textContent, /Forkert adgangskode/);
   assert.equal(el.signedOut.hidden, false);
-});
-
-test('submitting the form is the same as pressing log ind', async () => {
-  const { el, ui, auth } = harness();
-  await ui.start();
-  el.emailInput.value = 'a@example.org';
-  el.passwordInput.value = 'hunter22';
-
-  await el.form.dispatch('submit');
-
-  assert.equal(auth.calls.signIn.length, 1);
 });
 
 test('signing out returns the panel to the form and tells the page', async () => {
@@ -248,6 +316,163 @@ test('signing out returns the panel to the form and tells the page', async () =>
   assert.equal(el.signedOut.hidden, false);
   assert.equal(el.signedIn.hidden, true);
   assert.equal(changes.at(-1), null);
+});
+
+test('after signing out the form is back to signing in', async () => {
+  const { el, ui, auth } = harness();
+  await ui.start();
+  await el.switchMode.dispatch('click');
+  await fillAndSubmit(el, 'new@example.org');
+
+  auth.signOut();
+
+  assert.equal(el.passwordInput.autocomplete, 'current-password');
+  assert.equal(el.submit.textContent, 'Log ind');
+});
+
+// --- confirming the address -------------------------------------------------
+
+test('a new account is mailed the confirmation link and told where it went', async () => {
+  const { el, ui, auth } = harness({ api: fakeApi({ account: unconfirmed }) });
+  await ui.start();
+  await el.switchMode.dispatch('click');
+
+  await fillAndSubmit(el, 'new@example.org');
+
+  assert.equal(auth.calls.sendVerification, 1);
+  assert.match(el.message.textContent, /sendt et link til new@example\.org/);
+  assert.equal(el.verifyRow.hidden, false);
+});
+
+test('a confirmation mail that cannot be sent does not undo the sign-up', async () => {
+  const auth = fakeAuth();
+  auth.sendVerification = async () => { throw new Error('For mange forsøg. Prøv igen om lidt.'); };
+  const { el, ui } = harness({ api: fakeApi({ account: unconfirmed }), auth });
+  await ui.start();
+  await el.switchMode.dispatch('click');
+
+  await fillAndSubmit(el, 'new@example.org');
+
+  assert.equal(el.signedIn.hidden, false);
+  assert.match(el.message.textContent, /kunne ikke sendes: For mange forsøg/);
+  assert.equal(el.verifyRow.hidden, false, 'where the link can be sent again');
+});
+
+test('with no way to mail a link, a new account is simply created', async () => {
+  const { el, ui, auth } = harness({ auth: fakeAuth({ mails: false }) });
+  await ui.start();
+  assert.equal(el.forgot.hidden, true, 'and no reset link is offered either');
+  await el.switchMode.dispatch('click');
+
+  await fillAndSubmit(el, 'new@example.org');
+
+  assert.equal(auth.calls.signUp.length, 1);
+  assert.equal(el.message.textContent, 'Kontoen er oprettet.');
+});
+
+test('an unconfirmed account is asked to confirm instead of being shown a plan', async () => {
+  const api = fakeApi({ account: unconfirmed });
+  const { el, ui, changes } = harness({ api, auth: fakeAuth({ signedIn: true }) });
+
+  await ui.start();
+
+  assert.equal(el.signedIn.hidden, false);
+  assert.equal(el.verifyRow.hidden, false);
+  assert.equal(el.email.textContent, 'new@example.org');
+  assert.equal(el.tier.hidden, true);
+  assert.equal(el.quota.textContent, '');
+  assert.equal(el.upgradeRow.hidden, true, 'nothing is for sale to an address nobody has confirmed');
+  assert.equal(changes.at(-1).mayImport, false);
+});
+
+test('confirming takes a fresh token and shows the account once the server agrees', async () => {
+  const api = fakeApi({ accounts: [unconfirmed, basicAccount] });
+  const { el, ui, auth } = harness({ api, auth: fakeAuth({ signedIn: true }) });
+  await ui.start();
+
+  await el.verifyDone.dispatch('click');
+
+  assert.equal(auth.calls.reload, 1, 'the old token still says the address is unconfirmed');
+  assert.equal(el.verifyRow.hidden, true);
+  assert.equal(el.tier.hidden, false);
+  assert.equal(el.tier.textContent, 'Basis');
+  assert.match(el.message.textContent, /Tak, din e-mailadresse er bekræftet/);
+});
+
+test('confirming before the link was opened says so', async () => {
+  const { el, ui } = harness({ api: fakeApi({ account: unconfirmed }), auth: fakeAuth({ signedIn: true }) });
+  await ui.start();
+
+  await el.verifyDone.dispatch('click');
+
+  assert.equal(el.verifyRow.hidden, false);
+  assert.match(el.message.textContent, /ikke bekræftet endnu/);
+});
+
+test('the confirmation link can be sent again', async () => {
+  const { el, ui, auth } = harness({ api: fakeApi({ account: unconfirmed }), auth: fakeAuth({ signedIn: true }) });
+  await ui.start();
+
+  await el.verifyResend.dispatch('click');
+
+  assert.equal(auth.calls.sendVerification, 1);
+  assert.match(el.message.textContent, /nyt link til new@example\.org/);
+});
+
+test('coming back to the tab picks up an address confirmed elsewhere', async () => {
+  const api = fakeApi({ accounts: [unconfirmed, basicAccount] });
+  const { el, ui, auth, focus } = harness({ api, auth: fakeAuth({ signedIn: true }) });
+  await ui.start();
+
+  await focus();
+
+  assert.equal(auth.calls.reload, 1);
+  assert.equal(el.verifyRow.hidden, true);
+});
+
+test('coming back to the tab costs nothing when there is nothing to confirm', async () => {
+  const { ui, auth, focus } = harness({ auth: fakeAuth({ signedIn: true }) });
+  await ui.start();
+
+  await focus();
+
+  assert.equal(auth.calls.reload, 0);
+});
+
+// --- a forgotten password ---------------------------------------------------
+
+test('a forgotten password is reset by mail, without saying whether the address has an account', async () => {
+  const { el, ui, auth } = harness();
+  await ui.start();
+  el.emailInput.value = ' someone@example.org ';
+
+  await el.forgot.dispatch('click');
+
+  assert.deepEqual(auth.calls.sendPasswordReset, ['someone@example.org']);
+  assert.match(el.message.textContent, /Hvis der findes en konto for someone@example\.org/);
+});
+
+test('a reset needs an address first, and never a password', async () => {
+  const { el, ui, auth } = harness();
+  await ui.start();
+
+  await el.forgot.dispatch('click');
+
+  assert.deepEqual(auth.calls.sendPasswordReset, []);
+  assert.match(el.fieldErrors.email.textContent, /Angiv din e-mailadresse/);
+  assert.equal(el.fieldErrors.password.textContent, '');
+});
+
+test('a reset that fails is reported', async () => {
+  const auth = fakeAuth();
+  auth.sendPasswordReset = async () => { throw new Error('For mange forsøg. Prøv igen om lidt.'); };
+  const { el, ui } = harness({ auth });
+  await ui.start();
+  el.emailInput.value = 'a@example.org';
+
+  await el.forgot.dispatch('click');
+
+  assert.match(el.message.textContent, /For mange forsøg/);
 });
 
 // --- upgrading --------------------------------------------------------------

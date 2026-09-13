@@ -54,7 +54,11 @@ const config = await api.getConfig().catch(() => ({
 // handed one of these and never learn which.
 auth = config.authProvider === 'password'
   ? createPasswordAuth({ api })
-  : createAuth({ apiKey: config.firebase.apiKey });
+  : createAuth({
+    apiKey: config.firebase.apiKey,
+    // Where a confirmation or reset link brings the user back to.
+    continueUrl: `${globalThis.location.origin}${globalThis.location.pathname}`,
+  });
 
 const importUi = mountImportUi({
   api,
@@ -99,12 +103,17 @@ const accountUi = mountAccountUi({
     emailInput: byId('f-email'),
     passwordInput: byId('f-password'),
     fieldErrors: { email: byId('e-email'), password: byId('e-password') },
-    signIn: byId('auth-signin'),
-    signUp: byId('auth-signup'),
+    submit: byId('auth-submit'),
+    switchMode: byId('auth-switch'),
+    switchText: byId('auth-switch-text'),
+    forgot: byId('auth-forgot'),
     signOut: byId('account-signout'),
     email: byId('account-email'),
     tier: byId('account-tier'),
     quota: byId('account-quota'),
+    verifyRow: byId('verify-row'),
+    verifyDone: byId('verify-done'),
+    verifyResend: byId('verify-resend'),
     upgradeRow: byId('upgrade-row'),
     upgrades: byId('upgrades'),
     manage: byId('account-manage'),

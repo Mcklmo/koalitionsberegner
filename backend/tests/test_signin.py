@@ -79,6 +79,13 @@ def test_a_new_account_is_a_free_one(client):
     assert me["may_import"] is False
 
 
+def test_an_address_this_server_cannot_confirm_is_not_held_against_the_account(client):
+    """There is no mail here to confirm one with; the docs say so instead."""
+    me = client.get("/api/me", headers=auth(register(client)["token"])).json()
+
+    assert me["email_verified"] is True
+
+
 def test_signing_in_again_returns_a_working_token(client):
     register(client)
 

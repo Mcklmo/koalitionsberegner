@@ -2,9 +2,9 @@
  * Sign-in against Firebase, over its REST endpoints.
  *
  * The Firebase JS SDK is not used: the page has no build step and loads its own
- * modules, and the three calls needed here — sign up, sign in, refresh — are
- * plain JSON. That keeps the page dependency-free and the whole flow testable
- * with a fake `fetch`.
+ * modules, and the calls needed here — sign up, sign in, refresh, and asking
+ * Firebase to mail a confirmation or reset link — are plain JSON. That keeps
+ * the page dependency-free and the whole flow testable with a fake `fetch`.
  *
  * What is kept where matters. The *refresh* token is long-lived and goes to
  * storage so a reload does not sign the user out. The *ID token* is short-lived
@@ -22,6 +22,9 @@ const STORAGE_KEY = 'koalitionsberegner.session';
 
 /** Refresh this long before expiry, so a request never carries a dead token. */
 const REFRESH_MARGIN_MS = 60_000;
+
+/** How Firebase refuses a return address it has not been told to allow. */
+const CONTINUE_URL_REFUSALS = ['UNAUTHORIZED_DOMAIN', 'INVALID_CONTINUE_URI'];
 
 export class AuthError extends Error {
   constructor(message, code) {
@@ -41,6 +44,7 @@ const MESSAGES = {
   WEAK_PASSWORD: 'Adgangskoden skal være mindst 6 tegn.',
   USER_DISABLED: 'Kontoen er deaktiveret.',
   TOO_MANY_ATTEMPTS_TRY_LATER: 'For mange forsøg. Prøv igen om lidt.',
+  RESET_PASSWORD_EXCEED_LIMIT: 'For mange forsøg. Prøv igen om lidt.',
   TOKEN_EXPIRED: 'Din session er udløbet. Log ind igen.',
   USER_NOT_FOUND: 'Din session er udløbet. Log ind igen.',
 };
@@ -77,9 +81,16 @@ function defaultStorage() {
 /**
  * A signed-in session, or the absence of one.
  *
- * @param {{apiKey: string, projectId?: string}} config the public Firebase config
+ * @param {{apiKey: string, projectId?: string, continueUrl?: string}} config the
+ *   public Firebase config, plus where a mailed link should bring the user back to
  */
-export function createAuth({ apiKey, fetch: fetchImpl, storage, now = () => Date.now() } = {}) {
+export function createAuth({
+  apiKey,
+  continueUrl,
+  fetch: fetchImpl,
+  storage,
+  now = () => Date.now(),
+} = {}) {
   const doFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
   const store = storage ?? defaultStorage();
   const listeners = new Set();
@@ -180,6 +191,49 @@ export function createAuth({ apiKey, fetch: fetchImpl, storage, now = () => Date
     persist();
   }
 
+  /**
+   * The credential for the next API call, refreshed if it is about to expire.
+   * `null` when signed out, which is a normal state, not an error.
+   */
+  async function getIdToken() {
+    if (!session) return null;
+    if (idToken && now() < expiresAt - REFRESH_MARGIN_MS) return idToken;
+    // Collapse concurrent callers onto one refresh; several API calls start
+    // together on page load and would otherwise each spend the refresh token.
+    refreshing ??= refresh()
+      .catch((error) => {
+        // A refresh token that no longer works cannot be recovered from:
+        // the session is over, and the page must show that rather than
+        // retrying forever.
+        forget();
+        announce();
+        throw error;
+      })
+      .finally(() => {
+        refreshing = null;
+      });
+    return refreshing;
+  }
+
+  /**
+   * Ask Firebase to mail a link. The link comes back to this page when its
+   * domain is authorised in the Firebase project. When it is not, Firebase
+   * refuses the whole request, so it is sent again without a return address and
+   * the link ends on Firebase's own page instead — a mail that arrives beats one
+   * that does not.
+   */
+  async function sendOobCode(body) {
+    const url = `${IDENTITY_BASE}:sendOobCode?key=${encodeURIComponent(apiKey)}`;
+    if (!continueUrl) return call(url, body);
+    try {
+      return await call(url, { ...body, continueUrl });
+    } catch (error) {
+      const code = String(error.code ?? '').split(':')[0].trim();
+      if (!CONTINUE_URL_REFUSALS.includes(code)) throw error;
+      return call(url, body);
+    }
+  }
+
   load();
 
   return {
@@ -224,28 +278,38 @@ export function createAuth({ apiKey, fetch: fetchImpl, storage, now = () => Date
       announce();
     },
 
+    getIdToken,
+
     /**
-     * The credential for the next API call, refreshed if it is about to expire.
-     * `null` when signed out, which is a normal state, not an error.
+     * A fresh ID token now, rather than when the current one expires. A token
+     * states `email_verified` as it was when it was minted, so this is how the
+     * server gets to see an address the user has just confirmed.
      */
-    async getIdToken() {
+    async reload() {
       if (!session) return null;
-      if (idToken && now() < expiresAt - REFRESH_MARGIN_MS) return idToken;
-      // Collapse concurrent callers onto one refresh; several API calls start
-      // together on page load and would otherwise each spend the refresh token.
-      refreshing ??= refresh()
-        .catch((error) => {
-          // A refresh token that no longer works cannot be recovered from:
-          // the session is over, and the page must show that rather than
-          // retrying forever.
-          forget();
-          announce();
-          throw error;
-        })
-        .finally(() => {
-          refreshing = null;
-        });
-      return refreshing;
+      idToken = null;
+      expiresAt = 0;
+      return getIdToken();
+    },
+
+    /** Mail the signed-in user the link that confirms their address. */
+    async sendVerification() {
+      const token = await getIdToken();
+      if (!token) throw new AuthError('Log ind for at bekræfte din e-mailadresse.');
+      await sendOobCode({ requestType: 'VERIFY_EMAIL', idToken: token });
+    },
+
+    /**
+     * Mail a link for choosing a new password. Resolves the same whether or not
+     * the address has an account: which addresses do is not the page's to reveal.
+     */
+    async sendPasswordReset(email) {
+      try {
+        await sendOobCode({ requestType: 'PASSWORD_RESET', email });
+      } catch (error) {
+        if (error instanceof AuthError && error.code === 'EMAIL_NOT_FOUND') return;
+        throw error;
+      }
     },
   };
 }

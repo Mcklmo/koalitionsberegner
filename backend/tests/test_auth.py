@@ -180,8 +180,26 @@ def test_an_admin_claim_is_honoured_but_only_from_the_token():
 
 def test_an_allowlisted_email_is_an_admin():
     listed = verifier(admin_emails=frozenset({"boss@example.org"}))
-    assert listed.verify(make_token(email="boss@example.org")).admin is True
-    assert listed.verify(make_token(email="other@example.org")).admin is False
+    assert listed.verify(make_token(email="boss@example.org", email_verified=True)).admin is True
+    assert listed.verify(make_token(email="other@example.org", email_verified=True)).admin is False
+
+
+def test_the_token_says_whether_the_address_is_confirmed():
+    def confirmed(**claims):
+        return verifier().verify(make_token(email="a@example.org", **claims)).email_verified
+
+    assert confirmed(email_verified=True) is True
+    assert confirmed(email_verified=False) is False
+    assert confirmed() is False, "a token that does not say is not confirmed"
+    assert confirmed(email_verified="true") is False, "only Firebase's own boolean counts"
+
+
+def test_an_unconfirmed_allowlisted_address_is_not_an_admin():
+    """Otherwise signing up *as* the admin's address would be enough to become one."""
+    listed = verifier(admin_emails=frozenset({"boss@example.org"}))
+
+    assert listed.verify(make_token(email="boss@example.org", email_verified=False)).admin is False
+    assert listed.verify(make_token(email="boss@example.org")).admin is False
 
 
 def test_an_unknown_key_id_refetches_the_certificates_once_before_refusing():
@@ -285,6 +303,19 @@ def test_the_rules_are_the_same_ones_whatever_store_resolved_the_token():
     assert from_firebase.email == "boss@example.org", "folded once, in the rules"
 
 
+def test_a_store_that_cannot_confirm_addresses_is_not_one_that_said_no():
+    """SQLite has no mail to confirm with; Firebase does, and may not have yet."""
+    rules = PrincipalRules.of(frozenset({"boss@example.org"}))
+
+    cannot = rules.principal(Credential(subject="u1", email="boss@example.org"))
+    said_no = rules.principal(
+        Credential(subject="u1", email="boss@example.org", email_verified=False)
+    )
+
+    assert (cannot.email_verified, cannot.admin) == (True, True)
+    assert (said_no.email_verified, said_no.admin) == (False, False)
+
+
 def test_a_store_cannot_hand_out_an_identity_without_a_subject():
     with pytest.raises(InvalidToken, match="no subject"):
         StoreBackedVerifier(DictStore(tok=Credential(subject="  "))).verify("tok")
@@ -310,10 +341,14 @@ def test_the_page_is_told_which_sign_in_flow_to_run():
 @pytest.mark.parametrize(
     "token, expected",
     [
-        ("u1", Principal(uid="u1")),
-        ("u1:a@example.org", Principal(uid="u1", email="a@example.org")),
-        ("u1:a@example.org:admin", Principal(uid="u1", email="a@example.org", admin=True)),
-        ("u1::admin", Principal(uid="u1", admin=True)),
+        ("u1", Principal(uid="u1", email_verified=True)),
+        ("u1:a@example.org", Principal(uid="u1", email="a@example.org", email_verified=True)),
+        (
+            "u1:a@example.org:admin",
+            Principal(uid="u1", email="a@example.org", admin=True, email_verified=True),
+        ),
+        ("u1::admin", Principal(uid="u1", admin=True, email_verified=True)),
+        ("u1:a@example.org:unverified", Principal(uid="u1", email="a@example.org")),
     ],
 )
 def test_the_stub_store_reads_the_identity_straight_out_of_the_token(token, expected):
@@ -332,6 +367,7 @@ def test_with_auth_off_every_request_is_the_local_developer():
     assert anonymous is not None, "auth off means no gating, not everyone anonymous"
     assert anonymous.unlimited is True
     assert anonymous.admin is True
+    assert anonymous.email_verified is True
     assert disabled.verify("anything") == anonymous
 
 

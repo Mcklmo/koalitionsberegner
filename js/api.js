@@ -79,6 +79,9 @@ function toAccount(body) {
   return {
     uid: body.uid,
     email: body.email ?? null,
+    // Only an explicit false: a server that predates confirmation never asked
+    // for one, and its accounts are not waiting on anything.
+    emailVerified: body.email_verified !== false,
     tier: body.tier,
     admin: Boolean(body.admin),
     period: body.period,

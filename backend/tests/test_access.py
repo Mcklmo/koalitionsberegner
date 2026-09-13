@@ -41,6 +41,8 @@ FREE = {"Authorization": "Bearer free-1:free@example.org"}
 SUBSCRIBER = {"Authorization": "Bearer paid-1:paid@example.org"}
 OTHER_SUBSCRIBER = {"Authorization": "Bearer paid-2:paid2@example.org"}
 ADMIN = {"Authorization": "Bearer admin-1:admin@example.org:admin"}
+#: A sign-up whose owner has not opened the confirmation link yet.
+UNVERIFIED = {"Authorization": "Bearer new-1:new@example.org:unverified"}
 
 
 @pytest.fixture
@@ -395,6 +397,55 @@ def test_the_public_config_is_readable_signed_out(client):
     assert {t["tier"]: t["monthly_imports"] for t in body["tiers"]} == {
         "free": 0, "basic": BASIC_LIMIT, "premium": PREMIUM_LIMIT
     }
+
+
+# --- an address nobody has confirmed yet ------------------------------------
+
+def test_me_tells_an_unconfirmed_account_what_it_is_waiting_for(client):
+    body = client.get("/api/me", headers=UNVERIFIED).json()
+
+    assert body["email_verified"] is False
+    assert body["may_import"] is False
+    assert client.get("/api/me", headers=FREE).json()["email_verified"] is True
+
+
+def test_an_unconfirmed_account_cannot_import_even_on_a_paid_tier(client, accounts, parser):
+    uid = subscribe(accounts, UNVERIFIED)
+
+    response = client.post("/api/elections/import", json=BODY, headers=UNVERIFIED)
+
+    assert response.status_code == 403
+    assert "confirm your email" in response.json()["detail"]
+    assert parser.call_count == 0, "no page is fetched on an unconfirmed address's behalf"
+    assert used(accounts, uid) == 0
+
+
+def test_an_unconfirmed_account_cannot_look_up_or_confirm_imports(client):
+    lookup = client.get("/api/elections/lookup?year=2026&nation=Danmark", headers=UNVERIFIED)
+    confirm = client.post("/api/elections/imports/some-key/confirm", headers=UNVERIFIED)
+
+    assert (lookup.status_code, confirm.status_code) == (403, 403)
+
+
+def test_an_unconfirmed_account_sees_what_a_visitor_sees(client, store, accounts):
+    subscribe(accounts, SUBSCRIBER)
+    saved = save(client, SUBSCRIBER)
+    path = f"/api/elections/{saved['election_hash']}"
+
+    assert client.get("/api/elections", headers=UNVERIFIED).json() == []
+    assert client.get(path, headers=UNVERIFIED).status_code == 403
+
+    store.set_selected(saved["election_hash"], True)
+    assert client.get(path, headers=UNVERIFIED).status_code == 200
+
+
+def test_an_unconfirmed_account_cannot_pay(billing_client, fake_billing):
+    response = billing_client.post(
+        "/api/billing/checkout", json={"tier": "basic"}, headers=UNVERIFIED
+    )
+
+    assert response.status_code == 403
+    assert fake_billing.checkouts == []
 
 
 # --- curation ---------------------------------------------------------------

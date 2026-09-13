@@ -64,6 +64,12 @@ class Principal:
     admin: bool = False
     unlimited: bool = False
     """Set only when auth is switched off, so local runs are never quota-limited."""
+    email_verified: bool = False
+    """Whether the address is known to be the caller's, not just typed by them.
+
+    False unless something says otherwise, so a principal built somewhere new
+    trusts nothing about its address. :class:`PrincipalRules` is what sets it.
+    """
 
 
 @dataclass(frozen=True)
@@ -79,6 +85,9 @@ class Credential:
     subject: str
     email: str | None = None
     admin: bool = False
+    email_verified: bool | None = None
+    """``True`` confirmed, ``False`` not yet, ``None`` when the store has no way
+    of confirming an address at all."""
 
 
 def bearer_token(header: str | None) -> str | None:
@@ -146,10 +155,18 @@ class PrincipalRules:
         if not uid:
             raise InvalidToken("token carries no subject")
         email = normalize_email(credential.email)
+        # A store that cannot confirm addresses (SQLite, stub) never promised
+        # to, and the docs say so; one that can and has not is taken at its word.
+        verified = credential.email_verified is not False
         return Principal(
             uid=uid,
             email=email,
-            admin=credential.admin or (email is not None and email in self.admin_emails),
+            # The allowlist names addresses, so it may only match one known to be
+            # the caller's — otherwise signing up *as* the admin address would be
+            # enough to become the admin.
+            admin=credential.admin
+            or (verified and email is not None and email in self.admin_emails),
+            email_verified=verified,
         )
 
 
@@ -283,6 +300,9 @@ class FirebaseCredentials:
             # A custom claim set out of band. Never anything the user can set
             # on themselves.
             admin=bool(claims.get("admin")),
+            # Set by Firebase once the user has opened the link it mailed them.
+            # Anything but a literal true, absent included, is not confirmed.
+            email_verified=claims.get("email_verified") is True,
         )
 
 
@@ -290,9 +310,10 @@ class StubCredentials:
     """``AUTH_MODE=stub``: the token *is* the identity, no signature involved.
 
     For exercising the gated behaviour locally and in tests without a Firebase
-    project. A token is ``uid``, ``uid:email`` or ``uid:email:admin``. Refusing
-    to run this against a real project is the point of :func:`app.config.get_verifier`
-    keeping it out of the deployed default.
+    project. A token is ``uid``, ``uid:email``, ``uid:email:admin`` or
+    ``uid:email:unverified`` — the last one a Firebase account whose address has
+    not been confirmed yet. Refusing to run this against a real project is the
+    point of :func:`app.config.get_verifier` keeping it out of the deployed default.
     """
 
     #: The browser cannot mint these, so the page offers no sign-in flow.
@@ -303,12 +324,22 @@ class StubCredentials:
         if not uid.strip():
             raise InvalidToken("stub token must start with a uid")
         email, _, role = rest.partition(":")
-        return Credential(subject=uid, email=email, admin=role.strip() == "admin")
+        role = role.strip()
+        return Credential(
+            subject=uid,
+            email=email,
+            admin=role == "admin",
+            email_verified=False if role == "unverified" else None,
+        )
 
 
 #: The identity every request carries when auth is switched off.
 LOCAL_PRINCIPAL = Principal(
-    uid="local-developer", email="local@localhost", admin=True, unlimited=True
+    uid="local-developer",
+    email="local@localhost",
+    admin=True,
+    unlimited=True,
+    email_verified=True,
 )
 
 

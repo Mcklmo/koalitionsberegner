@@ -205,3 +205,75 @@ test('Firebase error codes become Danish sentences', () => {
   assert.match(readableAuthError('SOMETHING_NEW'), /Log ind mislykkedes/);
   assert.match(readableAuthError(undefined), /Log ind mislykkedes/);
 });
+
+// --- mailed links -------------------------------------------------------------
+
+test('a new account can be mailed the link that confirms its address', async () => {
+  const { session, calls } = auth([signedIn, { status: 200, body: { email: 'a@example.org' } }]);
+  await session.signUp('a@example.org', 'hunter22');
+
+  await session.sendVerification();
+
+  assert.match(calls[1].url, /accounts:sendOobCode\?key=AIza-test$/);
+  assert.equal(calls[1].body.requestType, 'VERIFY_EMAIL');
+  assert.equal(calls[1].body.idToken, 'id-1', 'Firebase is told whose address it is');
+});
+
+test('a mailed link brings the user back to the page', async () => {
+  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: {} }]);
+  const session = createAuth({
+    apiKey: API_KEY, fetch: fetchImpl, storage: fakeStorage(), continueUrl: 'https://koalitioner.test/',
+  });
+
+  await session.sendPasswordReset('a@example.org');
+
+  assert.equal(calls[0].body.requestType, 'PASSWORD_RESET');
+  assert.equal(calls[0].body.email, 'a@example.org');
+  assert.equal(calls[0].body.continueUrl, 'https://koalitioner.test/');
+});
+
+test('a return address Firebase has not authorised is dropped rather than losing the mail', async () => {
+  const { fetchImpl, calls } = fakeFetch([
+    { status: 400, body: { error: { message: 'UNAUTHORIZED_DOMAIN : Domain not allowlisted by project' } } },
+    { status: 200, body: {} },
+  ]);
+  const session = createAuth({
+    apiKey: API_KEY, fetch: fetchImpl, storage: fakeStorage(), continueUrl: 'https://koalitioner.test/',
+  });
+
+  await session.sendPasswordReset('a@example.org');
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].body.continueUrl, undefined);
+  assert.equal(calls[1].body.requestType, 'PASSWORD_RESET');
+});
+
+test('a password reset does not reveal whether the address has an account', async () => {
+  const { session } = auth([{ status: 400, body: { error: { message: 'EMAIL_NOT_FOUND' } } }]);
+
+  await session.sendPasswordReset('nobody@example.org');
+});
+
+test('a reset Firebase refuses for any other reason is reported', async () => {
+  const { session } = auth([{ status: 400, body: { error: { message: 'TOO_MANY_ATTEMPTS_TRY_LATER' } } }]);
+
+  await assert.rejects(() => session.sendPasswordReset('a@example.org'), /For mange forsøg/);
+});
+
+test('reloading fetches a fresh token at once, so a confirmed address reaches the server', async () => {
+  const { session, calls } = auth([signedIn, { status: 200, body: { id_token: 'id-2', expires_in: '3600' } }]);
+  await session.signIn('a@example.org', 'hunter22');
+
+  assert.equal(await session.reload(), 'id-2');
+  assert.equal(calls[1].body.grant_type, 'refresh_token');
+  assert.equal(await session.getIdToken(), 'id-2', 'and keeps using it');
+  assert.equal(calls.length, 2);
+});
+
+test('there is nothing to confirm or reload while signed out', async () => {
+  const { session, calls } = auth([]);
+
+  await assert.rejects(() => session.sendVerification(), AuthError);
+  assert.equal(await session.reload(), null);
+  assert.equal(calls.length, 0);
+});

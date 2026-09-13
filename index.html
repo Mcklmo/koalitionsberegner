@@ -559,10 +559,14 @@
     <summary>Konto og abonnement</summary>
 
     <div id="account-signed-out" hidden>
+      <!-- One form, submitted in either mode: a password manager offers to save
+           on a submission, and reads autocomplete to tell a new password from
+           the current one. account-ui.js switches the mode. -->
       <form id="auth-form" novalidate>
         <div class="field">
           <label for="f-email">E-mail</label>
-          <input id="f-email" name="email" type="email" autocomplete="email">
+          <input id="f-email" name="email" type="email" autocomplete="username"
+            autocapitalize="off" spellcheck="false">
           <div class="field-error" id="e-email"></div>
         </div>
         <div class="field">
@@ -571,10 +575,14 @@
           <div class="field-error" id="e-password"></div>
         </div>
         <div class="preview-actions">
-          <button class="primary" id="auth-signin" type="submit">Log ind</button>
-          <button class="secondary" id="auth-signup" type="button">Opret konto</button>
+          <button class="primary" id="auth-submit" type="submit">Log ind</button>
         </div>
       </form>
+      <div class="account-line">
+        <span class="quota" id="auth-switch-text">Ny her?</span>
+        <button class="link-btn" id="auth-switch" type="button">Opret en konto</button>
+        <button class="link-btn" id="auth-forgot" type="button" hidden>Glemt adgangskode?</button>
+      </div>
       <p class="footer-note">Det er gratis at oprette en konto. Abonnement kræves kun for at
         importere nye valg.</p>
     </div>
@@ -583,6 +591,14 @@
       <div class="account-line">
         <span class="account-email" id="account-email"></span>
         <span class="tier-badge" id="account-tier"></span>
+      </div>
+      <div id="verify-row" hidden>
+        <p class="quota">Bekræft din e-mailadresse med linket, vi har sendt dig, før du bruger
+          kontoen. Kan du ikke finde mailen, så kig i spam.</p>
+        <div class="account-line">
+          <button class="secondary" id="verify-done" type="button">Jeg har bekræftet</button>
+          <button class="link-btn" id="verify-resend" type="button">Send linket igen</button>
+        </div>
       </div>
       <p class="quota" id="account-quota"></p>
       <div id="upgrade-row" hidden>
