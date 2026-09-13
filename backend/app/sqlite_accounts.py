@@ -15,7 +15,16 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .accounts import Tier, UserAccount, _released, _reserved, _subscribed, billing_period
+from .accounts import (
+    Tier,
+    UserAccount,
+    _deletable,
+    _released,
+    _reserved,
+    _seen,
+    _subscribed,
+    billing_period,
+)
 from .observability import io_span
 
 log = logging.getLogger(__name__)
@@ -31,14 +40,16 @@ CREATE TABLE IF NOT EXISTS accounts (
     stripe_customer_id  TEXT,
     subscription_id     TEXT,
     subscription_status TEXT,
-    created_at          REAL NOT NULL DEFAULT 0
+    created_at          REAL NOT NULL DEFAULT 0,
+    last_active_at      REAL
 );
 CREATE INDEX IF NOT EXISTS accounts_by_customer
     ON accounts (stripe_customer_id);
 """
 
 COLUMNS = (
-    "uid, email, tier, period, used, attempts, stripe_customer_id, subscription_id, subscription_status"
+    "uid, email, tier, period, used, attempts, stripe_customer_id, subscription_id,"
+    " subscription_status, created_at, last_active_at"
 )
 
 
@@ -62,6 +73,7 @@ def _account_from_row(row: sqlite3.Row) -> UserAccount:
         stripe_customer_id=row["stripe_customer_id"],
         subscription_id=row["subscription_id"],
         subscription_status=row["subscription_status"],
+        last_active_at=row["last_active_at"],
     )
 
 
@@ -80,6 +92,15 @@ class SqliteAccountStore:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(accounts)")}
             if "attempts" not in columns:
                 conn.execute("ALTER TABLE accounts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+            if "last_active_at" not in columns:
+                # Existing rows get NULL, meaning "stored before activity was
+                # recorded". The next request or retention run fills it in.
+                conn.execute("ALTER TABLE accounts ADD COLUMN last_active_at REAL")
+            # Not part of SCHEMA: on a table from before the column existed,
+            # the index could only be created after the ALTER above.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS accounts_by_last_active ON accounts (last_active_at)"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -140,6 +161,16 @@ class SqliteAccountStore:
             span["accounts"] = int(row["n"])
             return int(row["n"])
 
+    def inactive(self, before: float, limit: int) -> list[UserAccount]:
+        with io_span(log, "sqlite", "inactive_accounts", limit=limit) as span:
+            rows = self._connect().execute(
+                "SELECT * FROM accounts WHERE last_active_at < ?"
+                " ORDER BY last_active_at LIMIT ?",
+                (before, limit),
+            ).fetchall()
+            span["accounts"] = len(rows)
+            return [_account_from_row(row) for row in rows]
+
     # --- writes ------------------------------------------------------------
 
     def _save(self, conn: sqlite3.Connection, account: UserAccount) -> None:
@@ -164,31 +195,37 @@ class SqliteAccountStore:
         # Every authenticated request passes through here. Reading first keeps
         # the steady state off SQLite's write lock, which BEGIN IMMEDIATE would
         # otherwise take — serialising every signed-in request against every
-        # other. The write path below re-reads under the lock.
+        # other. The write path below re-reads under the lock. Activity is
+        # written at most daily (see accounts._seen), so the read is all most
+        # requests cost.
+        now = self._clock()
         existing = self.get(uid)
-        if existing is not None and (not email or existing.email == email):
+        if existing is not None and _seen(existing, email, now) == existing:
             return existing
 
         with io_span(log, "sqlite", "ensure_account", uid=uid[:12]) as span:
             with self._write() as conn:
                 account = self._read(conn, uid)
                 if account is None:
-                    account = UserAccount(uid=uid, email=email, period=billing_period())
+                    account = UserAccount(
+                        uid=uid, email=email, period=billing_period(), last_active_at=now
+                    )
                     conn.execute(
-                        f"INSERT INTO accounts ({COLUMNS}, created_at)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        f"INSERT INTO accounts ({COLUMNS})"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (uid, email, account.tier.value, account.period, 0, 0,
-                         None, None, None, self._clock()),
+                         None, None, None, now, now),
                     )
                     span["created"] = True
                     return account
-                if email and account.email != email:
-                    conn.execute("UPDATE accounts SET email = ? WHERE uid = ?", (email, uid))
-                    account = _account_from_row(
-                        conn.execute("SELECT * FROM accounts WHERE uid = ?", (uid,)).fetchone()
+                seen = _seen(account, email, now)
+                if seen != account:
+                    conn.execute(
+                        "UPDATE accounts SET email = ?, last_active_at = ? WHERE uid = ?",
+                        (seen.email, seen.last_active_at, uid),
                     )
                 span["created"] = False
-                return account
+                return seen
 
     def reserve_import(self, uid: str, period: str, limit: int) -> bool:
         with io_span(log, "sqlite", "reserve_import", uid=uid[:12], period=period) as span:
@@ -240,3 +277,29 @@ class SqliteAccountStore:
                     "UPDATE accounts SET stripe_customer_id = ? WHERE uid = ?",
                     (customer_id, uid),
                 )
+
+    def date_undated(self, now: float, limit: int) -> int:
+        with io_span(log, "sqlite", "date_undated_accounts", limit=limit) as span:
+            with self._write() as conn:
+                dated = conn.execute(
+                    "UPDATE accounts SET last_active_at = ? WHERE uid IN"
+                    " (SELECT uid FROM accounts WHERE last_active_at IS NULL LIMIT ?)",
+                    (now, limit),
+                ).rowcount
+                span["dated"] = dated
+                return dated
+
+    def mark_active(self, uid: str, now: float) -> None:
+        with io_span(log, "sqlite", "mark_active", uid=uid[:12]):
+            with self._write() as conn:
+                conn.execute("UPDATE accounts SET last_active_at = ? WHERE uid = ?", (now, uid))
+
+    def delete_inactive(self, uid: str, before: float) -> bool:
+        with io_span(log, "sqlite", "delete_inactive_account", uid=uid[:12]) as span:
+            with self._write() as conn:
+                account = self._read(conn, uid)
+                deleted = account is not None and _deletable(account, before)
+                if deleted:
+                    conn.execute("DELETE FROM accounts WHERE uid = ?", (uid,))
+                span["deleted"] = deleted
+                return deleted

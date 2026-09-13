@@ -300,7 +300,12 @@ minute rather than ten.
    transactions. The `elections`, `extraction_jobs`, `pages`, `accounts`,
    `usage_daily` and `usage_reports` collections are created on demand.
 3. A service account for the Cloud Run revision holding `roles/datastore.user`,
-   plus `roles/secretmanager.secretAccessor` once `LLM_MODE=live`.
+   plus `roles/secretmanager.secretAccessor` once `LLM_MODE=live`, and
+   `roles/firebaseauth.admin` (Firebase Authentication Admin) once accounts
+   are on Firebase. The daily retention run uses that role to delete the
+   Firebase users of accounts nobody has used for two years. Without it those
+   deletions fail with 403, the accounts are kept, and the cron run shows as
+   failed.
 4. For live extraction: an Anthropic API key in Secret Manager, mounted as
    `ANTHROPIC_API_KEY` (`--set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest`).
    The agent runs `claude-opus-5` server-side, so the key never reaches the browser.
@@ -339,6 +344,16 @@ with `<meta name="api-base" content="https://…">` in `index.html` and set
 5. Grant an administrator by setting `ADMIN_EMAILS`, or by setting a custom
    `admin` claim on the Firebase user. Administrators are the only callers that
    can curate which elections signed-out visitors see.
+6. Grant the service account `roles/firebaseauth.admin`. Every day the cron
+   calls `POST /api/internal/inactive-accounts`, which deletes accounts that
+   have not been used for two years (`INACTIVE_ACCOUNT_RETENTION_DAYS`)
+   together with their Firebase users. It never deletes an account whose
+   subscription has not ended, and it never deletes Stripe customers. The
+   Firebase users are deleted through Identity Toolkit's REST API using
+   Application Default Credentials, so no firebase-admin dependency is needed.
+   With `AUTH_MODE=sqlite` the password and sessions are deleted instead.
+   "Used" means a signed-in request, recorded as `last_active_at` to within a
+   day, so that most requests stay a single read.
 
 A deployment that does not want a Firebase project at all can run
 `AUTH_MODE=sqlite` instead of steps 1–3: the accounts, passwords and sessions
@@ -421,7 +436,7 @@ variables from `--set-env-vars` and Secret Manager.
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | with `SMTP_HOST` | — | The login. With Gmail, an app password. Put the password in Secret Manager. |
 | `REPORT_EMAIL_TO` | with `SMTP_HOST` | — | Comma-separated addresses the reports go to. |
 | `REPORT_EMAIL_FROM` | no | `SMTP_USERNAME` | The sender address, where the server allows a different one. |
-| `USAGE_REPORT_SECRET` | for scheduled reports | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret`; unset, `POST /api/internal/usage-reports` does not exist. |
+| `USAGE_REPORT_SECRET` | for scheduled reports and account deletion | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret`. If it is unset, `POST /api/internal/usage-reports` and `POST /api/internal/inactive-accounts` do not exist, so accounts unused for two years are not deleted either. |
 | `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
 | `ENV_FILE` | no | nearest `.env` walking up from the working directory | A different file to read variables from. Empty loads none. A path that does not exist is a startup error. |
 | `PORT` | no | `8080` | Set by Cloud Run. |

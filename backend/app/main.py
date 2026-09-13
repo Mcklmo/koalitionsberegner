@@ -49,6 +49,7 @@ from .accounts import (
 from .auth import (
     BadCredentials,
     EmailTaken,
+    IdentityRemover,
     InvalidToken,
     PasswordCredentialStore,
     Principal,
@@ -62,6 +63,7 @@ from .config import (
     firebase_web_config,
     get_accounts,
     get_billing,
+    get_identity_remover,
     get_mailer,
     get_parser,
     get_password_store,
@@ -80,6 +82,7 @@ from .config import (
 from .identity import normalize_year
 from .mailer import Mailer, MailUnavailable
 from .observability import configure_logging, io_span, scrub
+from .retention import sweep_inactive_accounts
 from .schema import Election, Forecast, clean_text
 from .service import ImportRequest, ImportResult, ImportService, ImportState
 from .store import StoredElection
@@ -283,6 +286,10 @@ def get_usage() -> UsageRecorder:
 
 def get_mailer_provider() -> Mailer:
     return get_mailer()
+
+
+def get_identity_remover_provider() -> IdentityRemover:
+    return get_identity_remover()
 
 
 # --- identity ---------------------------------------------------------------
@@ -1270,19 +1277,29 @@ def _usage_report(
     return report_key(period, current), UsageReport(subject=subject, body=body)
 
 
+def require_schedule(x_report_secret: str | None = Header(default=None)) -> None:
+    """The caller is the daily schedule, proven by ``USAGE_REPORT_SECRET``.
+
+    The endpoints behind this belong to no account; the Worker's cron calls
+    them. Without a secret configured they do not exist, which is the honest
+    answer on a deployment that runs no schedule.
+    """
+    expected = usage_report_secret()
+    if not expected:
+        raise HTTPException(404, detail="Not Found")
+    if not hmac.compare_digest((x_report_secret or "").encode(), expected.encode()):
+        raise HTTPException(403, detail="this is for the report schedule")
+
+
 @app.post("/api/internal/usage-reports", response_model=ReportRun)
 async def send_usage_reports(
     period: Period | None = Query(None, description="Send this report now instead of the due ones."),
-    x_report_secret: str | None = Header(default=None),
+    _schedule: None = Depends(require_schedule),
     usage: UsageRecorder = Depends(get_usage),
     accounts: AccountStore = Depends(get_account_store),
     mailer: Mailer = Depends(get_mailer_provider),
 ) -> ReportRun:
     """Email the usage reports that are due. Called once a day by the Worker's cron.
-
-    Not an account's endpoint: the caller is a schedule, and it proves itself
-    with ``USAGE_REPORT_SECRET``. Without one configured the endpoint does not
-    exist, which is the honest answer on a deployment that sends no reports.
 
     Each report is claimed before it is sent, so a run that is retried — or a
     cron that fires twice — sends nothing twice; a report whose email failed
@@ -1291,12 +1308,6 @@ async def send_usage_reports(
     Retention runs first, whatever happens to the email: deleting old
     active-account markers is an obligation, not a side effect of a report.
     """
-    expected = usage_report_secret()
-    if not expected:
-        raise HTTPException(404, detail="Not Found")
-    if not hmac.compare_digest((x_report_secret or "").encode(), expected.encode()):
-        raise HTTPException(403, detail="this is for the report schedule")
-
     today = usage.today()
     await run_in_threadpool(
         usage.store.forget_active_before, today - timedelta(days=ACTIVE_RETENTION_DAYS)
@@ -1317,6 +1328,44 @@ async def send_usage_reports(
         log.info("usage report sent %s", key)
         sent.append(key)
     return ReportRun(sent=sent, skipped=skipped)
+
+
+class InactiveAccountRun(BaseModel):
+    """What the daily deletion did, as counts. It never says whose accounts."""
+
+    dated: int
+    deleted: int
+    kept: int
+    failed: int
+
+
+@app.post("/api/internal/inactive-accounts", response_model=InactiveAccountRun)
+async def delete_inactive_accounts(
+    _schedule: None = Depends(require_schedule),
+    accounts: AccountStore = Depends(get_account_store),
+    identities: IdentityRemover = Depends(get_identity_remover_provider),
+) -> InactiveAccountRun:
+    """Delete accounts nobody has used for two years. Called once a day by the Worker's cron.
+
+    Separate from the reports on purpose, so each can fail without the other.
+    A sign-in that could not be deleted (in practice, a service account missing
+    the Firebase role) answers ``502`` once the rest of the run is done, so the
+    cron run shows as failed instead of looking fine while nothing is deleted.
+    Its account is kept and tried again on the next run. See
+    :mod:`app.retention`.
+    """
+    swept = await run_in_threadpool(sweep_inactive_accounts, accounts, identities)
+    if swept.failed:
+        raise HTTPException(
+            502,
+            detail=(
+                f"{swept.failed} sign-ins could not be deleted and their accounts wait for "
+                f"the next run (deleted {swept.deleted}, kept {swept.kept}, dated {swept.dated})"
+            ),
+        )
+    return InactiveAccountRun(
+        dated=swept.dated, deleted=swept.deleted, kept=swept.kept, failed=swept.failed
+    )
 
 
 @app.get("/api/admin/usage", response_model=UsageReport)

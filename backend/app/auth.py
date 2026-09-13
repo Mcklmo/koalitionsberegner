@@ -26,6 +26,7 @@ switched on.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -420,6 +421,10 @@ class PasswordCredentialStore(Protocol):
         """End this session. Unknown tokens are not an error — they are gone."""
         ...
 
+    def remove(self, uid: str) -> None:
+        """Delete the user and its sessions. This store is also the :class:`IdentityRemover`."""
+        ...
+
 
 def checked_signup(email: str, password: str) -> tuple[str, str]:
     """The rules a new account must satisfy, wherever it is being stored.
@@ -437,3 +442,121 @@ def checked_signup(email: str, password: str) -> tuple[str, str]:
         # Not a policy — a hash of unbounded input is a free way to burn CPU.
         raise SignUpRefused("that password is unreasonably long")
     return address, password
+
+
+# --- deleting a sign-in ------------------------------------------------------
+#
+# When an account is deleted for being unused (see app.retention), deleting the
+# account record is not enough. The sign-in behind it, with its email address,
+# is personal data too, and while it exists signing in would create a new
+# account. The seam is declared here, beside the stores that verify sign-ins,
+# for the same reason PasswordCredentialStore is: the caller never imports a
+# particular implementation.
+
+#: Identity Toolkit's admin endpoint for deleting a user. firebase-admin's
+#: ``auth.delete_user`` calls this same endpoint.
+FIREBASE_DELETE_USER_URL = (
+    "https://identitytoolkit.googleapis.com/v1/projects/{project}/accounts:delete"
+)
+
+#: The OAuth scope the service account's token is requested with.
+FIREBASE_ADMIN_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+
+#: How Identity Toolkit words "there is no such user".
+USER_NOT_FOUND = "USER_NOT_FOUND"
+
+
+class IdentityRemovalFailed(Exception):
+    """The sign-in is still there. Nothing is lost by trying again later."""
+
+
+class IdentityRemover(Protocol):
+    """Deletes the sign-in belonging to a uid.
+
+    A sign-in that is already gone counts as deleted. Retention retries a
+    failed removal on the next run, and a retry after an earlier success, or
+    after someone deleted the user by hand, must not count as a failure.
+    """
+
+    def remove(self, uid: str) -> None:
+        """Raise when the sign-in could not be deleted."""
+        ...
+
+
+class NoIdentities:
+    """``AUTH_MODE=off`` and ``stub``: no sign-in is stored anywhere, so there is nothing to delete."""
+
+    def remove(self, uid: str) -> None:
+        return None
+
+
+def _post_json(url: str, payload: dict, token: str) -> tuple[int, dict]:
+    import httpx
+
+    response = httpx.post(
+        url, json=payload, headers={"Authorization": f"Bearer {token}"}, timeout=10.0
+    )
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    return response.status_code, body if isinstance(body, dict) else {}
+
+
+def _error_message(body: dict) -> str:
+    error = body.get("error")
+    message = error.get("message") if isinstance(error, dict) else None
+    return message if isinstance(message, str) else ""
+
+
+class FirebaseIdentities:
+    """Deletes Firebase Authentication users, as the service account this runs as.
+
+    Calls Identity Toolkit's REST API directly, with Application Default
+    Credentials (on Cloud Run, the attached service account). That avoids
+    adding firebase-admin for a single call: google-auth is already installed
+    for token verification. The service account needs a role that can delete
+    users, such as ``roles/firebaseauth.admin``; until it has one, every
+    removal fails with 403 and the accounts stay until the next run.
+
+    Credentials are not looked up until the first removal, so a deployment
+    that never deletes anyone does not need them to start.
+    """
+
+    def __init__(self, project_id: str, *, credentials=None, post=_post_json):
+        if not project_id:
+            raise ValueError("deleting Firebase users needs a project id")
+        self._url = FIREBASE_DELETE_USER_URL.format(project=project_id)
+        self._credentials = credentials
+        self._post = post
+        self._lock = threading.Lock()
+
+    def _token(self) -> str:
+        import google.auth
+        from google.auth.transport.requests import Request
+
+        with self._lock:
+            if self._credentials is None:
+                self._credentials, _ = google.auth.default(scopes=[FIREBASE_ADMIN_SCOPE])
+            if not self._credentials.valid:
+                self._credentials.refresh(Request())
+            return self._credentials.token
+
+    def remove(self, uid: str) -> None:
+        with io_span(log, "firebase", "delete_user", uid=uid[:12]) as span:
+            try:
+                status, body = self._post(self._url, {"localId": uid}, self._token())
+            except Exception as exc:  # noqa: BLE001 - credentials or network: retry next run
+                raise IdentityRemovalFailed(
+                    f"could not ask Firebase to delete the user: {scrub(exc)}"
+                ) from None
+            span["status"] = status
+            if status == 200:
+                return
+            message = _error_message(body)
+            if status == 404 or message.startswith(USER_NOT_FOUND):
+                span["gone"] = True
+                return
+            raise IdentityRemovalFailed(
+                f"Firebase refused to delete the user: HTTP {status} {scrub(message)}".rstrip()
+            )

@@ -165,6 +165,24 @@ RUN=https://koalitionsberegner-711803377000.europe-north1.run.app
 A report sent this way is not sent again: the 06:00 run lists that day's daily
 report under `skipped`.
 
+The same cron also calls `POST /api/internal/inactive-accounts`, with the same
+two headers. That call deletes accounts nobody has used for two years, at most
+100 per run, along with their Firebase users (see `backend/app/retention.py`).
+Deleting a Firebase user requires the service account to have the Firebase
+Authentication Admin role:
+
+```sh
+gcloud projects add-iam-policy-binding koalitionsberegner \
+  --member serviceAccount:koalitionsberegner@koalitionsberegner.iam.gserviceaccount.com \
+  --role roles/firebaseauth.admin
+```
+
+Until the role is granted, those deletions fail with 403. The accounts are kept
+for the next day, and the call answers 502, so the cron run shows as failed. To
+run it by hand, use the same `curl` as above with the path
+`/api/internal/inactive-accounts`. It answers
+`{"dated":…,"deleted":…,"kept":…,"failed":0}`.
+
 What is counted, and why it is only counts, is in `backend/app/usage.py`.
 Page loads come from `/api/config`, so they include bots that run the page's
 scripts.

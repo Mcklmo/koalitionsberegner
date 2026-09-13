@@ -2,6 +2,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import worker, {
+  INACTIVE_ACCOUNTS_PATH,
   ORIGIN_SECRET_HEADER,
   REPORT_SECRET_HEADER,
   USAGE_REPORTS_PATH,
@@ -17,12 +18,12 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-/** Replace fetch with a recorder that answers 200. */
-function recordFetches() {
+/** Replace fetch with a recorder that answers 200, or `statusFor(url)` when given. */
+function recordFetches(statusFor = () => 200) {
   const calls = [];
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), init });
-    return new Response('{}', { status: 200 });
+    return new Response('{}', { status: statusFor(String(url)) });
   };
   return calls;
 }
@@ -110,18 +111,22 @@ function scheduledContext() {
   return { pending, waitUntil: (promise) => pending.push(promise) };
 }
 
-test('the cron asks the origin to send the usage reports, carrying both secrets', async () => {
+test('the cron asks the origin for the reports and the account deletion, carrying both secrets', async () => {
   const calls = recordFetches();
   const ctx = scheduledContext();
 
   await worker.scheduled({}, REPORT_ENV, ctx);
   await Promise.all(ctx.pending);
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, `${ENV.ORIGIN_URL}${USAGE_REPORTS_PATH}`);
-  assert.equal(calls[0].init.method, 'POST');
-  assert.equal(calls[0].init.headers[ORIGIN_SECRET_HEADER], ENV.ORIGIN_SECRET);
-  assert.equal(calls[0].init.headers[REPORT_SECRET_HEADER], REPORT_ENV.USAGE_REPORT_SECRET);
+  assert.deepEqual(
+    calls.map((call) => call.url).sort(),
+    [`${ENV.ORIGIN_URL}${INACTIVE_ACCOUNTS_PATH}`, `${ENV.ORIGIN_URL}${USAGE_REPORTS_PATH}`]
+  );
+  for (const call of calls) {
+    assert.equal(call.init.method, 'POST');
+    assert.equal(call.init.headers[ORIGIN_SECRET_HEADER], ENV.ORIGIN_SECRET);
+    assert.equal(call.init.headers[REPORT_SECRET_HEADER], REPORT_ENV.USAGE_REPORT_SECRET);
+  }
 });
 
 test('a report run the origin refused shows as a failed cron', async () => {
@@ -131,6 +136,16 @@ test('a report run the origin refused shows as a failed cron', async () => {
   await worker.scheduled({}, REPORT_ENV, ctx);
 
   await assert.rejects(Promise.all(ctx.pending), /HTTP 502/);
+});
+
+test('an email that fails does not stop the account deletion, and still fails the cron', async () => {
+  const calls = recordFetches((url) => (url.endsWith(USAGE_REPORTS_PATH) ? 502 : 200));
+  const ctx = scheduledContext();
+
+  await worker.scheduled({}, REPORT_ENV, ctx);
+
+  await assert.rejects(Promise.all(ctx.pending), new RegExp(`${USAGE_REPORTS_PATH}: HTTP 502`));
+  assert.ok(calls.some((call) => call.url.endsWith(INACTIVE_ACCOUNTS_PATH)));
 });
 
 test('without a report secret the cron sends nothing', async (t) => {
@@ -146,13 +161,15 @@ test('without a report secret the cron sends nothing', async (t) => {
 
 test('the endpoints only the cron calls are never forwarded from the public side', async () => {
   const calls = recordFetches();
-  const response = await worker.fetch(
-    new Request(`https://koalitionsberegner.moritzmarcus.com${USAGE_REPORTS_PATH}`, {
-      method: 'POST',
-      headers: { [REPORT_SECRET_HEADER]: REPORT_ENV.USAGE_REPORT_SECRET },
-    }),
-    REPORT_ENV
-  );
-  assert.equal(response.status, 404);
+  for (const path of [USAGE_REPORTS_PATH, INACTIVE_ACCOUNTS_PATH]) {
+    const response = await worker.fetch(
+      new Request(`https://koalitionsberegner.moritzmarcus.com${path}`, {
+        method: 'POST',
+        headers: { [REPORT_SECRET_HEADER]: REPORT_ENV.USAGE_REPORT_SECRET },
+      }),
+      REPORT_ENV
+    );
+    assert.equal(response.status, 404, path);
+  }
   assert.equal(calls.length, 0);
 });

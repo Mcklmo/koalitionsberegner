@@ -8,9 +8,10 @@
  * 403 — so the `run.app` address serves nothing to anyone who goes around us.
  *
  * Once a day the cron in wrangler.jsonc runs `scheduled`, which asks the origin
- * to email the usage reports that are due. That endpoint lives under
+ * for two things: to email the usage reports that are due, and to delete the
+ * accounts nobody has used for two years. Both endpoints live under
  * `/api/internal/`, which is never forwarded from the public side: the report
- * secret already guards it, and this keeps it off the internet altogether.
+ * secret already guards them, and this keeps them off the internet altogether.
  *
  * `ORIGIN_URL` is a plain var in wrangler.jsonc; `ORIGIN_SECRET` and
  * `USAGE_REPORT_SECRET` are set with `wrangler secret put` and must equal the
@@ -20,9 +21,10 @@
 export const ORIGIN_SECRET_HEADER = 'x-origin-secret';
 export const REPORT_SECRET_HEADER = 'x-report-secret';
 export const USAGE_REPORTS_PATH = '/api/internal/usage-reports';
+export const INACTIVE_ACCOUNTS_PATH = '/api/internal/inactive-accounts';
 
-async function sendUsageReports(env) {
-  const response = await fetch(new URL(USAGE_REPORTS_PATH, env.ORIGIN_URL), {
+async function callOrigin(env, path) {
+  const response = await fetch(new URL(path, env.ORIGIN_URL), {
     method: 'POST',
     headers: {
       [ORIGIN_SECRET_HEADER]: env.ORIGIN_SECRET,
@@ -30,7 +32,7 @@ async function sendUsageReports(env) {
     },
   });
   // Thrown rather than logged, so the run shows as failed in the dashboard.
-  if (!response.ok) throw new Error(`usage reports: HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
 }
 
 export default {
@@ -65,10 +67,14 @@ export default {
 
   async scheduled(controller, env, ctx) {
     if (!env.ORIGIN_URL || !env.ORIGIN_SECRET || !env.USAGE_REPORT_SECRET) {
-      // Reports are optional; a deployment without them has nothing to send.
-      console.warn('usage reports are not configured; skipping');
+      // A deployment without the secret has no daily jobs to run.
+      console.warn('the daily jobs are not configured; skipping');
       return;
     }
-    ctx.waitUntil(sendUsageReports(env));
+    // Both requests start together, so one that fails does not stop the other.
+    // If either fails, the run is marked failed.
+    ctx.waitUntil(
+      Promise.all([callOrigin(env, USAGE_REPORTS_PATH), callOrigin(env, INACTIVE_ACCOUNTS_PATH)])
+    );
   },
 };

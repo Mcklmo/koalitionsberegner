@@ -22,6 +22,7 @@ def clean_config():
         config.get_wikipedia,
         config.get_accounts,
         config.get_password_store,
+        config.get_identity_remover,
         config.get_verifier,
         config.get_quota_policy,
         config.get_billing,

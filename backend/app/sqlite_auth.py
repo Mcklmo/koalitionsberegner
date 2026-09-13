@@ -247,3 +247,20 @@ class SqliteCredentialStore:
                 self._purge_expired(conn)
                 span["uid"] = row["uid"][:12]
                 return self._issue(conn, row["uid"], row["email"])
+
+    def remove(self, uid: str) -> None:
+        """Delete the user, password and every session, when retention deletes the account.
+
+        The sessions go first and in the same transaction: a session outliving
+        its user would fail to resolve anyway, but it would still be a row
+        belonging to somebody who has been deleted. An unknown uid is already
+        gone, which is not an error (see :class:`~app.auth.IdentityRemover`).
+        """
+        with io_span(log, "sqlite", "remove_user", uid=uid[:12]) as span:
+            with self._write() as conn:
+                span["sessions"] = conn.execute(
+                    "DELETE FROM auth_sessions WHERE uid = ?", (uid,)
+                ).rowcount
+                span["found"] = (
+                    conn.execute("DELETE FROM auth_users WHERE uid = ?", (uid,)).rowcount > 0
+                )

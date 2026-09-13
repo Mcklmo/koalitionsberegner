@@ -9,6 +9,14 @@ else is extracting right now, is served without touching the quota — see
 Quotas reset by calendar month with no scheduled job: a period label is stored
 alongside the counter, and a counter belonging to a past period reads as zero
 (:meth:`UserAccount.used_in`). The first import of a new month overwrites it.
+
+Accounts nobody uses are deleted. Each one carries ``last_active_at``, which
+:meth:`AccountStore.ensure` — the call every signed-in request makes — moves
+forward at most once a day. Once a day :mod:`app.retention` deletes an account
+whose last activity is older than :data:`INACTIVE_ACCOUNT_RETENTION_DAYS` and
+that has no subscription still running (:func:`_deletable`). Like the quota
+rules, that rule is one function every store calls, so the stores cannot
+disagree about who gets deleted.
 """
 
 from __future__ import annotations
@@ -54,6 +62,21 @@ PAID_TIERS = (Tier.BASIC, Tier.PREMIUM)
 #: ``past_due``, ``unpaid``, ``canceled``, ``incomplete`` — drops them to free.
 ENTITLING_STATUSES = frozenset({"active", "trialing"})
 
+#: Stripe statuses after which a subscription is over for good. Every other
+#: status is a subscription Stripe may still charge for — ``past_due`` while it
+#: retries a card, say — and an account with one of those is never deleted.
+ENDED_STATUSES = frozenset({"canceled", "incomplete_expired"})
+
+#: An account nobody has used for this long is deleted, sign-in and all. The
+#: privacy policy states this number, so change both together.
+INACTIVE_ACCOUNT_RETENTION_DAYS = 730
+
+#: ``ensure`` writes ``last_active_at`` only once the stored value is at least
+#: this old. Retention is measured in years, so a day's precision loses nothing,
+#: and it keeps the request path at one read: otherwise every signed-in request
+#: would also be a write.
+ACTIVITY_RESOLUTION_SECONDS = 24 * 3600.0
+
 
 def billing_period(when: date | datetime | None = None) -> str:
     """The quota window a moment falls in: ``"2026-09"``.
@@ -62,6 +85,11 @@ def billing_period(when: date | datetime | None = None) -> str:
     """
     moment = when or datetime.now(timezone.utc)
     return f"{moment.year:04d}-{moment.month:02d}"
+
+
+def inactive_cutoff(now: float) -> float:
+    """The moment, in epoch seconds, that an account's last activity must be before for it to be deleted."""
+    return now - INACTIVE_ACCOUNT_RETENTION_DAYS * 24 * 3600.0
 
 
 @dataclass(frozen=True)
@@ -91,6 +119,14 @@ class UserAccount:
     subscription_id: str | None = None
     subscription_status: str | None = None
     """Stripe's own word for the subscription: ``active``, ``past_due``, ``canceled``…"""
+    last_active_at: float | None = None
+    """When the account was last used, in epoch seconds, accurate to a day.
+
+    ``None`` for an account stored before this was recorded. That alone never
+    makes an account deletable: the next request dates it, or failing that the
+    next retention run does (:meth:`AccountStore.date_undated`), and from then
+    on it has two years like any other account.
+    """
 
     def used_in(self, period: str) -> int:
         """Imports consumed in ``period`` — zero once the month has rolled over."""
@@ -117,7 +153,11 @@ class AccountStore(Protocol):
     def get(self, uid: str) -> UserAccount | None: ...
 
     def ensure(self, uid: str, email: str | None) -> UserAccount:
-        """Return the account, creating a free one on first sight of ``uid``."""
+        """Return the account, creating a free one on first sight of ``uid``.
+
+        Also where an account counts as used: ``last_active_at`` is set on
+        creation and moved forward once it is a day old (:func:`_seen`).
+        """
         ...
 
     def reserve_import(self, uid: str, period: str, limit: int) -> bool:
@@ -160,6 +200,34 @@ class AccountStore(Protocol):
 
         A number for the usage report, answered from the creation time the
         store keeps anyway — not a list of who.
+        """
+        ...
+
+    def date_undated(self, now: float, limit: int) -> int:
+        """Set ``last_active_at`` to ``now`` on up to ``limit`` accounts that have none.
+
+        This is how accounts stored before activity was recorded come under the
+        rule: they count as used today. None is deleted for lacking a date, and
+        none is kept forever for lacking one either. Returns how many it dated.
+        """
+        ...
+
+    def inactive(self, before: float, limit: int) -> list[UserAccount]:
+        """Up to ``limit`` accounts last active before ``before``, longest idle first.
+
+        Includes the ones still billed; the caller applies :func:`_deletable`.
+        """
+        ...
+
+    def mark_active(self, uid: str, now: float) -> None:
+        """Record the account as in use at ``now``. An unknown uid is not an error."""
+        ...
+
+    def delete_inactive(self, uid: str, before: float) -> bool:
+        """Delete the account if :func:`_deletable` still holds for it, atomically.
+
+        Checked again here rather than trusted from :meth:`inactive`, because
+        the user may have signed in or subscribed since that list was read.
         """
         ...
 
@@ -215,6 +283,50 @@ def _subscribed(
     )
 
 
+def _seen(account: UserAccount, email: str | None, now: float) -> UserAccount:
+    """What ``ensure`` makes of an account that already exists.
+
+    The current email address, and ``last_active_at`` moved to ``now`` when it
+    is missing or at least :data:`ACTIVITY_RESOLUTION_SECONDS` old. When the
+    result equals the account passed in, nothing needs writing, which is what
+    lets the stores answer most requests with a single read.
+    """
+    if email and account.email != email:
+        account = replace(account, email=email)
+    if account.last_active_at is None or now - account.last_active_at >= ACTIVITY_RESOLUTION_SECONDS:
+        account = replace(account, last_active_at=now)
+    return account
+
+
+def _billed(account: UserAccount) -> bool:
+    """Whether a subscription may still be running on this account.
+
+    Deliberately broader than being entitled to a tier. A ``past_due``
+    subscription grants no imports, but Stripe is still retrying the card, and
+    deleting the account would leave a subscription with no account for its
+    webhooks to reach. A paid tier with no recorded status is kept as well:
+    nothing says that subscription has ended.
+    """
+    if account.tier is not Tier.FREE:
+        return True
+    status = account.subscription_status
+    return status is not None and status not in ENDED_STATUSES
+
+
+def _deletable(account: UserAccount, before: float) -> bool:
+    """The retention rule, shared by every implementation so they cannot drift.
+
+    Last used before ``before``, and nothing billed. An account with no date is
+    never deletable. Deletion is only ever done on purpose, and a missing date
+    means the account has not been looked at yet, not that it is old.
+    """
+    return (
+        account.last_active_at is not None
+        and account.last_active_at < before
+        and not _billed(account)
+    )
+
+
 class InMemoryAccountStore:
     """Process-local accounts, for tests and for runs without a real database."""
 
@@ -232,12 +344,15 @@ class InMemoryAccountStore:
 
     def ensure(self, uid: str, email: str | None) -> UserAccount:
         with self._lock:
+            now = self._clock()
             account = self._accounts.get(uid)
             if account is None:
-                account = UserAccount(uid=uid, email=email, period=billing_period())
-                self._created[uid] = self._clock()
-            elif email and account.email != email:
-                account = replace(account, email=email)
+                account = UserAccount(
+                    uid=uid, email=email, period=billing_period(), last_active_at=now
+                )
+                self._created[uid] = now
+            else:
+                account = _seen(account, email, now)
             self._accounts[uid] = account
             return account
 
@@ -294,3 +409,33 @@ class InMemoryAccountStore:
     def count_created(self, start: float, end: float) -> int:
         with self._lock:
             return sum(1 for created in self._created.values() if start <= created < end)
+
+    def date_undated(self, now: float, limit: int) -> int:
+        with self._lock:
+            undated = [uid for uid, a in self._accounts.items() if a.last_active_at is None][:limit]
+            for uid in undated:
+                self._accounts[uid] = replace(self._accounts[uid], last_active_at=now)
+            return len(undated)
+
+    def inactive(self, before: float, limit: int) -> list[UserAccount]:
+        with self._lock:
+            idle = [
+                a for a in self._accounts.values()
+                if a.last_active_at is not None and a.last_active_at < before
+            ]
+            return sorted(idle, key=lambda a: a.last_active_at)[:limit]
+
+    def mark_active(self, uid: str, now: float) -> None:
+        with self._lock:
+            account = self._accounts.get(uid)
+            if account is not None:
+                self._accounts[uid] = replace(account, last_active_at=now)
+
+    def delete_inactive(self, uid: str, before: float) -> bool:
+        with self._lock:
+            account = self._accounts.get(uid)
+            if account is None or not _deletable(account, before):
+                return False
+            del self._accounts[uid]
+            self._created.pop(uid, None)
+            return True

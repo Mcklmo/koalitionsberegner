@@ -95,6 +95,17 @@ counted from the config request the page already makes. The page's
 and [doc/cloudflare.md](doc/cloudflare.md#7-usage-reports-by-email) for the
 schedule.
 
+Accounts nobody uses are deleted. An account that has not been used for two
+years is deleted, together with its sign-in: the Firebase user, or with
+`AUTH_MODE=sqlite` the password and sessions. The one exception is an account
+with a subscription that has not ended. "Used" means signing in and loading the
+page, recorded to the day as `last_active_at`. Payment records stay with Stripe,
+because bookkeeping rules require it. The same daily cron does this through
+`POST /api/internal/inactive-accounts`, at most 100 accounts per run. If a
+sign-in cannot be deleted, its account is kept and retried the next day.
+Accounts created before activity was recorded count as used on the day of the
+first run. See `backend/app/retention.py`.
+
 Try it locally. Ungated, so every caller is an administrator; add the four
 `SMTP_*`/`REPORT_EMAIL_TO` variables from `.env.example` to really send email:
 
@@ -106,8 +117,10 @@ ELECTION_STORE=sqlite AUTH_MODE=off uv run uvicorn app.main:app --reload
 TOMORROW=$(date -u -d tomorrow +%F 2>/dev/null || date -u -v+1d +%F)
 curl -s "localhost:8000/api/admin/usage?period=weekly&before=$TOMORROW" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"])'
 curl -s -X POST -H 'x-report-secret: local-report-secret-at-least-32-chars' 'localhost:8000/api/internal/usage-reports?period=daily'   # 502 until SMTP is set
+curl -s -X POST -H 'x-report-secret: local-report-secret-at-least-32-chars' 'localhost:8000/api/internal/inactive-accounts'   # {"dated":0,"deleted":0,"kept":0,"failed":0}
 
-uv run pytest tests/test_usage.py   # the counting, the reports and the endpoints
+uv run pytest tests/test_usage.py       # the counting, the reports and the endpoints
+uv run pytest tests/test_retention.py   # which accounts are deleted, and the deletion endpoint
 ```
 
 ## Run locally

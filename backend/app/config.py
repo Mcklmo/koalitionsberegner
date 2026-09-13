@@ -23,6 +23,9 @@ from .accounts import DEFAULT_MONTHLY_IMPORTS, AccountStore, InMemoryAccountStor
 from .auth import (
     DisabledVerifier,
     FirebaseCredentials,
+    FirebaseIdentities,
+    IdentityRemover,
+    NoIdentities,
     PasswordCredentialStore,
     PrincipalRules,
     StoreBackedVerifier,
@@ -433,6 +436,30 @@ def get_password_store() -> PasswordCredentialStore | None:
 
 
 @lru_cache(maxsize=1)
+def get_identity_remover() -> IdentityRemover:
+    """What deletes the sign-in when retention deletes an unused account.
+
+    It follows ``AUTH_MODE``, because that is where the sign-ins are. Firebase
+    users are deleted through Identity Toolkit as the service account, which
+    therefore needs a role that may delete them (see doc/contribute.md). SQLite
+    users are deleted from the same file. ``off`` and ``stub`` store no sign-in,
+    so only the account record is deleted.
+    """
+    mode = auth_mode()
+    if mode == "sqlite":
+        store = get_password_store()
+        if store is None:  # unreachable: this mode is what builds it
+            raise ConfigError("AUTH_MODE=sqlite could not open its credential store")
+        return store
+    if mode == "firebase":
+        project = firebase_project_id()
+        if not project:
+            raise ConfigError("AUTH_MODE=firebase requires FIREBASE_PROJECT_ID")
+        return FirebaseIdentities(project)
+    return NoIdentities()
+
+
+@lru_cache(maxsize=1)
 def get_verifier() -> TokenVerifier:
     """Wire token verification: a credential store, plus the rules.
 
@@ -664,6 +691,7 @@ def validate_configuration() -> dict[str, str]:
     get_accounts()
     get_password_store()
     get_verifier()
+    get_identity_remover()
     get_quota_policy()
     get_billing()
     get_wishlist()
