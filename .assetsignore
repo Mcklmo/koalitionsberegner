@@ -1,0 +1,23 @@
+# What `wrangler deploy` must never publish. Its assets directory is the repo
+# root, and anything not listed here becomes a public URL — .env first of all,
+# which holds the Stripe and Anthropic keys. Only index.html and js/ are the page.
+.env*
+.git
+.gitignore
+.dockerignore
+.assetsignore
+.claude
+.vscode
+.DS_Store
+.pytest_cache
+.wrangler
+*.local.sh
+Dockerfile
+README.md
+wrangler.jsonc
+backend
+worker
+data
+doc
+test
+node_modules

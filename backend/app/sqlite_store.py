@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS import_jobs (
     attempt     INTEGER NOT NULL DEFAULT 1,
     error       TEXT,
     result      TEXT,
-    forecasts   TEXT
+    forecasts   TEXT,
+    owner       TEXT
 );
 CREATE TABLE IF NOT EXISTS import_results (
     request_key   TEXT PRIMARY KEY,
@@ -92,6 +93,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         forecasts=tuple(
             Election.model_validate(item) for item in json.loads(row["forecasts"])
         ) if row["forecasts"] else (),
+        owner=row["owner"],
     )
 
 
@@ -124,6 +126,7 @@ class SqliteElectionStore:
         for table, column, definition in (
             ("elections", "selected", "INTEGER NOT NULL DEFAULT 0"),
             ("import_jobs", "forecasts", "TEXT"),
+            ("import_jobs", "owner", "TEXT"),
         ):
             existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if column not in existing:
@@ -235,7 +238,9 @@ class SqliteElectionStore:
 
     # --- writes ------------------------------------------------------------
 
-    def claim(self, request_key: str, request: ImportRequest) -> Claim:
+    def claim(
+        self, request_key: str, request: ImportRequest, owner: str | None = None
+    ) -> Claim:
         with io_span(log, "sqlite", "claim", request=request_key[:12]) as span:
             with self._write() as conn:
                 resolved = conn.execute(
@@ -264,15 +269,17 @@ class SqliteElectionStore:
                     query=request.describe(),
                     started_at=self._clock(),
                     attempt=(job.attempt + 1) if job else 1,
+                    owner=owner,
                 )
                 conn.execute(
                     "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
-                    " error, result) VALUES (?, ?, ?, ?, ?, NULL, NULL)"
+                    " error, result, owner) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     " query=excluded.query, started_at=excluded.started_at,"
-                    " attempt=excluded.attempt, error=NULL, result=NULL, forecasts=NULL",
+                    " attempt=excluded.attempt, error=NULL, result=NULL, forecasts=NULL,"
+                    " owner=excluded.owner",
                     (request_key, new_job.status.value, new_job.query,
-                     new_job.started_at, new_job.attempt),
+                     new_job.started_at, new_job.attempt, new_job.owner),
                 )
                 span["attempt"] = new_job.attempt
                 return Claim(outcome, request_key, job=new_job)

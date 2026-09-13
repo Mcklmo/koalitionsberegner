@@ -361,3 +361,37 @@ def test_without_stripe_the_app_still_starts_and_sells_nothing(monkeypatch, clea
 
     assert billing.enabled is False
     assert billing.tiers() == ()
+
+
+@pytest.mark.parametrize("mode", ["off", "stub"])
+def test_an_ungated_auth_mode_refuses_to_run_on_cloud_run(monkeypatch, clean_config, mode):
+    """Both let a caller be anyone; neither belongs anywhere reachable."""
+    from app.config import ConfigError, get_verifier
+
+    monkeypatch.setenv("K_SERVICE", "koalitionsberegner")
+    monkeypatch.setenv("AUTH_MODE", mode)
+
+    with pytest.raises(ConfigError, match="Cloud Run"):
+        get_verifier()
+
+
+def test_a_lost_project_id_on_cloud_run_stops_the_boot(monkeypatch, clean_config):
+    """Without a project the default is off — on Cloud Run that must fail, not open up."""
+    from app.config import ConfigError, get_verifier
+
+    monkeypatch.setenv("K_SERVICE", "koalitionsberegner")
+    for name in ("AUTH_MODE", "FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(ConfigError, match="Cloud Run"):
+        get_verifier()
+
+
+def test_firebase_runs_on_cloud_run(monkeypatch, clean_config):
+    from app.config import get_verifier
+
+    monkeypatch.setenv("K_SERVICE", "koalitionsberegner")
+    monkeypatch.setenv("AUTH_MODE", "firebase")
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo")
+
+    assert get_verifier().provider == "firebase"

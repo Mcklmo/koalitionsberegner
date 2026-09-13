@@ -138,7 +138,11 @@ export function mountAccountUi({ api, auth, config, elements, onChange = () => {
    */
   function renderUpgrades() {
     el.upgrades.innerHTML = '';
-    const sellable = account?.unlimited ? [] : (config.tiers ?? []).filter(
+    // A subscriber changes tier in Stripe's portal: a second checkout would be
+    // a second subscription, and the server refuses one.
+    const subscribed = account?.tier !== 'free'
+      && ['active', 'trialing'].includes(account?.subscriptionStatus);
+    const sellable = account?.unlimited || subscribed ? [] : (config.tiers ?? []).filter(
       (row) => row.purchasable && row.tier !== account?.tier
     );
     for (const row of sellable) {

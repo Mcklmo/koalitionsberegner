@@ -34,8 +34,24 @@ DEFAULT_MONTHLY_IMPORTS: Mapping[Tier, int] = {
     Tier.PREMIUM: 200,
 }
 
+#: Failed imports are refunded — a misremembered year should not cost an import
+#: — but each one still ran the resolver and read pages with a model. So failures
+#: are refunded up to as many again as the allowance itself, and never fewer than
+#: this; past that, the month's imports are spent.
+MIN_REFUNDED_FAILURES = 5
+
+
+def attempt_limit(limit: int) -> int:
+    """How many imports may be *started* in a month on an allowance of ``limit``."""
+    return limit + max(limit, MIN_REFUNDED_FAILURES) if limit > 0 else 0
+
+
 #: Tiers a subscription can grant. Free is what an account starts and ends on.
 PAID_TIERS = (Tier.BASIC, Tier.PREMIUM)
+
+#: Subscription statuses that entitle the user to their tier. Anything else —
+#: ``past_due``, ``unpaid``, ``canceled``, ``incomplete`` — drops them to free.
+ENTITLING_STATUSES = frozenset({"active", "trialing"})
 
 
 def billing_period(when: date | datetime | None = None) -> str:
@@ -68,6 +84,8 @@ class UserAccount:
     period: str = ""
     """The month ``used`` was counted in. A stale label means the counter is spent."""
     used: int = 0
+    attempts: int = 0
+    """Imports started in ``period``, the refunded failures among them."""
     stripe_customer_id: str | None = None
     subscription_id: str | None = None
     subscription_status: str | None = None
@@ -77,12 +95,19 @@ class UserAccount:
         """Imports consumed in ``period`` — zero once the month has rolled over."""
         return self.used if self.period == period else 0
 
+    def attempts_in(self, period: str) -> int:
+        """Imports started in ``period``, whether or not they were refunded."""
+        return self.attempts if self.period == period else 0
+
     def remaining(self, policy: QuotaPolicy, period: str | None = None) -> int:
         window = period or billing_period()
         return max(0, policy.limit(self.tier) - self.used_in(window))
 
     def may_import(self, policy: QuotaPolicy, period: str | None = None) -> bool:
-        return self.remaining(policy, period) > 0
+        window = period or billing_period()
+        return self.remaining(policy, window) > 0 and self.attempts_in(window) < attempt_limit(
+            policy.limit(self.tier)
+        )
 
 
 class AccountStore(Protocol):
@@ -101,8 +126,12 @@ class AccountStore(Protocol):
         """
         ...
 
-    def release_import(self, uid: str, period: str) -> None:
-        """Give a reserved import back — the extraction never started."""
+    def release_import(self, uid: str, period: str, *, keep_attempt: bool = False) -> None:
+        """Give a reserved import back.
+
+        ``keep_attempt`` when the import did its work and failed: the allowance
+        comes back, the attempt still counts toward :func:`attempt_limit`.
+        """
         ...
 
     def set_subscription(
@@ -129,16 +158,52 @@ class AccountStore(Protocol):
 def _reserved(account: UserAccount, period: str, limit: int) -> UserAccount | None:
     """The reserve rule, shared by every implementation so they cannot drift."""
     used = account.used_in(period)
-    if used >= limit:
+    attempts = account.attempts_in(period)
+    if used >= limit or attempts >= attempt_limit(limit):
         return None
-    return replace(account, period=period, used=used + 1)
+    return replace(account, period=period, used=used + 1, attempts=attempts + 1)
 
 
-def _released(account: UserAccount, period: str) -> UserAccount:
+def _released(account: UserAccount, period: str, *, keep_attempt: bool = False) -> UserAccount:
     """The release rule. A refund for a past month would resurrect a spent counter."""
     if account.period != period or account.used <= 0:
         return account
-    return replace(account, used=account.used - 1)
+    attempts = account.attempts if keep_attempt else max(0, account.attempts - 1)
+    return replace(account, used=account.used - 1, attempts=attempts)
+
+
+def _subscribed(
+    account: UserAccount,
+    tier: Tier,
+    *,
+    customer_id: str | None,
+    subscription_id: str | None,
+    status: str | None,
+) -> UserAccount:
+    """The webhook rule, shared by every implementation so they cannot drift.
+
+    An account pays through one subscription. Another one may take its place
+    only by being paid for: an old duplicate being cancelled, or a late event
+    about a subscription the user has since replaced, says nothing about the one
+    they pay for now — and applied blindly, it would drop a paying subscriber
+    to free.
+    """
+    paying_now = account.tier is not Tier.FREE and account.subscription_status in ENTITLING_STATUSES
+    if (
+        paying_now
+        and tier is Tier.FREE
+        and subscription_id
+        and account.subscription_id
+        and subscription_id != account.subscription_id
+    ):
+        return account
+    return replace(
+        account,
+        tier=tier,
+        stripe_customer_id=customer_id or account.stripe_customer_id,
+        subscription_id=subscription_id or account.subscription_id,
+        subscription_status=status or account.subscription_status,
+    )
 
 
 class InMemoryAccountStore:
@@ -173,11 +238,11 @@ class InMemoryAccountStore:
             self._accounts[uid] = reserved
             return True
 
-    def release_import(self, uid: str, period: str) -> None:
+    def release_import(self, uid: str, period: str, *, keep_attempt: bool = False) -> None:
         with self._lock:
             account = self._accounts.get(uid)
             if account is not None:
-                self._accounts[uid] = _released(account, period)
+                self._accounts[uid] = _released(account, period, keep_attempt=keep_attempt)
 
     def set_subscription(
         self,
@@ -192,12 +257,9 @@ class InMemoryAccountStore:
             account = self._accounts.get(uid)
             if account is None:
                 return None
-            updated = replace(
-                account,
-                tier=tier,
-                stripe_customer_id=customer_id or account.stripe_customer_id,
-                subscription_id=subscription_id or account.subscription_id,
-                subscription_status=status or account.subscription_status,
+            updated = _subscribed(
+                account, tier, customer_id=customer_id, subscription_id=subscription_id,
+                status=status,
             )
             self._accounts[uid] = updated
             return updated

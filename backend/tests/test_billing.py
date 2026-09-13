@@ -135,10 +135,13 @@ def test_events_we_do_not_act_on_are_ignored(event_type):
 class FakeStripe:
     """Just enough of the SDK: records calls, and can refuse a signature."""
 
-    def __init__(self, *, event=None, signature_error=None):
+    def __init__(self, *, event=None, signature_error=None, retrieve_error=None):
         self.created = []
         self.portals = []
         self.verified = []
+        self.retrieved = []
+        self.subscriptions = {}
+        self._retrieve_error = retrieve_error
         self._event = event
         self._signature_error = signature_error
         outer = self
@@ -155,6 +158,18 @@ class FakeStripe:
                 outer.portals.append(params)
                 return {"id": "bps_1", "url": "https://portal.stripe.test/bps_1"}
 
+        class Subscriptions:
+            @staticmethod
+            def retrieve(subscription_id):
+                outer.retrieved.append(subscription_id)
+                if outer._retrieve_error:
+                    raise outer._retrieve_error
+                if subscription_id in outer.subscriptions:
+                    return outer.subscriptions[subscription_id]
+                # Unless a test says Stripe has moved on, it still says what the
+                # event said.
+                return json.loads(outer.verified[-1][0])["data"]["object"]
+
         class Client:
             # Shaped like the real SDK: resources hang off the ``v1`` namespace,
             # which is where StripeBilling reaches for them.
@@ -166,6 +181,7 @@ class FakeStripe:
                     {
                         "checkout": type("C", (), {"sessions": Sessions})(),
                         "billing_portal": type("B", (), {"sessions": PortalSessions})(),
+                        "subscriptions": Subscriptions,
                     },
                 )()
 
@@ -293,6 +309,7 @@ def test_the_fake_is_shaped_like_the_real_sdk():
     client = stripe.StripeClient("sk_test_dummy").v1
     assert callable(client.checkout.sessions.create)
     assert callable(client.billing_portal.sessions.create)
+    assert callable(client.subscriptions.retrieve)
     assert callable(stripe.Webhook.construct_event)
 
 
@@ -321,6 +338,14 @@ def test_a_really_signed_webhook_grants_the_tier():
         webhook_secret=secret,
         stripe=stripe,
     )
+    # The one call that would leave the machine: Stripe's answer, as the real
+    # SDK's own object rather than a dict, is what the webhook must cope with.
+    current = stripe.Subscription.construct_from(
+        subscription_event()["data"]["object"], "sk_test"
+    )
+    real._client = type("V1", (), {"subscriptions": type(
+        "S", (), {"retrieve": staticmethod(lambda subscription_id: current)}
+    )})()
     event = real.event_from_webhook(payload, f"t={timestamp},v1={signed}")
 
     assert event.tier is Tier.PREMIUM
@@ -340,3 +365,37 @@ def test_without_stripe_nothing_is_for_sale():
         disabled.checkout()
     with pytest.raises(BillingUnavailable):
         disabled.portal()
+
+
+def signed(event: dict) -> bytes:
+    return json.dumps(event).encode()
+
+
+def test_a_subscription_event_applies_the_subscription_as_it_is_now():
+    """Stripe does not deliver in order: the late "incomplete" must not win."""
+    stripe_billing, fake = billing()
+    late = subscription_event(status="incomplete")
+    fake.subscriptions[late["data"]["object"]["id"]] = subscription_event(status="active")[
+        "data"
+    ]["object"]
+
+    event = stripe_billing.event_from_webhook(signed(late), "t=1,v1=sig")
+
+    assert event.status == "active"
+    assert event.tier is Tier.PREMIUM
+
+
+def test_a_subscription_that_cannot_be_read_back_is_retried_not_dropped():
+    stripe_billing, _ = billing(retrieve_error=RuntimeError("stripe is down"))
+    with pytest.raises(BillingUnavailable):
+        stripe_billing.event_from_webhook(signed(subscription_event()), "t=1,v1=sig")
+
+
+def test_a_completed_checkout_is_not_read_back():
+    stripe_billing, fake = billing()
+    checkout = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"customer": "cus_1", "client_reference_id": "uid-1"}},
+    }
+    stripe_billing.event_from_webhook(signed(checkout), "t=1,v1=sig")
+    assert fake.retrieved == []

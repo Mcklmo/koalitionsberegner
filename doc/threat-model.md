@@ -96,7 +96,9 @@ another user, poison the shared election store, or burn our budget.
 is not globally routable, before every request *and again for every redirect
 hop* (redirects are not followed by the HTTP client; the fetcher re-checks each
 `Location` itself). Only `http`/`https` are accepted, at most 3 redirects, a
-20 s timeout, 5 MB of body, and only HTML/plain-text content types.
+20 s timeout per read and 45 s for the whole fetch, 5 MB of body — counted while
+it streams, so an endless response is cut off rather than buffered — and only
+HTML/plain-text content types, checked before the body is downloaded.
 
 ### T2 — Resource exhaustion
 
@@ -108,7 +110,9 @@ Extraction is single-flight per page (`store.claim`): concurrent imports of the
 same URL share one model call, and a page already imported is served from
 storage without fetching or extracting anything at all.
 
-Residual: there is no per-user rate limit and no authentication (see
+Importing is bought, and bounded twice over (see T11): by the monthly
+allowance, and by a cap on how many refunded failures a month may add to it.
+There is no request-rate limit inside the app (see
 [Accepted risks](#accepted-risks)).
 
 ### T3 — Prompt injection: instructions embedded in the page
@@ -223,6 +227,12 @@ everyone. Three things bound it:
   2026 election cannot rewrite one already held.
 - **Failures are not sticky.** A failed or discarded import leaves the page
   claimable again, so a transient attack cannot lock a URL.
+- **A preview is accepted or thrown away only by whoever paid for it.** A
+  request key follows from the year and the place alone, so any account can
+  know one. The job records the account that started the attempt, and only
+  that account or an administrator may confirm or discard its preview
+  (`main.require_importer`) — otherwise anyone could save numbers the importer
+  would have rejected, or make a subscriber pay twice for the same import.
 
 ### T8 — Secrets and logs
 
@@ -233,6 +243,16 @@ and never model output (`extractor.AnthropicExtractor.extract`). The typed
 request and the addresses we fetch *are* logged, as the targets. Only the
 notable calls are logged at all (`observability.NOTABLE_SYSTEMS`), so an
 import's log is a handful of lines and a failure stands out in it.
+
+What a failed import *shows* is narrower than what it logs. Only a `ParseError`
+is worded for the user; any other failure — an API error body, a database
+message — reaches them as one fixed sentence (`service.IMPORT_FAILED`,
+`parser.READ_FAILED`).
+
+The modes that let a caller be anyone, `AUTH_MODE=off` and `stub`, refuse to
+start on Cloud Run (`config.get_verifier`). `off` is also the default without a
+project id, so a deploy that loses that variable fails to boot rather than
+serving every caller as an unlimited administrator.
 
 ### T9 — Every page is one the user did not name
 
@@ -307,6 +327,38 @@ page's numbers are *for* but none of the defences above:
 - **Labelled.** A computed forecast says so in the list, the preview and the
   calculator's footer, and the page it was read from is named.
 
+### T11 — Spending somebody else's money
+
+The adversary here needs no page at all: a script, a free account, or the
+cheapest subscription, and the goal is our bill or another user's payment.
+
+- **Failed imports are refunded, but not without end.** Each failure ran the
+  resolver and a model over pages. `accounts.attempt_limit` lets a month *start*
+  its allowance plus as many again (at least 5) before it is spent, whether or
+  not the failures were refunded. An import served from the store gives its
+  attempt back, because it cost nothing.
+- **Viewing costs a copy, not a read.** `cached_store.CachedElectionStore`
+  keeps stored elections for 30 s in front of Firestore, so reloading the list
+  in a loop is not one billed read per election per request. Jobs are never
+  cached, and neither is a miss. Waiting on an import backs off to one look a
+  second.
+- **Bodies are bounded before they are read.** `main.LimitRequestBody` refuses
+  anything over 64 KB (1 MB for the Stripe webhook) and any body that does not
+  declare its length, so the unauthenticated webhook cannot be used to fill the
+  container's memory.
+- **One subscription per account.** Checkout is refused to an account that is
+  already paying — a second checkout is a second charge — and tier changes go
+  through Stripe's portal. A webhook about a subscription the account no longer
+  pays through cannot drop it to free (`accounts._subscribed`), and a
+  subscription event is applied as Stripe reads it back *now*, because Stripe
+  does not deliver in order and a late `incomplete` would otherwise win.
+- **The proxy cannot be walked around.** With `ORIGIN_SECRET` set, only
+  requests carrying it are answered, so rate limits and bot checks at the proxy
+  are not bypassed through the platform's own `run.app` address.
+- **The page runs only our scripts.** Every response carries a
+  `Content-Security-Policy` allowing scripts from this origin alone and the two
+  Google sign-in endpoints, and refusing to be framed — a backstop behind T6.
+
 ## Accepted risks
 
 These are known and deliberately not addressed here:
@@ -318,9 +370,18 @@ These are known and deliberately not addressed here:
 - **CSS-hidden text still reaches the model.** Text hidden with `display: none`
   is text; stripping it reliably would need a full CSS cascade. It arrives
   inside the fence with no more authority than the rest of the page.
-- **No authentication or rate limiting.** Anyone who can reach the API can
-  import, and imports are visible to everyone. Cost is bounded by the caps in
-  T2 and by single-flight extraction, not by identity.
+- **No request-rate limiting in the app.** Importing needs a paid, confirmed
+  account and is capped per month (T11); everything else is cheap and cached.
+  Limiting requests per client belongs at the proxy in front, which sees real
+  client addresses — the app behind Cloud Run's front end cannot reliably.
+- **A DNS answer can change between the check and the connection.**
+  `assert_public_url` resolves the host, and the HTTP client resolves it again.
+  A rebinding host could point the second answer inward; on Cloud Run there is
+  no private network to reach, and the metadata server refuses requests
+  without its `Metadata-Flavor` header, which the fetcher never sends.
+- **Two checkouts opened side by side both complete.** The refusal in T11
+  needs the first subscription to have been reported; a user who pays twice in
+  the same minute has two subscriptions, and the portal shows both.
 - **`AUTH_MODE=sqlite` does not slow guessing down.** Where this app holds the
   passwords itself, nothing limits how fast sign-ins may be attempted; the
   scrypt cost of one attempt is the whole of the defence, and there is no
@@ -369,6 +430,13 @@ These are known and deliberately not addressed here:
 | Seats from vote shares are computed in code, deterministically | `backend/tests/test_seats.py` |
 | A forecast cannot take a result's identity, block an import, or be saved unless offered | `backend/tests/test_forecast_schema.py`, `backend/tests/test_forecast_store.py`, `backend/tests/test_forecast_api.py` |
 | An offered list is validated whole; computed seats are labelled in the page | `test/forecast.test.mjs` |
+| An endless or dripping page is cut off; a PDF is refused before download | `backend/tests/test_fetcher.py` |
+| Failures are refunded only so often; only the importer confirms or discards a preview | `backend/tests/test_access.py`, `backend/tests/test_accounts.py`, `backend/tests/test_store.py` |
+| Stored elections are read once per 30 s, never stale after a local write | `backend/tests/test_cached_store.py` |
+| No second checkout; a replaced or out-of-order subscription cannot demote | `backend/tests/test_access.py`, `backend/tests/test_accounts.py`, `backend/tests/test_billing.py` |
+| Security headers, body caps, the origin secret, nothing served beside the page | `backend/tests/test_edge.py` |
+| Ungated auth modes refuse to start on Cloud Run | `backend/tests/test_config.py` |
+| An internal failure reaches the user as one fixed sentence | `backend/tests/test_service.py` |
 
 The adversarial fixtures themselves are `test/adversarial/`:
 `injected-instructions.html` argues with the agent through five different

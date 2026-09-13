@@ -493,14 +493,15 @@ test('a reset that fails is reported', async () => {
 
 // --- upgrading --------------------------------------------------------------
 
-test('only tiers that are for sale and are not the current one are offered', async () => {
+test('a subscriber is offered no second checkout, only the portal', async () => {
+  // A second checkout would be a second subscription; changing tier is the portal's job.
   const { el, ui } = harness({ auth: fakeAuth({ signedIn: true }) });
 
   await ui.start();
 
-  const labels = el.upgrades.children.map((child) => child.textContent);
-  assert.deepEqual(labels, ['Premium — 200 importer/md.'], 'free is not for sale, basic is current');
-  assert.equal(el.upgradeRow.hidden, false);
+  assert.deepEqual(el.upgrades.children, []);
+  assert.equal(el.upgradeRow.hidden, true);
+  assert.equal(el.manage.hidden, false);
 });
 
 test('an administrator is offered nothing to buy', async () => {
@@ -528,11 +529,12 @@ test('a free account is offered both paid tiers', async () => {
 });
 
 test('choosing a tier sends the user to Stripe and changes nothing locally', async () => {
-  const { el, ui, api, redirects, changes } = harness({ auth: fakeAuth({ signedIn: true }) });
+  const api = fakeApi({ account: { ...basicAccount, tier: 'free', limit: 0, remaining: 0, mayImport: false, subscriptionStatus: null } });
+  const { el, ui, redirects, changes } = harness({ api, auth: fakeAuth({ signedIn: true }) });
   await ui.start();
   const before = changes.at(-1).tier;
 
-  await el.upgrades.children[0].dispatch('click');
+  await el.upgrades.children[1].dispatch('click');
 
   assert.deepEqual(api.calls.startCheckout, ['premium']);
   assert.deepEqual(redirects, ['https://checkout.test/premium']);
@@ -540,7 +542,10 @@ test('choosing a tier sends the user to Stripe and changes nothing locally', asy
 });
 
 test('a checkout that cannot be started is reported rather than redirected', async () => {
-  const api = fakeApi({ checkoutError: new ApiError('subscriptions are not configured', 503) });
+  const api = fakeApi({
+    account: { ...basicAccount, tier: 'free', limit: 0, remaining: 0, mayImport: false, subscriptionStatus: null },
+    checkoutError: new ApiError('subscriptions are not configured', 503),
+  });
   const { el, ui, redirects } = harness({ api, auth: fakeAuth({ signedIn: true }) });
   await ui.start();
 

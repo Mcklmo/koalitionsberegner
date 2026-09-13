@@ -18,7 +18,7 @@ from dataclasses import replace
 
 from google.cloud import firestore
 
-from .accounts import Tier, UserAccount, _released, _reserved, billing_period
+from .accounts import Tier, UserAccount, _released, _reserved, _subscribed, billing_period
 from .observability import io_span
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ def _account_from_doc(uid: str, data: dict) -> UserAccount:
         tier=_tier(data.get("tier", Tier.FREE.value)),
         period=data.get("period") or "",
         used=int(data.get("used", 0) or 0),
+        attempts=int(data.get("attempts", 0) or 0),
         stripe_customer_id=data.get("stripe_customer_id"),
         subscription_id=data.get("subscription_id"),
         subscription_status=data.get("subscription_status"),
@@ -54,6 +55,7 @@ def _to_doc(account: UserAccount) -> dict:
         "tier": account.tier.value,
         "period": account.period,
         "used": account.used,
+        "attempts": account.attempts,
         "stripe_customer_id": account.stripe_customer_id,
         "subscription_id": account.subscription_id,
         "subscription_status": account.subscription_status,
@@ -128,7 +130,11 @@ class FirestoreAccountStore:
                 return False
             # The write serialises racing reservations: whichever transaction
             # commits first makes the other's read stale, forcing a retry.
-            transaction.set(ref, {"period": reserved.period, "used": reserved.used}, merge=True)
+            transaction.set(
+                ref,
+                {"period": reserved.period, "used": reserved.used, "attempts": reserved.attempts},
+                merge=True,
+            )
             return True
 
         with io_span(log, "firestore", "reserve_import", uid=uid[:12], period=period) as span:
@@ -136,7 +142,7 @@ class FirestoreAccountStore:
             span["granted"] = granted
             return granted
 
-    def release_import(self, uid: str, period: str) -> None:
+    def release_import(self, uid: str, period: str, *, keep_attempt: bool = False) -> None:
         ref = self._ref(uid)
 
         @firestore.transactional
@@ -144,8 +150,14 @@ class FirestoreAccountStore:
             snapshot = ref.get(transaction=transaction)
             if not snapshot.exists:
                 return
-            released = _released(_account_from_doc(uid, snapshot.to_dict()), period)
-            transaction.set(ref, {"period": released.period, "used": released.used}, merge=True)
+            released = _released(
+                _account_from_doc(uid, snapshot.to_dict()), period, keep_attempt=keep_attempt
+            )
+            transaction.set(
+                ref,
+                {"period": released.period, "used": released.used, "attempts": released.attempts},
+                merge=True,
+            )
 
         with io_span(log, "firestore", "release_import", uid=uid[:12], period=period):
             _release(self._db.transaction())
@@ -167,12 +179,9 @@ class FirestoreAccountStore:
             if not snapshot.exists:
                 return None
             account = _account_from_doc(uid, snapshot.to_dict())
-            updated = replace(
-                account,
-                tier=tier,
-                stripe_customer_id=customer_id or account.stripe_customer_id,
-                subscription_id=subscription_id or account.subscription_id,
-                subscription_status=status or account.subscription_status,
+            updated = _subscribed(
+                account, tier, customer_id=customer_id, subscription_id=subscription_id,
+                status=status,
             )
             transaction.set(
                 ref,

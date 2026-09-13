@@ -23,7 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.accounts import InMemoryAccountStore, QuotaPolicy, Tier, billing_period
+from app.accounts import InMemoryAccountStore, QuotaPolicy, Tier, attempt_limit, billing_period
 from app.auth import StoreBackedVerifier, StubCredentials
 from app.billing import BillingEvent, CheckoutSession, DisabledBilling
 from app.service import ImportService
@@ -314,6 +314,32 @@ def test_a_failed_extraction_is_refunded(client, accounts, store):
     assert used(accounts, uid) == 0, "the quota is back by the time the failure is visible"
 
 
+def test_failed_extractions_are_refunded_only_so_often(client, accounts, store):
+    """Every failure still ran the resolver and a model over pages.
+
+    Refunding each one without end would make the cheapest subscription an
+    unlimited budget for model calls — a year that does not exist costs
+    exactly as much to look for as one that does.
+    """
+    parser = CountingParser(fail_times=1000)
+    main.app.dependency_overrides[main.get_service] = lambda: ImportService(store, parser)
+    uid = subscribe(accounts, SUBSCRIBER)
+    allowed = attempt_limit(BASIC_LIMIT)
+
+    for _ in range(allowed):
+        failed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
+                             headers=SUBSCRIBER).json()
+        assert failed["state"] == "failed"
+    assert used(accounts, uid) == 0
+
+    refused = client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
+
+    assert refused.status_code == 429
+    assert "found no election" in refused.json()["detail"]
+    assert parser.call_count == allowed
+    assert client.get("/api/me", headers=SUBSCRIBER).json()["may_import"] is False
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -345,29 +371,65 @@ def test_looking_up_a_request_costs_nothing_and_needs_only_an_account(client, ac
     assert used(accounts, uid) == 0
 
 
-def test_confirming_a_preview_needs_an_account_but_no_further_payment(client, accounts):
-    """The extraction has already been paid for; saving what it read is not a second sale."""
+def test_confirming_a_preview_needs_its_importer_but_no_further_payment(client, accounts):
+    """The extraction has already been paid for; saving what it read is not a second sale.
+
+    Nor is it anybody else's to save: a preview its importer would have rejected
+    is wrong numbers for every account.
+    """
+    subscribe(accounts, SUBSCRIBER)
+    previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
+                            headers=SUBSCRIBER).json()
+    url = f"/api/elections/imports/{previewed['request_key']}/confirm"
+
+    assert client.post(url, headers=VISITOR).status_code == 401
+    assert client.post(url, headers=FREE).status_code == 403
+    assert client.get("/api/elections", headers=FREE).json() == [], "nothing was saved"
+
+    accounts.set_subscription("paid-1", Tier.FREE, status="canceled")
+    assert client.post(url, headers=SUBSCRIBER).status_code == 200
+
+
+def test_an_administrator_may_confirm_anyones_preview(client, accounts):
+    subscribe(accounts, SUBSCRIBER)
+    previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
+                            headers=SUBSCRIBER).json()
+
+    confirmed = client.post(
+        f"/api/elections/imports/{previewed['request_key']}/confirm", headers=ADMIN
+    )
+
+    assert confirmed.status_code == 200
+
+
+def test_discarding_a_preview_needs_the_account_that_started_it(client, accounts):
+    """The request key follows from the year and the place, so anyone can know it.
+
+    The preview is still not theirs to throw away: the subscriber paid for it,
+    and importing again would charge them again.
+    """
     subscribe(accounts, SUBSCRIBER)
     previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
                             headers=SUBSCRIBER).json()
     key = previewed["request_key"]
+    url = f"/api/elections/imports/{key}/preview"
 
-    assert client.post(
-        f"/api/elections/imports/{key}/confirm", headers=VISITOR
-    ).status_code == 401
-    assert client.post(f"/api/elections/imports/{key}/confirm", headers=FREE).status_code == 200
+    assert client.delete(url, headers=VISITOR).status_code == 401
+    assert client.delete(url, headers=FREE).status_code == 403
+    assert client.get(f"/api/elections/imports/{key}", headers=FREE).json()["state"] == "preview"
+    assert client.delete(url, headers=SUBSCRIBER).status_code == 204
 
 
-def test_discarding_a_preview_needs_an_account(client, accounts):
+def test_an_administrator_may_discard_anyones_preview(client, accounts):
     subscribe(accounts, SUBSCRIBER)
     previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
                             headers=SUBSCRIBER).json()
-    key = previewed["request_key"]
 
-    assert client.delete(f"/api/elections/imports/{key}/preview",
-                         headers=VISITOR).status_code == 401
-    assert client.delete(f"/api/elections/imports/{key}/preview",
-                         headers=FREE).status_code == 204
+    discarded = client.delete(
+        f"/api/elections/imports/{previewed['request_key']}/preview", headers=ADMIN
+    )
+
+    assert discarded.status_code == 204
 
 
 # --- the account endpoint ---------------------------------------------------
@@ -647,3 +709,48 @@ def test_the_portal_needs_a_customer_to_open_it_for(billing_client, accounts):
 
     assert opened.status_code == 200
     assert opened.json()["url"] == "https://portal.test/cus_paid-1"
+
+
+def test_a_subscriber_changes_tier_in_the_portal_not_in_a_second_checkout(
+    billing_client, accounts, fake_billing
+):
+    """A second checkout is a second subscription, charged alongside the first."""
+    subscribe(accounts, SUBSCRIBER)
+
+    refused = billing_client.post(
+        "/api/billing/checkout", json={"tier": "premium"}, headers=SUBSCRIBER
+    )
+
+    assert refused.status_code == 409
+    assert fake_billing.checkouts == []
+
+
+def test_a_lapsed_subscriber_may_check_out_again(billing_client, accounts, fake_billing):
+    subscribe(accounts, SUBSCRIBER)
+    accounts.set_subscription("paid-1", Tier.FREE, status="canceled")
+
+    again = billing_client.post("/api/billing/checkout", json={"tier": "basic"}, headers=SUBSCRIBER)
+
+    assert again.status_code == 200
+
+
+def test_cancelling_a_replaced_subscription_does_not_end_the_current_one(
+    billing_client, accounts, fake_billing
+):
+    """Stripe may report the old one's end after the new one has started."""
+    billing_client.get("/api/me", headers=SUBSCRIBER)
+    accounts.set_subscription("paid-1", Tier.PREMIUM, subscription_id="sub_new", status="active")
+
+    fake_billing.event = BillingEvent(
+        customer_id="cus_1", uid="paid-1", tier=Tier.FREE,
+        status="canceled", subscription_id="sub_old",
+    )
+    webhook(billing_client)
+    assert billing_client.get("/api/me", headers=SUBSCRIBER).json()["tier"] == "premium"
+
+    fake_billing.event = BillingEvent(
+        customer_id="cus_1", uid="paid-1", tier=Tier.FREE,
+        status="canceled", subscription_id="sub_new",
+    )
+    webhook(billing_client)
+    assert billing_client.get("/api/me", headers=SUBSCRIBER).json()["tier"] == "free"

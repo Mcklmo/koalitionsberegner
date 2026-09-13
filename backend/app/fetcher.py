@@ -9,6 +9,7 @@ produces is checked here before anything is requested.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import socket
@@ -26,6 +27,8 @@ MAX_BYTES = 5_000_000
 MAX_TEXT_CHARS = 400_000
 MAX_REDIRECTS = 3
 TIMEOUT_SECONDS = 20.0
+#: The whole fetch, every redirect hop included.
+TOTAL_TIMEOUT_SECONDS = 45.0
 ALLOWED_CONTENT_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
 
 # Tags whose contents are never page text.
@@ -132,13 +135,25 @@ class HttpPageFetcher:
         )
         owns_client = self._client is None
         try:
-            current = url
-            for hop in range(MAX_REDIRECTS + 1):
-                current = assert_public_url(current)
-                with io_span(log, "page", "get", url=current, hop=hop) as span:
-                    response = await client.get(current)
+            # httpx's timeout is per read, so a server dripping a byte at a time
+            # would never trip it; this is the bound on the fetch as a whole.
+            async with asyncio.timeout(TOTAL_TIMEOUT_SECONDS):
+                return await self._follow(client, url)
+        except TimeoutError:
+            raise FetchError("the page took too long to load") from None
+        except httpx.HTTPError as exc:
+            raise FetchError(f"could not fetch the page: {exc}") from None
+        finally:
+            if owns_client:
+                await client.aclose()
+
+    async def _follow(self, client: httpx.AsyncClient, url: str) -> FetchedPage:
+        current = url
+        for hop in range(MAX_REDIRECTS + 1):
+            current = assert_public_url(current)
+            with io_span(log, "page", "get", url=current, hop=hop) as span:
+                async with client.stream("GET", current) as response:
                     span["status"] = response.status_code
-                    span["bytes"] = len(response.content)
                     span["type"] = response.headers.get("content-type", "").split(";")[0]
                     if response.is_redirect:
                         location = response.headers.get("location")
@@ -147,23 +162,59 @@ class HttpPageFetcher:
                         span["redirect_to"] = location
                         current = str(response.url.join(location))
                         continue
-                    text = _read(response)
+                    # Refuse a PDF or an error page before downloading it.
+                    _check_head(response)
+                    body = await _read_capped(response)
+                    span["bytes"] = len(body)
+                    text = _read(_buffered(response, body))
                     span["chars"] = len(text)
-                return FetchedPage(url=current, text=text)
-            raise FetchError("too many redirects")
-        except httpx.HTTPError as exc:
-            raise FetchError(f"could not fetch the page: {exc}") from None
-        finally:
-            if owns_client:
-                await client.aclose()
+            return FetchedPage(url=current, text=text)
+        raise FetchError("too many redirects")
 
 
-def _read(response: httpx.Response) -> str:
+async def _read_capped(response: httpx.Response) -> bytes:
+    """The body, refused the moment it outgrows :data:`MAX_BYTES`.
+
+    Buffering first and measuring after would let one hostile page hold the
+    whole of an endless response in memory. The count is of decoded bytes, so a
+    small compressed body that inflates past the cap is refused too.
+    """
+    declared = response.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_BYTES:
+        raise FetchError("the page is too large to import")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in response.aiter_bytes():
+        size += len(chunk)
+        if size > MAX_BYTES:
+            raise FetchError("the page is too large to import")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _buffered(response: httpx.Response, body: bytes) -> httpx.Response:
+    """A complete response around an already-decoded body."""
+    headers = [
+        (name, value)
+        for name, value in response.headers.multi_items()
+        if name.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+    ]
+    return httpx.Response(
+        response.status_code, headers=headers, content=body, request=response.request
+    )
+
+
+def _check_head(response: httpx.Response) -> None:
     if response.status_code >= 400:
         raise FetchError(f"the page returned HTTP {response.status_code}")
     content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
     if content_type and content_type not in ALLOWED_CONTENT_TYPES:
         raise FetchError(f"expected an HTML page, got {content_type!r}")
+
+
+def _read(response: httpx.Response) -> str:
+    _check_head(response)
+    content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
     if len(response.content) > MAX_BYTES:
         raise FetchError("the page is too large to import")
 

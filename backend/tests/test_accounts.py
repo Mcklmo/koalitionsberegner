@@ -21,6 +21,7 @@ from app.accounts import (
     QuotaPolicy,
     Tier,
     UserAccount,
+    attempt_limit,
     billing_period,
 )
 from app.sqlite_accounts import SqliteAccountStore
@@ -207,3 +208,83 @@ def test_sqlite_accounts_survive_a_restart(tmp_path):
     assert account.tier is Tier.BASIC
     assert account.used_in(THIS_MONTH) == 1, "a restart must not refill the allowance"
     assert account.stripe_customer_id == "cus_1"
+
+
+# --- failures are refunded, but not without end -----------------------------
+
+def test_a_refunded_failure_still_counts_toward_the_attempt_cap(accounts):
+    accounts.ensure(UID, None)
+    for _ in range(attempt_limit(1)):
+        assert accounts.reserve_import(UID, THIS_MONTH, 1) is True
+        accounts.release_import(UID, THIS_MONTH, keep_attempt=True)
+
+    assert accounts.reserve_import(UID, THIS_MONTH, 1) is False
+    assert accounts.get(UID).used_in(THIS_MONTH) == 0, "every failure was refunded"
+
+
+def test_an_import_that_did_no_work_gives_its_attempt_back_too(accounts):
+    """Served from the store, or joined to a running import: nothing was spent."""
+    accounts.ensure(UID, None)
+    for _ in range(attempt_limit(1) * 3):
+        assert accounts.reserve_import(UID, THIS_MONTH, 1) is True
+        accounts.release_import(UID, THIS_MONTH)
+
+
+def test_the_attempt_cap_resets_with_the_month(accounts):
+    accounts.ensure(UID, None)
+    for _ in range(attempt_limit(1)):
+        accounts.reserve_import(UID, THIS_MONTH, 1)
+        accounts.release_import(UID, THIS_MONTH, keep_attempt=True)
+
+    assert accounts.reserve_import(UID, NEXT_MONTH, 1) is True
+
+
+def test_an_accounts_table_from_before_attempts_is_migrated(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE accounts (
+            uid TEXT PRIMARY KEY, email TEXT, tier TEXT NOT NULL DEFAULT 'free',
+            period TEXT NOT NULL DEFAULT '', used INTEGER NOT NULL DEFAULT 0,
+            stripe_customer_id TEXT, subscription_id TEXT, subscription_status TEXT,
+            created_at REAL NOT NULL DEFAULT 0
+        );
+        INSERT INTO accounts (uid, tier, period, used) VALUES ('old', 'basic', '2026-09', 1);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = SqliteAccountStore(path)
+    try:
+        assert store.get("old").used_in(THIS_MONTH) == 1
+        assert store.reserve_import("old", THIS_MONTH, 10) is True
+        assert store.get("old").attempts_in(THIS_MONTH) == 1
+    finally:
+        store.close()
+
+
+# --- one subscription at a time ---------------------------------------------
+
+def test_a_late_cancellation_of_a_replaced_subscription_changes_nothing(accounts):
+    accounts.ensure(UID, None)
+    accounts.set_subscription(UID, Tier.PREMIUM, subscription_id="sub_new", status="active")
+
+    kept = accounts.set_subscription(UID, Tier.FREE, subscription_id="sub_old", status="canceled")
+
+    assert kept.tier is Tier.PREMIUM
+    assert accounts.get(UID).subscription_status == "active"
+    ended = accounts.set_subscription(UID, Tier.FREE, subscription_id="sub_new", status="canceled")
+    assert ended.tier is Tier.FREE
+
+
+def test_a_new_paid_subscription_takes_over(accounts):
+    accounts.ensure(UID, None)
+    accounts.set_subscription(UID, Tier.PREMIUM, subscription_id="sub_old", status="active")
+
+    switched = accounts.set_subscription(UID, Tier.BASIC, subscription_id="sub_new", status="active")
+
+    assert (switched.tier, switched.subscription_id) == (Tier.BASIC, "sub_new")

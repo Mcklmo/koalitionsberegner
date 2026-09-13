@@ -193,3 +193,22 @@ def test_another_year_in_the_same_place_is_not_a_match(store):
 
 def test_nothing_stored_is_no_match(store):
     assert store.find_by_place(2026, "Danmark") is None
+
+
+def test_the_account_that_started_an_attempt_stays_on_it(store):
+    """Who may throw a preview away is decided by this, so staging must keep it."""
+    claim = store.claim(KEY, make_request(), "uid-1")
+    assert claim.job.owner == "uid-1"
+
+    store.stage(KEY, make_election())
+
+    assert store.get_job(KEY).owner == "uid-1"
+
+
+def test_a_new_attempt_belongs_to_whoever_started_it(store):
+    store.claim(KEY, make_request(), "uid-1")
+    store.fail(KEY, "no seats")
+
+    store.claim(KEY, make_request(), "uid-2")
+
+    assert store.get_job(KEY).owner == "uid-2"

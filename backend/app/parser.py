@@ -35,7 +35,16 @@ MAX_FORECASTS = 10
 
 
 class ParseError(RuntimeError):
-    """Raised when a request cannot be turned into a valid election."""
+    """Raised when a request cannot be turned into a valid election.
+
+    Its message is shown to the user, so it is written for them. Anything that
+    is not a ParseError is reported as :data:`READ_FAILED`, never as its text.
+    """
+
+
+#: Why a page was unusable when reading it broke on our side — the model API
+#: refused, a connection dropped. The detail is logged, not shown.
+READ_FAILED = "reading it failed on our side"
 
 
 class ElectionParser(Protocol):
@@ -230,8 +239,9 @@ class LlmElectionParser:
             extracted = await self._extractor.extract_forecasts(page, resolved)
         except ParseError as exc:
             return None, str(exc)
-        except Exception as exc:  # noqa: BLE001 - surfaced to the user, never rendered
-            return None, f"extraction failed: {_clip(str(exc))}"
+        except Exception as exc:  # noqa: BLE001 - one page's failure is not the import's
+            log.warning("reading %s failed: %s: %s", url, type(exc).__name__, _clip(str(exc)))
+            return None, READ_FAILED
 
         if not extracted.polls:
             return None, _no_polls_message(extracted.no_results_reason)
@@ -341,8 +351,9 @@ class LlmElectionParser:
             extracted = await self._extractor.extract(page, resolved)
         except ParseError as exc:
             return None, str(exc)
-        except Exception as exc:  # noqa: BLE001 - surfaced to the user, never rendered
-            return None, f"extraction failed: {_clip(str(exc))}"
+        except Exception as exc:  # noqa: BLE001 - one page's failure is not the import's
+            log.warning("reading %s failed: %s: %s", url, type(exc).__name__, _clip(str(exc)))
+            return None, READ_FAILED
 
         if not any(block.parties for block in extracted.blocks):
             return None, _no_results_message(extracted.no_results_reason)

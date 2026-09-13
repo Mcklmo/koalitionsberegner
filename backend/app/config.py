@@ -151,12 +151,14 @@ def get_store() -> ElectionStore:
 
     from google.cloud import firestore
 
+    from .cached_store import CachedElectionStore
     from .firestore_store import FirestoreElectionStore
 
     client = firestore.Client(
         project=project, database=os.environ.get("FIRESTORE_DATABASE", "(default)")
     )
-    return FirestoreElectionStore(client, stale_after=stale_after)
+    # Firestore bills every document read, and viewing is open to anyone.
+    return CachedElectionStore(FirestoreElectionStore(client, stale_after=stale_after))
 
 
 def search_mode() -> str:
@@ -372,6 +374,14 @@ def get_verifier() -> TokenVerifier:
     every mode, so they cannot drift apart per backend.
     """
     mode = auth_mode()
+    if mode in ("off", "stub") and on_cloud_run():
+        # ``off`` is also the default once no project id is set, so this is
+        # what turns a lost environment variable into a failed boot instead of
+        # a deployment where every caller is an unlimited administrator.
+        raise ConfigError(
+            f"AUTH_MODE={mode} cannot run on Cloud Run: it lets any caller in as anyone. "
+            "Set AUTH_MODE=firebase with FIREBASE_PROJECT_ID (or GOOGLE_CLOUD_PROJECT)"
+        )
     if mode == "off":
         return DisabledVerifier()
 
@@ -401,6 +411,11 @@ def get_verifier() -> TokenVerifier:
     if not project:
         raise ConfigError("AUTH_MODE=firebase requires FIREBASE_PROJECT_ID")
     return StoreBackedVerifier(FirebaseCredentials(project), rules)
+
+
+def on_cloud_run() -> bool:
+    """Whether this process is a Cloud Run service or job, which set these themselves."""
+    return bool(_env_str("K_SERVICE") or _env_str("CLOUD_RUN_JOB"))
 
 
 def admin_emails() -> frozenset[str]:
@@ -454,6 +469,19 @@ def get_billing() -> Billing:
 def public_base_url() -> str:
     """Where Stripe sends the user back to. No trailing slash."""
     return _env_str("PUBLIC_BASE_URL").rstrip("/")
+
+
+#: Shortest ``ORIGIN_SECRET`` accepted, so a placeholder is a boot failure.
+MIN_ORIGIN_SECRET_CHARS = 32
+
+
+def origin_secret() -> str:
+    """The secret a fronting proxy must present, or empty when there is none.
+
+    Set it when the app sits behind Cloudflare (or any proxy) so that the
+    platform's own address — ``*.run.app`` — stops answering on its own.
+    """
+    return _env_str("ORIGIN_SECRET")
 
 
 def firebase_web_config() -> dict[str, str]:
@@ -514,6 +542,10 @@ def validate_configuration() -> dict[str, str]:
     get_verifier()
     get_quota_policy()
     get_billing()
+    if origin_secret() and len(origin_secret()) < MIN_ORIGIN_SECRET_CHARS:
+        raise ConfigError(
+            f"ORIGIN_SECRET must be at least {MIN_ORIGIN_SECRET_CHARS} characters"
+        )
     if chosen["auth_mode"] == "firebase" and not _env_str("FIREBASE_API_KEY"):
         # Not fatal: the API still verifies tokens. But nothing in the browser
         # can obtain one, so sign-in is dead until this is set.

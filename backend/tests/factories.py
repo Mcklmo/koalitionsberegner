@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from app.parser import ParseError
 from app.schema import Election
 from app.store import ImportRequest
 
@@ -89,7 +90,7 @@ class CountingParser:
         await self.gate.wait()
         if self.fail_times > 0:
             self.fail_times -= 1
-            raise RuntimeError("extraction failed")
+            raise ParseError("extraction failed")
         if request.year in self._by_year:
             return self._by_year[request.year]
         if self._fixed is not None:

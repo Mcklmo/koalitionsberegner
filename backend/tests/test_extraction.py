@@ -378,7 +378,8 @@ async def test_an_agent_crash_is_contained():
         async def extract(self, page, wanted):
             raise RuntimeError("connection reset")
 
-    with pytest.raises(ParseError, match="connection reset"):
+    # Contained, and reported without its internals: the log has the detail.
+    with pytest.raises(ParseError, match="reading it failed on our side"):
         await parser(SiteFetcher({SEATS: "x"}), Exploding()).parse(sachsen_anhalt_request())
 
 

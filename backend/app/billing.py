@@ -24,14 +24,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from .accounts import Tier
+from .accounts import ENTITLING_STATUSES, Tier
 from .observability import io_span, scrub
 
 log = logging.getLogger(__name__)
 
-#: Subscription statuses that entitle the user to their tier. Anything else —
-#: ``past_due``, ``unpaid``, ``canceled``, ``incomplete`` — drops them to free.
-ENTITLING_STATUSES = frozenset({"active", "trialing"})
+__all__ = ["ENTITLING_STATUSES"]
 
 #: Events worth acting on; every other event type is acknowledged and dropped.
 HANDLED_EVENTS = frozenset(
@@ -270,12 +268,38 @@ class StripeBilling:
         # webhook is the one path that may not break on an SDK upgrade: the
         # payment succeeds, the tier never changes, and nobody finds out until a
         # subscriber complains.
-        as_dict = json.loads(payload)
+        as_dict = self._as_it_stands(json.loads(payload))
         parsed = parse_event(as_dict, self._price_tiers)
         log.info(
             "stripe webhook type=%s handled=%s", scrub(as_dict.get("type")), parsed is not None
         )
         return parsed
+
+    def _as_it_stands(self, event: dict) -> dict:
+        """The event, carrying its subscription as it is now rather than when sent.
+
+        Stripe does not deliver in order. A subscription that starts
+        ``incomplete`` and is paid a moment later — the ordinary path for a card
+        that asks for 3-D Secure, which in the EU is most of them — sends two
+        events, and applying them as they arrive can leave a paying subscriber
+        on free. Reading the subscription back makes whichever event arrives
+        last apply the latest state.
+        """
+        if not str(event.get("type") or "").startswith("customer.subscription."):
+            return event
+        data = event.get("data") or {}
+        subscription_id = (data.get("object") or {}).get("id")
+        if not subscription_id:
+            return event
+        try:
+            with io_span(log, "stripe", "retrieve_subscription"):
+                current = self._client.subscriptions.retrieve(str(subscription_id))
+        except Exception as exc:  # noqa: BLE001 - any failure here is "try again later"
+            # A 503 makes Stripe deliver the event again, which is what an
+            # outage between us and Stripe deserves.
+            raise BillingUnavailable(f"could not read the subscription back: {scrub(exc)}") from None
+        fresh = current.to_dict() if hasattr(current, "to_dict") else dict(current)
+        return {**event, "data": {**data, "object": fresh}}
 
     @staticmethod
     def _field(obj, name: str):

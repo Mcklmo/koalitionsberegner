@@ -13,19 +13,29 @@ store.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
+from functools import partial
 from datetime import date
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .accounts import AccountStore, QuotaPolicy, Tier, UserAccount, billing_period
+from .accounts import (
+    ENTITLING_STATUSES,
+    AccountStore,
+    QuotaPolicy,
+    Tier,
+    UserAccount,
+    billing_period,
+)
 from .auth import (
     BadCredentials,
     EmailTaken,
@@ -48,6 +58,7 @@ from .config import (
     get_store,
     get_verifier,
     max_wait_seconds,
+    origin_secret,
     public_base_url,
     validate_configuration,
 )
@@ -98,6 +109,109 @@ if _origins:
         # sign in without it being allowed through.
         allow_headers=["content-type", "authorization"],
     )
+
+
+# --- the edge of the app ----------------------------------------------------
+# Declared last, so they wrap everything above: a request refused here costs
+# no store read, no token check and no log line of its own.
+
+#: The page loads its scripts from here and signs in against these two Google
+#: endpoints; nothing else is fetched, framed or submitted anywhere. Styles stay
+#: inline-capable because the page carries its stylesheet and a few style
+#: attributes in index.html — scripts do not, and that is what the policy is for.
+CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "connect-src 'self' https://identitytoolkit.googleapis.com"
+        " https://securetoken.googleapis.com",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    )
+)
+
+SECURITY_HEADERS = {
+    "content-security-policy": CONTENT_SECURITY_POLICY,
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "permissions-policy": "camera=(), microphone=(), geolocation=()",
+}
+
+#: FastAPI's own documentation pages load their scripts from a CDN.
+_DOCS_PATHS = ("/docs", "/redoc")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for name, value in SECURITY_HEADERS.items():
+        if name == "content-security-policy" and request.url.path.startswith(_DOCS_PATHS):
+            continue
+        response.headers.setdefault(name, value)
+    return response
+
+
+#: The header a fronting proxy (the Cloudflare Worker) proves itself with.
+ORIGIN_SECRET_HEADER = "x-origin-secret"
+
+
+@app.middleware("http")
+async def require_origin_secret(request: Request, call_next):
+    """With ``ORIGIN_SECRET`` set, answer only requests that came through the proxy.
+
+    Everything the proxy protects — its rate limits, its bot checks — is worth
+    nothing while the ``run.app`` address answers the same requests directly.
+    The health check stays open so the platform can still probe the container.
+    """
+    expected = origin_secret()
+    if expected and request.url.path != "/healthz":
+        presented = request.headers.get(ORIGIN_SECRET_HEADER, "")
+        if not hmac.compare_digest(presented.encode(), expected.encode()):
+            return JSONResponse({"detail": "use the public address"}, status_code=403)
+    return await call_next(request)
+
+
+#: Every body this API reads is a few hundred bytes of JSON. Stripe's events are
+#: larger, and still far below their own cap.
+MAX_BODY_BYTES = 64 * 1024
+MAX_WEBHOOK_BYTES = 1024 * 1024
+WEBHOOK_PATH = "/api/billing/webhook"
+
+
+class LimitRequestBody:
+    """Refuse an oversized body before a byte of it is buffered.
+
+    Starlette reads a body into memory whole, and nothing upstream caps it far
+    below Cloud Run's 32 MB — so without this, a few dozen concurrent large
+    POSTs to the unauthenticated webhook are enough to run the container out of
+    memory. A body with no declared length is refused rather than counted:
+    browsers and Stripe always declare one.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope["headers"])
+            limit = MAX_WEBHOOK_BYTES if scope["path"] == WEBHOOK_PATH else MAX_BODY_BYTES
+            declared = headers.get(b"content-length")
+            if b"chunked" in headers.get(b"transfer-encoding", b"").lower():
+                response = JSONResponse({"detail": "a body must declare its length"}, 411)
+                return await response(scope, receive, send)
+            if declared is not None and (not declared.isdigit() or int(declared) > limit):
+                response = JSONResponse({"detail": "request body too large"}, 413)
+                return await response(scope, receive, send)
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(LimitRequestBody)
 
 
 # --- dependency seams -------------------------------------------------------
@@ -191,6 +305,28 @@ def require_account(
 def require_admin(principal: Principal = Depends(require_verified)) -> Principal:
     if not principal.admin:
         raise HTTPException(403, detail="this needs an administrator")
+    return principal
+
+
+async def require_importer(
+    request_key: str,
+    service: ImportService = Depends(get_service),
+    principal: Principal = Depends(require_verified),
+    _account: UserAccount = Depends(require_account),
+) -> Principal:
+    """The caller, if they started the import at ``request_key`` or administer the app.
+
+    A request key follows from the year and the place alone, so anyone can know
+    one. What an import produced is still its importer's to accept or throw
+    away: saving a preview they would have rejected puts wrong numbers in front
+    of every account, and discarding one makes them pay for the import again.
+
+    A job with no recorded importer predates the record and stays open to any
+    account; its lease runs out within minutes.
+    """
+    owner = await service.owner_of(request_key)
+    if owner is not None and owner != principal.uid and not principal.admin:
+        raise HTTPException(403, detail="only the account that started this import can do that")
     return principal
 
 
@@ -474,6 +610,15 @@ async def import_election(
                 ),
             )
         if not await run_in_threadpool(accounts.reserve_import, account.uid, period, limit):
+            current = await run_in_threadpool(accounts.get, account.uid) or account
+            if current.used_in(period) < limit:
+                raise HTTPException(
+                    429,
+                    detail=(
+                        "too many of this month's imports found no election; "
+                        "the allowance resets at the start of next month"
+                    ),
+                )
             raise HTTPException(
                 429,
                 detail=(
@@ -482,13 +627,22 @@ async def import_election(
                 ),
             )
 
-    def refund() -> None:
-        """Give the reserved import back. A no-op when nothing was taken."""
+    def refund(*, keep_attempt: bool = False) -> None:
+        """Give the reserved import back. A no-op when nothing was taken.
+
+        An import that searched and read pages before failing keeps its attempt:
+        the allowance comes back, but failures are refunded only so often
+        (:func:`app.accounts.attempt_limit`), because each one cost model calls.
+        """
         if charged:
-            accounts.release_import(account.uid, period)
+            accounts.release_import(account.uid, period, keep_attempt=keep_attempt)
 
     try:
-        result = await service.submit(body.to_request(), on_parse_failed=refund)
+        result = await service.submit(
+            body.to_request(),
+            owner=principal.uid,
+            on_parse_failed=partial(refund, keep_attempt=True),
+        )
     except ValueError as exc:
         await run_in_threadpool(refund)
         raise HTTPException(status_code=422, detail=str(exc)) from None
@@ -588,14 +742,14 @@ async def confirm_election(
         None, ge=0, description="Which offered forecast to save, for an election not yet held."
     ),
     service: ImportService = Depends(get_service),
-    _account: UserAccount = Depends(require_account),
+    _importer: Principal = Depends(require_importer),
 ) -> ImportResponse:
     """Save a previewed election under the identity that was read off the page.
 
-    Any account may confirm: the import that produced this preview has already
-    been paid for, and charging again for saving what was read would mean a
-    lapsed subscription could strand an import halfway. For the same reason
-    every forecast of an upcoming election may be saved, not just one.
+    Only its importer may (:func:`require_importer`), and without paying again:
+    the import was paid for when it ran, so a subscription that has lapsed since
+    cannot strand it halfway. For the same reason every forecast of an upcoming
+    election may be saved, not just one.
     """
     try:
         result = await service.confirm(request_key, option)
@@ -620,9 +774,12 @@ async def confirm_election(
 async def discard_preview(
     request_key: str,
     service: ImportService = Depends(get_service),
-    _account: UserAccount = Depends(require_account),
+    _importer: Principal = Depends(require_importer),
 ) -> Response:
-    """Reject a previewed election, leaving the request free to import again."""
+    """Reject a previewed election, leaving the request free to import again.
+
+    Only its importer may (:func:`require_importer`).
+    """
     if not await service.discard(request_key):
         raise HTTPException(status_code=404, detail="no preview to discard for that import")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -758,6 +915,12 @@ async def start_checkout(
     """
     if body.tier not in billing.tiers():
         raise HTTPException(400, detail=f"the {body.tier.value} tier is not for sale")
+    if account.tier is not Tier.FREE and account.subscription_status in ENTITLING_STATUSES:
+        # A second checkout is a second subscription, charged alongside the
+        # first. Changing tier is the portal's job, which prorates instead.
+        raise HTTPException(
+            409, detail="this account already has a subscription — change it under manage subscription"
+        )
     base = public_base_url()
     try:
         session = await run_in_threadpool(
@@ -853,6 +1016,15 @@ async def stripe_webhook(
 
 # Serving the page from this app keeps the API same-origin, which is what the
 # frontend expects by default. Mounted last so it cannot shadow the API routes.
+#
+# The page and its scripts, and nothing else: mounting the directory itself
+# would serve whatever sits next to them, which on a local checkout is the repo
+# root — .env and its keys included.
 FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR", Path(__file__).resolve().parents[2]))
 if (FRONTEND_DIR / "index.html").is_file():
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+    def index() -> FileResponse:
+        return FileResponse(FRONTEND_DIR / "index.html")
+
+    app.mount("/js", StaticFiles(directory=FRONTEND_DIR / "js"), name="scripts")

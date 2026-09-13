@@ -63,6 +63,7 @@ def _job_from_doc(request_key: str, data: dict) -> Job:
         # A staged draft is re-validated on read like anything else from storage.
         result=Election.model_validate(result) if result else None,
         forecasts=tuple(Election.model_validate(item) for item in data.get("forecasts") or ()),
+        owner=data.get("owner"),
     )
 
 
@@ -153,7 +154,9 @@ class FirestoreElectionStore:
             span["hash"] = resolved[:12] if resolved else "unresolved"
             return resolved
 
-    def claim(self, request_key: str, request: ImportRequest) -> Claim:
+    def claim(
+        self, request_key: str, request: ImportRequest, owner: str | None = None
+    ) -> Claim:
         job_ref = self._job_ref(request_key)
         result_ref = self._result_ref(request_key)
         db, stale_after, clock = self._db, self._stale_after, self._clock
@@ -185,6 +188,7 @@ class FirestoreElectionStore:
                 query=request.describe(),
                 started_at=clock(),
                 attempt=(job.attempt + 1) if job else 1,
+                owner=owner,
             )
             # The write is what serialises racing claimers: whichever transaction
             # commits first turns the others' reads stale, forcing them to retry.
@@ -195,6 +199,7 @@ class FirestoreElectionStore:
                     "query": new_job.query,
                     "started_at": new_job.started_at,
                     "attempt": new_job.attempt,
+                    "owner": new_job.owner,
                     "error": None,
                     "result": None,
                     "forecasts": None,

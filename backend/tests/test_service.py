@@ -287,3 +287,25 @@ async def test_claim_outcomes_are_reported_directly_by_the_store():
 
     store.confirm("key", "hash")
     assert store.claim("key", request).outcome is ClaimOutcome.STORED
+
+
+class BrokenParser(CountingParser):
+    """Fails the way an outage does: with an exception nobody wrote for a user."""
+
+    async def parse(self, request):
+        self.calls.append(request)
+        raise RuntimeError(
+            "Error code: 401 - {'error': {'message': 'invalid x-api-key'}, 'request_id': 'req_1'}"
+        )
+
+
+async def test_an_internal_failure_is_reported_without_its_internals():
+    from app.service import IMPORT_FAILED
+
+    store, parser, service = build(BrokenParser())
+
+    first = await service.submit(make_request())
+    failed = await settle(service, first.request_key)
+
+    assert failed.state is ImportState.FAILED
+    assert failed.error == IMPORT_FAILED

@@ -13,10 +13,9 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 
-from .accounts import Tier, UserAccount, _released, _reserved, billing_period
+from .accounts import Tier, UserAccount, _released, _reserved, _subscribed, billing_period
 from .observability import io_span
 
 log = logging.getLogger(__name__)
@@ -28,6 +27,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     tier                TEXT NOT NULL DEFAULT 'free',
     period              TEXT NOT NULL DEFAULT '',
     used                INTEGER NOT NULL DEFAULT 0,
+    attempts            INTEGER NOT NULL DEFAULT 0,
     stripe_customer_id  TEXT,
     subscription_id     TEXT,
     subscription_status TEXT,
@@ -38,7 +38,7 @@ CREATE INDEX IF NOT EXISTS accounts_by_customer
 """
 
 COLUMNS = (
-    "uid, email, tier, period, used, stripe_customer_id, subscription_id, subscription_status"
+    "uid, email, tier, period, used, attempts, stripe_customer_id, subscription_id, subscription_status"
 )
 
 
@@ -58,6 +58,7 @@ def _account_from_row(row: sqlite3.Row) -> UserAccount:
         tier=_tier(row["tier"]),
         period=row["period"] or "",
         used=int(row["used"] or 0),
+        attempts=int(row["attempts"] or 0),
         stripe_customer_id=row["stripe_customer_id"],
         subscription_id=row["subscription_id"],
         subscription_status=row["subscription_status"],
@@ -72,7 +73,13 @@ class SqliteAccountStore:
         self._clock = clock
         self._local = threading.local()
         with io_span(log, "sqlite", "migrate_accounts", path=self._path):
-            self._connect().executescript(SCHEMA)
+            conn = self._connect()
+            conn.executescript(SCHEMA)
+            # CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a
+            # column added later has to be added here.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(accounts)")}
+            if "attempts" not in columns:
+                conn.execute("ALTER TABLE accounts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -128,7 +135,7 @@ class SqliteAccountStore:
 
     def _save(self, conn: sqlite3.Connection, account: UserAccount) -> None:
         conn.execute(
-            "UPDATE accounts SET email = ?, tier = ?, period = ?, used = ?,"
+            "UPDATE accounts SET email = ?, tier = ?, period = ?, used = ?, attempts = ?,"
             " stripe_customer_id = ?, subscription_id = ?, subscription_status = ?"
             " WHERE uid = ?",
             (
@@ -136,6 +143,7 @@ class SqliteAccountStore:
                 account.tier.value,
                 account.period,
                 account.used,
+                account.attempts,
                 account.stripe_customer_id,
                 account.subscription_id,
                 account.subscription_status,
@@ -159,8 +167,8 @@ class SqliteAccountStore:
                     account = UserAccount(uid=uid, email=email, period=billing_period())
                     conn.execute(
                         f"INSERT INTO accounts ({COLUMNS}, created_at)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (uid, email, account.tier.value, account.period, 0,
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (uid, email, account.tier.value, account.period, 0, 0,
                          None, None, None, self._clock()),
                     )
                     span["created"] = True
@@ -186,12 +194,12 @@ class SqliteAccountStore:
                 span["used"] = reserved.used
                 return True
 
-    def release_import(self, uid: str, period: str) -> None:
+    def release_import(self, uid: str, period: str, *, keep_attempt: bool = False) -> None:
         with io_span(log, "sqlite", "release_import", uid=uid[:12], period=period):
             with self._write() as conn:
                 account = self._read(conn, uid)
                 if account is not None:
-                    self._save(conn, _released(account, period))
+                    self._save(conn, _released(account, period, keep_attempt=keep_attempt))
 
     def set_subscription(
         self,
@@ -208,12 +216,9 @@ class SqliteAccountStore:
                 if account is None:
                     span["found"] = False
                     return None
-                updated = replace(
-                    account,
-                    tier=tier,
-                    stripe_customer_id=customer_id or account.stripe_customer_id,
-                    subscription_id=subscription_id or account.subscription_id,
-                    subscription_status=status or account.subscription_status,
+                updated = _subscribed(
+                    account, tier, customer_id=customer_id, subscription_id=subscription_id,
+                    status=status,
                 )
                 self._save(conn, updated)
                 span["found"] = True

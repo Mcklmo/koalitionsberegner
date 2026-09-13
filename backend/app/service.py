@@ -18,13 +18,27 @@ import anyio.to_thread
 
 from .identity import election_hash, request_key
 from .observability import io_span, scrub
-from .parser import ElectionParser
+from .parser import ElectionParser, ParseError
 from .schema import Election
 from .store import ClaimOutcome, ElectionStore, ImportRequest, JobStatus, StoredElection
 
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 0.05
+MAX_POLL_INTERVAL_SECONDS = 1.0
+
+#: What a failed import says when the failure was ours rather than the election's.
+IMPORT_FAILED = "the import failed on our side — please try again later"
+
+
+def _user_message(exc: Exception) -> str:
+    """What a failed import tells the user.
+
+    A :class:`ParseError` is written for them: no page stated seats, the date
+    could not be read. Anything else is an internal failure, whose text is an
+    API error body or a database message — logged in full, never shown.
+    """
+    return str(exc) if isinstance(exc, ParseError) else IMPORT_FAILED
 
 
 class ImportState(str, Enum):
@@ -86,7 +100,11 @@ class ImportService:
         return await anyio.to_thread.run_sync(fn, *args)
 
     async def submit(
-        self, request: ImportRequest, *, on_parse_failed: Callable[[], None] | None = None
+        self,
+        request: ImportRequest,
+        *,
+        owner: str | None = None,
+        on_parse_failed: Callable[[], None] | None = None,
     ) -> ImportResult:
         """Claim the request and import only if nobody else already has.
 
@@ -94,9 +112,12 @@ class ImportService:
         caller that paid for the attempt can be refunded: a request whose
         election could not be found produced nothing, and charging for it would
         make a misremembered year cost the same as a stored election.
+
+        ``owner`` is the account starting the import, recorded on the job if this
+        call is the one that starts it.
         """
         key = self.request_key_for(request)
-        claim = await self._in_thread(self._store.claim, key, request)
+        claim = await self._in_thread(self._store.claim, key, request, owner)
         # One line per state transition, so the decision is visible whichever
         # store backend is in use (Firestore logs its own wire-level spans).
         log.info(
@@ -160,7 +181,7 @@ class ImportService:
                     span["identity"] = identity_of(outcome)[:12]
                     span["total_seats"] = outcome.total_seats
         except Exception as exc:  # noqa: BLE001 - a failed import must not kill the worker
-            await failed(str(exc))
+            await failed(_user_message(exc))
             log.info("failed request=%s reason=%s", key[:12], scrub(exc))
             return
 
@@ -191,7 +212,7 @@ class ImportService:
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("staging %s failed", key)
-            await failed(f"could not stage result: {exc}")
+            await failed(IMPORT_FAILED)
 
     async def _offer(self, key: str, forecasts: list[Election], failed) -> None:
         """Hold an upcoming election's forecasts for the user to choose from.
@@ -210,7 +231,7 @@ class ImportService:
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("offering %s failed", key)
-            await failed(f"could not stage forecasts: {exc}")
+            await failed(IMPORT_FAILED)
 
     async def status(self, key: str) -> ImportResult:
         job = await self._in_thread(self._store.get_job, key)
@@ -243,13 +264,18 @@ class ImportService:
         here — the same election, from the same single run.
         """
         deadline = asyncio.get_running_loop().time() + timeout
+        interval = POLL_INTERVAL_SECONDS
         while True:
             result = await self.status(key)
             if result.state in TERMINAL_STATES:
                 return result
             if asyncio.get_running_loop().time() >= deadline:
                 return result
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(interval)
+            # Each look is several store reads, and a real import takes tens of
+            # seconds: quick at first for the import already finished, then
+            # slower, so a caller holding a request open is not a read storm.
+            interval = min(interval * 2, MAX_POLL_INTERVAL_SECONDS)
 
     async def confirm(self, key: str, option: int | None = None) -> ImportResult:
         """Save a previewed election under the identity that was read.
@@ -303,6 +329,11 @@ class ImportService:
             election_hash=confirmation.election_hash,
             duplicate=confirmation.duplicate,
         )
+
+    async def owner_of(self, key: str) -> str | None:
+        """The account that started the current attempt at this request, if known."""
+        job = await self._in_thread(self._store.get_job, key)
+        return job.owner if job else None
 
     async def discard(self, key: str) -> bool:
         """Reject a previewed election, freeing the request for another attempt."""
