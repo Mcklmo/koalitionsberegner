@@ -13,12 +13,20 @@ import { mountCoalitionCalculator } from './app.js';
 import { createAuth } from './auth.js';
 import { createPasswordAuth } from './password-auth.js';
 import { mountImportUi } from './import-ui.js';
-import { language, setLanguage, t } from './i18n.js';
+import {
+  language, languageName, languages, parseStrings, setLanguage, t, useStrings,
+} from './i18n.js';
 import { Folketing2026Provider } from './providers/folketing-2026.js';
 
 const apiBase = document.querySelector('meta[name="api-base"]')?.content ?? '';
 
 const byId = (id) => document.getElementById(id);
+
+// Every text comes from the sheet, so without a sound one there is no page to
+// wire up: a failed fetch or a parse error throws here and nothing below runs.
+const strings = await fetch(new URL('./strings.csv', import.meta.url));
+if (!strings.ok) throw new Error(`Could not load strings.csv: HTTP ${strings.status}`);
+useStrings(parseStrings(await strings.text()));
 
 // The markup is worded in Danish. It is reworded before anything renders, so a
 // visitor in another language sees it for a moment at most.
@@ -29,10 +37,17 @@ for (const node of document.querySelectorAll('[data-i18n-placeholder]')) {
 }
 for (const node of document.querySelectorAll('[data-i18n-title]')) node.title = t(node.dataset.i18nTitle);
 
+// One option per column of the sheet, each language named in itself.
+const languagePicker = byId('language');
+for (const locale of languages()) {
+  const option = document.createElement('option');
+  option.value = locale;
+  option.textContent = languageName(locale);
+  languagePicker.append(option);
+}
+languagePicker.value = language();
 // Everything on screen was worded in the old language, so a reload rewords it
 // all at once rather than message by message.
-const languagePicker = byId('language');
-languagePicker.value = language();
 languagePicker.addEventListener('change', () => {
   setLanguage(languagePicker.value);
   globalThis.location.reload();

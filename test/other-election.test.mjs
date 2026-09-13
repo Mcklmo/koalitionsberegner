@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { mountCoalitionCalculator } from '../js/app.js';
 import { toElection } from '../js/api.js';
 import { setLanguage } from '../js/i18n.js';
+import './strings.mjs';
 
 // These tests read the Danish wording.
 setLanguage('da', { remember: false });

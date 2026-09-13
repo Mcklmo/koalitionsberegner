@@ -4,6 +4,7 @@ import { createApiClient, toElection } from '../js/api.js';
 import { validateElection, ElectionValidationError, isValidatedElection } from '../js/election.js';
 import { mountImportUi } from '../js/import-ui.js';
 import { setLanguage } from '../js/i18n.js';
+import './strings.mjs';
 
 // These tests read the Danish wording.
 setLanguage('da', { remember: false });

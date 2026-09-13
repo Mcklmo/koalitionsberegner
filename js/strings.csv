@@ -1,0 +1,144 @@
+key,da,en
+language.name,Dansk,English
+language.label,Sprog,Language
+picker.label,Valg,Election
+picker.forecast,{where} · prognose {label},{where} · forecast {label}
+picker.public,offentlig,public
+curate.title,"Vis valget for besøgende, der ikke er logget ind",Show this election to visitors who are not signed in
+curate.label,Offentlig,Public
+names.label,Partinavne,Party names
+names.local,Originalsprog,Original language
+names.english,Engelsk,English
+reset,Ryd alle,Clear all
+date,{day}. {monthName} {year},{day} {monthName} {year}
+month.1,januar,January
+month.2,februar,February
+month.3,marts,March
+month.4,april,April
+month.5,maj,May
+month.6,juni,June
+month.7,juli,July
+month.8,august,August
+month.9,september,September
+month.10,oktober,October
+month.11,november,November
+month.12,december,December
+calc.subtitle,Vælg partier og se om de tilsammen opnår flertal ({majority}+ ud af {total} mandater),Pick parties and see whether together they reach a majority ({majority}+ of {total} seats)
+calc.totalOf,af {total} mandater,of {total} seats
+calc.majorityNeeds,Flertal kræver {majority} mandater,A majority needs {majority} seats
+calc.forecastFrom,"Prognose fra {publisher}, {date}","Forecast by {publisher}, {date}"
+calc.finalResult,"Endelig resultat, {date}","Final result, {date}"
+calc.largeMajority,Stort flertal ✓,Large majority ✓
+calc.majority,Flertal ✓ (+{over}),Majority ✓ (+{over})
+calc.short,Mangler {missing},{missing} short
+seats,{count} mandater,"{count} {count, plural, one {seat} other {seats}}"
+seats.computed,mandater beregnet ud fra stemmeandele,seats calculated from vote shares
+account.summary,Konto og abonnement,Account and subscription
+account.freeNote,Det er gratis at oprette en konto. Abonnement kræves kun for at importere nye valg.,Creating an account is free. A subscription is only needed to import new elections.
+account.manage,Administrér abonnement,Manage subscription
+account.signOut,Log ud,Sign out
+account.loadFailed,Kunne ikke hente kontoen: {message},Couldn't load your account: {message}
+email.label,E-mail,Email
+email.missing,Angiv din e-mailadresse.,Enter your email address.
+email.invalid,Adressen ser ikke ud til at være en e-mailadresse.,That doesn't look like an email address.
+password.label,Adgangskode,Password
+password.missing,Angiv en adgangskode.,Enter a password.
+password.short,Adgangskoden skal være mindst {min} tegn.,The password must be at least {min} characters.
+password.forgot,Glemt adgangskode?,Forgot your password?
+auth.signin.submit,Log ind,Sign in
+auth.signin.switchText,Ny her?,New here?
+auth.signin.switchLabel,Opret en konto,Create an account
+auth.signup.submit,Opret konto,Create account
+auth.signup.switchText,Har du allerede en konto?,Already have an account?
+auth.signup.switchLabel,Log ind,Sign in
+tier.free,Gratis,Free
+tier.basic,Basis,Basic
+tier.premium,Premium,Premium
+quota.adminUnlimited,Ubegrænsede importer som administrator.,Unlimited imports as an administrator.
+quota.unlimited,Ubegrænsede importer (adgangskontrol er slået fra).,Unlimited imports (access control is off).
+quota.none,Din plan giver ikke adgang til at importere nye valg.,Your plan doesn't include importing new elections.
+quota.remaining,"{remaining} af {limit} {remaining, plural, one {import} other {importer}} tilbage denne måned.","{remaining} of {limit} {limit, plural, one {import} other {imports}} left this month."
+upgrade.button,{tier} — {imports} importer/md.,{tier} — {imports} imports/month
+payments.paused,"Betaling virker ikke lige nu — prøv igen i morgen. I mellemtiden kan du skrive under ""Importér et valg"", hvilket valg du mangler: det bliver noteret som et ønske og importeret manuelt.","Payments aren't working right now — try again tomorrow. Meanwhile, enter the election you are missing under ""Import an election"": it is noted as a request and imported by hand."
+signup.created,Kontoen er oprettet.,Your account has been created.
+signup.linkSent,Kontoen er oprettet. Vi har sendt et link til {email} — åbn det for at bekræfte adressen.,Your account has been created. We've sent a link to {email} — open it to confirm your address.
+signup.linkFailed,Kontoen er oprettet. Vi kunne ikke sende bekræftelsesmailen lige nu — tryk på »Send linket igen« om et øjeblik.,"Your account has been created. We couldn't send the confirmation email just now — press ""Send the link again"" in a moment."
+reset.sent,"Hvis der findes en konto for {email}, har vi sendt et link til at vælge en ny adgangskode.","If there is an account for {email}, we've sent it a link to choose a new password."
+verify.note,"Bekræft din e-mailadresse med linket, vi har sendt dig, før du bruger kontoen. Kan du ikke finde mailen, så kig i spam.","Confirm your email address with the link we sent you before using the account. If you can't find the email, check your spam folder."
+verify.done,Jeg har bekræftet,I've confirmed it
+verify.resend,Send linket igen,Send the link again
+verify.confirmed,"Tak, din e-mailadresse er bekræftet.","Thanks, your email address is confirmed."
+verify.notYet,"Adressen er ikke bekræftet endnu. Åbn linket i mailen, og prøv igen.",The address isn't confirmed yet. Open the link in the email and try again.
+verify.resent,Vi har sendt et nyt link til {email}.,We've sent a new link to {email}.
+verify.yourAddress,din e-mailadresse,your email address
+verify.recentlySent,"Vi har for nylig sendt dig et link. Tjek din indbakke og spam-mappen, eller prøv igen om et par minutter.","We sent you a link a moment ago. Check your inbox and spam folder, or try again in a few minutes."
+checkout.opening,Åbner betaling…,Opening payment…
+checkout.failed,Kunne ikke starte betalingen: {message},Couldn't start the payment: {message}
+portal.opening,Åbner abonnementet…,Opening your subscription…
+portal.failed,Kunne ikke åbne abonnementet: {message},Couldn't open your subscription: {message}
+login.notConfigured,Login er ikke konfigureret på denne server.,Sign-in isn't configured on this server.
+auth.emailExists,Der findes allerede en konto med den e-mailadresse.,There is already an account with that email address.
+auth.emailNotFound,Vi kunne ikke finde en konto med den e-mailadresse.,We couldn't find an account with that email address.
+auth.wrongPassword,Forkert adgangskode.,Wrong password.
+auth.wrongCredentials,Forkert e-mailadresse eller adgangskode.,Wrong email address or password.
+auth.disabled,Kontoen er deaktiveret.,This account has been disabled.
+auth.tooManyAttempts,For mange forsøg. Prøv igen om lidt.,Too many attempts. Try again in a moment.
+auth.sessionExpired,Din session er udløbet. Log ind igen.,Your session has expired. Please sign in again.
+auth.failed,Log ind mislykkedes. Prøv igen.,Sign-in failed. Please try again.
+auth.unreachable,Kunne ikke nå login-tjenesten: {message},Couldn't reach the sign-in service: {message}
+auth.signInToConfirm,Log ind for at bekræfte din e-mailadresse.,Sign in to confirm your email address.
+import.summary,Importér et valg,Import an election
+import.year,Valgår,Election year
+import.nation,Land,Country
+import.nationPlaceholder,Danmark,Denmark
+import.subnation,Region (kun ved regionale valg),Region (regional elections only)
+import.subnationPlaceholder,fx Sachsen-Anhalt,e.g. Saxony-Anhalt
+import.hint,"Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt endnu, kan du vælge mellem de seneste meningsmålinger.","Typos are fine. We find the election and show which one we found — and where the numbers come from — before anything is saved. If the election hasn't been held yet, you can choose from the latest opinion polls."
+import.submit,Hent valgresultat,Get the results
+form.yearMissing,Angiv valgåret.,Enter the election year.
+form.yearInvalid,Året skal være et årstal mellem {min} og {max}.,The year must be between {min} and {max}.
+form.nationMissing,Angiv landet.,Enter the country.
+import.refusal.signIn,Log ind for at importere eller ønske et valg.,Sign in to import or request an election.
+import.refusal.subscription,Import kræver et abonnement. Vælg en plan ovenfor.,Importing requires a subscription. Pick a plan above.
+import.refusal.usedUp,Denne måneds importer er brugt op. Kvoten fornys ved månedsskiftet.,This month's imports are used up. They renew at the start of next month.
+import.requestNote,"Uden abonnement henter vi ikke valget automatisk. Vi skriver det op som et ønske, og det bliver importeret manuelt.","Without a subscription we don't fetch the election automatically. We note it down as a request, and it is imported by hand."
+import.remaining,"{remaining} {remaining, plural, one {import} other {importer}} tilbage denne måned.","{remaining} {remaining, plural, one {import} other {imports}} left this month."
+import.alreadyImported,Dette valg er allerede importeret.,This election has already been imported.
+import.alreadyImportedPick,Dette valg er allerede importeret. Vælg det i listen ovenfor.,This election has already been imported. Pick it in the list above.
+import.failed,Kunne ikke finde valgresultatet: {error},Couldn't find the results: {error}
+import.pending,Behandling er stadig i gang. Prøv igen om lidt.,Still processing. Try again in a moment.
+busy.checking,Tjekker…,Checking…
+busy.fetching,Henter…,Fetching…
+busy.requesting,Sender ønske…,Sending request…
+error.unexpected,Uventet fejl: {message},Unexpected error: {message}
+archive.unreachable,Valgarkivet kan ikke nås — viser kun det indbyggede valg.,The election archive can't be reached — showing only the built-in election.
+request.refusal.signIn,Log ind for at ønske et valg.,Sign in to request an election.
+request.refusal.confirmEmail,"Bekræft din e-mailadresse, før du kan ønske et valg.",Confirm your email address before requesting an election.
+request.refusal.unavailable,Ønskelisten er ikke tilgængelig lige nu. Prøv igen senere.,Requests aren't available right now. Please try again later.
+request.duplicate,Det valg er der allerede et ønske om (#{number}).,That election has already been requested (#{number}).
+request.filed,Ønsket er noteret som #{number}.,Your request is noted as #{number}.
+request.byHand,Valget bliver importeret manuelt.,The election will be imported by hand.
+request.link,Se ønsket,See the request
+request.failed,Kunne ikke sende ønsket: {message},Couldn't send the request: {message}
+preview.forecastFor,Prognose fra {label} for valget {identity},Forecast by {label} for the election {identity}
+preview.majorityAt,flertal ved {majority},majority at {majority}
+preview.sourceComputed,Stemmeandelene er læst fra {url}; mandaterne er beregnet ud fra dem og er et skøn.,The vote shares were read from {url}; the seats are calculated from them and are an estimate.
+preview.source,Tallene er læst fra {url},The numbers were read from {url}
+preview.check,"Kontrollér at det er det rigtige valg, og at tallene passer, før du gemmer.",Check that this is the right election and that the numbers are right before you save.
+preview.confirm,Gem valget,Save the election
+preview.backToList,Tilbage til listen,Back to the list
+discard,Forkast,Discard
+discarded,Forkastet. Intet blev gemt.,Discarded. Nothing was saved.
+choices.hint,"Vælg en meningsmåling. Du ser tallene, før noget gemmes.",Pick an opinion poll. You'll see the numbers before anything is saved.
+choices.title,{where} · valget afholdes senest {date},{where} · election due by {date}
+choices.message,Valget er ikke afholdt endnu. Vælg en meningsmåling at regne på.,This election hasn't been held yet. Pick an opinion poll to work with.
+choices.check,"Kontrollér tallene, før du gemmer prognosen.",Check the numbers before you save the forecast.
+saved.election,Valget er gemt.,The election is saved.
+saved.electionAlready,Valget var allerede gemt.,The election was already saved.
+saved.forecast,Prognosen er gemt.,The forecast is saved.
+saved.forecastAlready,Prognosen var allerede gemt.,The forecast was already saved.
+saved.failed,Kunne ikke gemme valget: {message},Couldn't save the election: {message}
+curate.nowPublic,"Valget er nu synligt for alle, også uden login.","The election is now visible to everyone, signed in or not."
+curate.nowPrivate,"Valget vises nu kun for brugere, der er logget ind.",The election is now only shown to signed-in users.
+curate.failed,Kunne ikke ændre synligheden: {message},Couldn't change the visibility: {message}
+select.failed,Kunne ikke hente valget: {message},Couldn't load the election: {message}

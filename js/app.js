@@ -1,5 +1,5 @@
 import { isValidatedElection } from './election.js';
-import { t } from './i18n.js';
+import { formatDate, t } from './i18n.js';
 
 /**
  * Coalition calculator renderer.
@@ -13,7 +13,7 @@ import { t } from './i18n.js';
 function formatElectionDate(iso) {
   const [date, time] = iso.split('T');
   const [year, month, day] = date.split('-');
-  const dayMonthYear = t('date', { day: Number(day), month: Number(month), year });
+  const dayMonthYear = formatDate({ day: Number(day), month: Number(month), year });
   return time ? `${time.slice(0, 5)} ${dayMonthYear}` : dayMonthYear;
 }
 

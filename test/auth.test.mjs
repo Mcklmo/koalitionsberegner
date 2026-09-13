@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AuthError, createAuth, readableAuthError } from '../js/auth.js';
 import { setLanguage } from '../js/i18n.js';
+import './strings.mjs';
 
 // These tests read the Danish wording.
 setLanguage('da', { remember: false });

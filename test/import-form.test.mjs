@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MAX_YEAR, MIN_YEAR, parseYear, validateImportForm } from '../js/import-form.js';
 import { setLanguage } from '../js/i18n.js';
+import './strings.mjs';
 
 // These tests read the Danish wording.
 setLanguage('da', { remember: false });

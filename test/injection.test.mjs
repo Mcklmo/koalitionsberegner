@@ -15,6 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import './strings.mjs';
 import { mountCoalitionCalculator } from '../js/app.js';
 import { mountImportUi } from '../js/import-ui.js';
 import { validateElection, ElectionValidationError } from '../js/election.js';
