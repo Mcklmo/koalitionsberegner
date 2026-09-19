@@ -1,0 +1,34 @@
+# How often a tracked election is re-read. Durations are an integer and a
+# unit, chained without spaces: 30d, 12h, 30m, 1d12h, 1h30m. Units: d h m.
+#
+# This file ships inside the package on purpose: a top-level file would be
+# published as a public URL by Cloudflare. REFRESH_CONFIG points elsewhere.
+# Every key is required and an unknown one stops the boot, so a typo here is
+# found by the deploy rather than by an election that is never refreshed.
+
+before_election:        # chosen by the time left until 00:00 UTC on election day;
+  - more_than: 180d     # the first row whose more_than is exceeded wins,
+    every: 30d          # so keep them in descending order
+  - more_than: 60d
+    every: 14d
+  - more_than: 14d
+    every: 7d
+  - more_than: 0d       # under 14 days
+    every: 1d
+
+after_election:         # chosen by the time since 00:00 UTC on election day;
+  - within: 2d          # the first row whose within is not yet passed wins
+    every: 30m          # election night: results firm up hour by hour
+  - within: 45d
+    every: 1d           # recounts, late mandates, corrections
+
+results:
+  stable_after: 3       # identical consecutive reads before the election is final
+                        # (after that nothing is fetched again)
+polls:
+  keep_newest: 3        # forecasts stored per refresh, newest first; older
+                        # polls already stored stay
+failures:
+  backoff_factor: 2     # the due interval is multiplied by this per consecutive failure
+  max_backoff: 7d
+  park_after: 8         # consecutive failures before the election is parked and reported
