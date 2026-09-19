@@ -753,8 +753,8 @@ async def preview_usage_report(
 # frontend expects by default. Mounted last so it cannot shadow the API routes.
 #
 # The page and its scripts, and nothing else: mounting the directory itself
-# would serve whatever sits next to them, which on a local checkout is the repo
-# root — .env and its keys included.
+# would serve whatever sits next to them, which locally is the repo root —
+# .env and its keys included.
 FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR", Path(__file__).resolve().parents[2]))
 if (FRONTEND_DIR / "index.html").is_file():
 

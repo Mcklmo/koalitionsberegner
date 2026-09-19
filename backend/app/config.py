@@ -424,7 +424,7 @@ def admin_secret() -> str:
     Importing is the one thing on this site that spends money, and it is the
     owner's alone: the page sends this as ``x-admin-secret`` once it has been
     pasted in. With none configured every caller is the owner, which is right
-    for a checkout on a laptop and nowhere else — see
+    on a laptop and nowhere else — see
     :func:`validate_configuration`, which refuses to boot on Cloud Run without it.
     """
     return _env_str("ADMIN_SECRET")
