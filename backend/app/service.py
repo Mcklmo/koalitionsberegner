@@ -34,6 +34,15 @@ IMPORT_FAILED = "the import failed on our side — please try again later"
 IMPORT_STALLED = "the import stopped before it finished — please try again"
 
 
+class AmbiguousId(Exception):
+    """More than one stored election starts with the prefix asked for.
+
+    Twelve hex characters will not collide in a store of tens of elections,
+    but the check costs nothing, so :meth:`ImportService.resolve_id` makes it
+    rather than assume.
+    """
+
+
 def _user_message(exc: Exception) -> str:
     """What a failed import tells the user.
 
@@ -370,6 +379,22 @@ class ImportService:
     async def get_stored(self, election_hash: str) -> StoredElection | None:
         """The stored election, whoever asks: every stored election is public."""
         return await self._in_thread(self._store.get_stored, election_hash)
+
+    async def resolve_id(self, prefix: str) -> StoredElection | None:
+        """The stored election named by a shared link's id: a hash or a prefix of one.
+
+        A full 64-character hash short-circuits to :meth:`get_stored`. Anything
+        shorter is matched against every stored election (already behind
+        :meth:`list_elections`'s cache), and :class:`AmbiguousId` is raised when
+        more than one starts with it — the caller decides what that is worth
+        (a share link answers ``409``).
+        """
+        if len(prefix) == 64:
+            return await self.get_stored(prefix)
+        matches = [e for e in await self.list_elections() if e.election_hash.startswith(prefix)]
+        if len(matches) > 1:
+            raise AmbiguousId(prefix)
+        return matches[0] if matches else None
 
     async def find_by_place(
         self, year: int, nation: str, subnation: str | None = None

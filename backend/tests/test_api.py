@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.service import ImportService
-from app.store import InMemoryElectionStore
+from app.store import InMemoryElectionStore, StoredElection
 from tests.factories import CountingParser, make_election
 
 BODY = {"year": 2026, "nation": "Danmark"}
@@ -263,6 +263,83 @@ def test_a_caller_with_no_header_may_open_any_stored_election(client):
 def test_an_unknown_election_is_404_to_anyone(client):
     response = client.get("/api/elections/" + "0" * 64, headers={})
     assert response.status_code == 404
+
+
+# --- shared links: prefix lookup, the card and its preview image ------------
+
+
+def test_a_prefix_of_the_hash_resolves_to_the_same_election(client):
+    saved = save(client)
+    prefix = saved["election_hash"][:16]
+
+    response = client.get(f"/api/elections/{prefix}")
+
+    assert response.status_code == 200
+    assert response.json()["election_hash"] == saved["election_hash"]
+
+
+def test_a_prefix_under_twelve_characters_is_422(client):
+    assert client.get("/api/elections/abc123").status_code == 422
+
+
+def test_a_non_hex_id_is_422(client):
+    assert client.get("/api/elections/" + "g" * 12).status_code == 422
+
+
+def test_a_prefix_matching_two_elections_is_409(client, store):
+    # Real hashes never collide within twelve characters; two entries are put
+    # in the store directly, sharing a crafted prefix, to exercise the branch.
+    danish = make_election(nation="Danmark")
+    german = make_election(nation="Deutschland")
+    prefix = "abcdef012345"
+    one, two = prefix + "0" * 52, prefix + "1" * 52
+    store._elections[one] = StoredElection(election_hash=one, election=danish, stored_at=1.0)
+    store._elections[two] = StoredElection(election_hash=two, election=german, stored_at=2.0)
+
+    assert client.get(f"/api/elections/{prefix}").status_code == 409
+
+
+def test_the_card_describes_the_election_with_nothing_selected(client):
+    saved = save(client)
+
+    response = client.get(f"/api/elections/{saved['election_hash']}/card")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=3600"
+    body = response.json()
+    assert body["title"] == "Koalitionsberegner"
+    assert body["total"] == 0
+    assert body["stale"] is False
+
+
+def test_the_card_reflects_a_selection_and_flags_a_stale_seat_total(client):
+    saved = save(client)
+
+    response = client.get(f"/api/elections/{saved['election_hash']}/card?c=0&s=99")
+
+    body = response.json()
+    assert body["total"] == 6, "the first party in the default election holds 6 seats"
+    assert body["stale"] is True, "99 was claimed, 6 is what the election gives"
+
+
+def test_the_card_of_an_unknown_election_is_404(client):
+    assert client.get("/api/elections/" + "0" * 64 + "/card").status_code == 404
+
+
+def test_the_preview_image_is_a_png_with_cache_and_etag_headers(client):
+    saved = save(client)
+
+    response = client.get(f"/api/og/{saved['election_hash']}.png")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "public, max-age=3600"
+    assert response.headers["etag"]
+    assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_preview_image_of_an_unknown_election_is_404(client):
+    assert client.get("/api/og/" + "0" * 64 + ".png").status_code == 404
 
 
 def test_the_account_routes_are_gone(client):

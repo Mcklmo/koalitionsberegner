@@ -11,15 +11,12 @@ import time
 from io import BytesIO
 
 import pytest
+from PIL import Image
 
-# Pillow joins the backend's dependencies when the image route is wired up
-# (doc/plans/02-share-links.md, WP1); until then the suite runs without it.
-Image = pytest.importorskip("PIL.Image")
-
-from app import og_image  # noqa: E402
-from app.og_image import BAR_BOTTOM, BAR_TOP, BAR_WIDTH, HEIGHT, LEFT, RIGHT, WIDTH, render  # noqa: E402
-from app.share import card  # noqa: E402
-from tests.factories import make_election, make_forecast  # noqa: E402
+from app import og_image
+from app.og_image import BAR_BOTTOM, BAR_TOP, BAR_WIDTH, HEIGHT, LEFT, RIGHT, WIDTH, render
+from app.share import card
+from tests.factories import make_election, make_forecast
 
 HASH = "3f" * 32
 BAR_MIDDLE = (BAR_TOP + BAR_BOTTOM) // 2
