@@ -407,6 +407,42 @@ the store, so it is worth its own section.
   errors lets the filing go ahead: a second issue is a far better outcome than
   refusing somebody who asked for something reasonable.
 
+### T13 — Shared links
+
+A link's `id`, `c` and `s` ([02-share-links.md](plans/02-share-links.md)) are
+read by a stranger's browser or by a crawler with no account and no secret, so
+they are the only inputs here a visitor fully controls. Nothing they can carry
+is more than a handful of small integers.
+
+- **Every integer is bounded before it does anything.** `app.share.parse_selection`
+  rejects a `c` longer than the widest selection any election allows before it
+  is even split, caps how many tokens it will split into, and drops an index
+  once it is not less than the election's own party count; `parse_seats`
+  rejects anything over `MAX_SEATS` outright. Neither ever raises: a malformed
+  value is read as an empty selection or a missing seat total, so a mangled
+  link still opens the election rather than erroring.
+- **Rendering the image is cheap and cached.** `app.og_image.render` draws a
+  fixed layout from numbers already bounded above; one image is tens of
+  milliseconds of work. `GET /api/og/<id>.png` and `GET
+  /api/elections/<id>/card` both answer with an hour's `Cache-Control`, and the
+  Worker puts both in `caches.default` keyed on the full request URL, so
+  repeated requests for the same link — a crawler re-fetching, a link pasted
+  into a busy channel — cost one render, not one per request. What is left is
+  bounded by the same per-client limiting at the proxy that the rest of `/api/*`
+  relies on (see the accepted risk on rate limiting, below).
+- **Nothing in a title or an abbreviation gets a second chance to be markup.**
+  Party names and abbreviations were already cleaned to plain text by
+  `schema.clean_text` when the election was imported; the Worker's
+  `escapeAttribute` (`worker/index.js`) escapes `& < > " '` again wherever the
+  card's wording is written into an HTML attribute or a `<meta>` tag, so a
+  title cannot close a tag or add an attribute even if something upstream ever
+  let one through.
+- **An unknown or ambiguous id costs a page, not an error.** The Worker treats
+  a `404` (no such prefix) or a `409` (an ambiguous one) from the origin's card
+  endpoint the same as any other failure: it serves the page anyway, with the
+  generic tags rather than an election's. Trying prefixes to see which exist
+  gets a crawler nothing but the same `200` every time.
+
 ## Accepted risks
 
 These are known and deliberately not addressed here:

@@ -55,6 +55,25 @@ one issue per election and by the rate limiting in front of the app; see
 Requests need `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO`; without them
 `/api/config` says so and the page does not offer it.
 
+## Sharing a coalition
+
+The share button next to *Clear all* copies a link of the shape
+`/e/<id>?c=<parties>&s=<seats>`: `<id>` is a prefix of the election's stored
+hash, `c` the ticked parties as positions in the order the page lists them,
+and `s` the seat total at the time, used only to notice a later correction.
+Opening the link restores exactly that selection.
+
+Pasted into Slack, Discord, Signal, iMessage, Reddit or Facebook, the same
+link unfurls into an image of the seat bar, the total and the verdict — built
+server-side (`GET /api/og/<id>.png`, `backend/app/og_image.py`) from the same
+wording as the page's `<meta>` tags (`GET /api/elections/<id>/card`,
+`backend/app/share.py`), so the two never disagree. The Cloudflare Worker
+(`worker/index.js`) injects those tags into the page for crawlers, caches the
+image so a link pasted into a busy thread renders it once rather than once
+per viewer, and counts each `/e/*` page view — crawlers included — in a
+`link opened` counter alongside the other usage numbers. The card is always in
+English: crawlers have no language of their own.
+
 ## Usage reports and privacy
 
 The owner gets a daily, weekly and monthly email about how the app is used:
@@ -63,6 +82,7 @@ The owner gets a daily, weekly and monthly email about how the app is used:
 - elections picked
 - imports started, saved and discarded, and how many failed
 - requests filed
+- shared links opened (`GET /e/*`), crawlers included — one count per day, nothing about who opened it or which election
 
 Only counts are stored: a day is a handful of numbers, and nothing says who,
 which election, or from where. There are no accounts, so there is nothing per
