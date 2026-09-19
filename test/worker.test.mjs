@@ -2,6 +2,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import worker, {
+  escapeAttribute,
   ORIGIN_SECRET_HEADER,
   REPORT_SECRET_HEADER,
   USAGE_REPORTS_PATH,
@@ -13,9 +14,39 @@ const ENV = {
 };
 
 const realFetch = globalThis.fetch;
+const realCaches = globalThis.caches;
 afterEach(() => {
   globalThis.fetch = realFetch;
+  globalThis.caches = realCaches;
 });
+
+/** A `caches.default` stand-in: an in-memory map keyed by request URL. */
+function recordCache() {
+  const store = new Map();
+  const cache = {
+    match: async (key) => {
+      const hit = store.get(String(key.url ?? key));
+      return hit ? hit.clone() : undefined;
+    },
+    put: async (key, response) => { store.set(String(key.url ?? key), response); },
+  };
+  globalThis.caches = { default: cache };
+  return store;
+}
+
+/** A minimal `env.ASSETS` binding: answers one HTML page for every fetch. */
+function recordAssets(html, { status = 200, headers = {} } = {}) {
+  const calls = [];
+  return {
+    calls,
+    ASSETS: {
+      fetch: async (request) => {
+        calls.push(String(request.url ?? request));
+        return new Response(html, { status, headers });
+      },
+    },
+  };
+}
 
 /** Replace fetch with a recorder that answers 200, or `statusFor(url)` when given. */
 function recordFetches(statusFor = () => 200) {
@@ -97,6 +128,111 @@ test('without its secret the Worker says so instead of forwarding', async () => 
   );
   assert.equal(response.status, 503);
   assert.equal(calls.length, 0);
+});
+
+// --- shared links: /e/* and its preview image ----------------------------
+
+const PAGE_HTML = '<!DOCTYPE html><html><head><title>Denmark — 2026</title></head><body></body></html>';
+const ID = 'a'.repeat(16);
+
+/** A `globalThis.fetch` stand-in that answers the origin's card endpoint. */
+function recordCardFetch(card, { status = 200 } = {}) {
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify(card), {
+      status,
+      headers: status === 200 ? { 'cache-control': 'public, max-age=3600' } : {},
+    });
+  };
+  return calls;
+}
+
+test('escapeAttribute escapes the five characters HTML attributes need escaped', () => {
+  assert.equal(escapeAttribute(`& < > " '`), '&amp; &lt; &gt; &quot; &#39;');
+});
+
+test('a shared link is worded from the origin\'s card', async () => {
+  recordCardFetch({ title: 'A + F + B', description: '79 of 179 seats.', image_path: `/api/og/${ID}.png?c=0` });
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}?c=0`),
+    { ...ENV, ...assets }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'public, max-age=300');
+  const html = await response.text();
+  assert.match(html, /<title>A \+ F \+ B<\/title>/);
+  assert.match(html, /<meta property="og:description" content="79 of 179 seats\.">/);
+  assert.match(html, /<meta property="og:image" content="[^"]*\/api\/og\/a{16}\.png\?c=0">/);
+  assert.match(html, /<meta property="og:image:width" content="1200">/);
+  assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+});
+
+test('a title with markup and quotes arrives escaped', async () => {
+  recordCardFetch({
+    title: '<script>alert(1)</script>',
+    description: 'A "quoted" description',
+    image_path: null,
+  });
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}`), { ...ENV, ...assets }
+  );
+
+  const html = await response.text();
+  assert.doesNotMatch(html, /<script>alert/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(html, /content="A &quot;quoted&quot; description"/);
+  assert.doesNotMatch(html, /og:image/, 'no image_path means no image tags');
+});
+
+test('an unknown id still answers 200 with the generic tags', async () => {
+  recordCardFetch({}, { status: 404 });
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}`), { ...ENV, ...assets }
+  );
+
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /<title>Koalitionsberegner<\/title>/);
+  assert.match(html, /<meta property="og:title" content="Koalitionsberegner">/);
+});
+
+test('/e/ with a bad id falls through to 404', async () => {
+  const calls = recordFetches();
+  for (const bad of ['short12345', 'ThisIsSixteenNOT', 'a'.repeat(16) + '/extra']) {
+    const response = await worker.fetch(
+      new Request(`https://koalitionsberegner.moritzmarcus.com/e/${bad}`), ENV
+    );
+    assert.equal(response.status, 404, bad);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('a second request for the same preview image is served from the cache', async () => {
+  const store = recordCache();
+  const calls = recordFetches();
+  const request = () => new Request(
+    `https://koalitionsberegner.moritzmarcus.com/api/og/${ID}.png?c=0`
+  );
+
+  const first = await worker.fetch(request(), ENV);
+  assert.equal(first.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(store.size, 1, 'the response was cached under its own public URL');
+
+  const second = await worker.fetch(request(), ENV);
+  assert.equal(second.status, 200);
+  assert.equal(calls.length, 1, 'the second request never reached the origin');
 });
 
 // --- the daily cron -----------------------------------------------------------

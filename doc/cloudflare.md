@@ -4,7 +4,8 @@ The app runs on Cloud Run in one region. Cloudflare sits in front of it:
 
 ```
 visitor ──▶ Cloudflare edge ──┬─ index.html, js/ ──▶ asset store (served at the edge)
-                              └─ /api/*          ──▶ Worker ──▶ Cloud Run (+ x-origin-secret)
+                              ├─ /api/*          ──▶ Worker ──▶ Cloud Run (+ x-origin-secret)
+                              └─ /e/*            ──▶ Worker ──▶ asset store + Cloud Run (card)
 ```
 
 - **The page** is served from Cloudflare's asset store at the edge nearest the
@@ -176,13 +177,42 @@ What is counted, and why it is only counts, is in `backend/app/usage.py`.
 Page loads come from `/api/config`, so they include bots that run the page's
 scripts.
 
+## Shared links
+
+`/e/<id>` (`doc/plans/02-share-links.md`) is the only other path the Worker
+runs for, per `run_worker_first` in `wrangler.jsonc`. It fetches the page from
+the asset store (the same copy `/` serves, headers included) and its wording
+from the origin's `GET /api/elections/<id>/card`, then rewrites `<title>` and
+inserts the `og:*`/`twitter:*` tags before `</head>` — see `worker/index.js`,
+`servePage` and `serveSharedLink`. An id the origin does not know, or an
+origin that does not answer, still serves the page: with the generic tags
+instead of the election's.
+
+- The card is cached in `caches.default`, keyed on its own public URL
+  (`/api/elections/<id>/card?...` on this domain, not on `run.app`), for as
+  long as the origin's `Cache-Control` says — an hour. The page itself is
+  served with `Cache-Control: public, max-age=300`, so a crawler that revisits
+  a link picks up a corrected card within five minutes.
+- `GET /api/og/<id>.png` (the preview image) is cached in `caches.default` too,
+  keyed on its own request. A link pasted into a busy channel renders the
+  image once, not once per viewer.
+- **To purge a stale image or card** after a correction
+  (`store.replace_election`): Cloudflare dashboard → Caching → Configuration
+  → Purge Cache → Custom Purge, with the exact
+  `https://koalitionsberegner.moritzmarcus.com/api/og/<id>.png?...` and
+  `.../api/elections/<id>/card?...` URLs (every `c=`/`s=` combination in use
+  has its own cache entry). Platforms that already unfurled the link cache the
+  image on their own side too — Facebook's Sharing Debugger has a "Scrape
+  Again" button; others just take a while to re-fetch.
+
 ## Limits worth knowing on launch day
 
-- **Workers Free allows 100,000 Worker requests a day**, and only `/api/*`
-  counts. Static files are served without running the Worker. Each page view
-  makes a handful of API calls, so a busy day can hit the cap, and past it API
-  calls fail until midnight UTC. **Workers Paid** ($5/month, 10 million requests)
-  removes that risk.
+- **Workers Free allows 100,000 Worker requests a day**, and only `/api/*` and
+  `/e/*` count. Static files (including a shared link's page once cached by
+  the visitor's browser or a proxy) are served without running the Worker.
+  Each page view makes a handful of API calls, so a busy day can hit the cap,
+  and past it API and share-link requests fail until midnight UTC. **Workers
+  Paid** ($5/month, 10 million requests) removes that risk.
 - **Multi-region later** changes one line: point `ORIGIN_URL` at a global
   Google load balancer with Cloud Run in several regions behind it. Nothing
   else here changes.
