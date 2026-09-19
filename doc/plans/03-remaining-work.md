@@ -180,7 +180,7 @@ parser, config, clock)`. One `run(tracked) -> Outcome` per election:
    yet stored via a new `ElectionStore.put_election(election_hash, election,
    provenance="auto")` that bypasses staging (the job table is for humans).
    Idempotent by construction.
-4. **From election day** (`now >= day0`): `want="results"`. Then the gates,
+5. **From election day** (`now >= day0`): `want="results"`. Then the gates,
    because nobody confirms this preview:
    - `parser.is_wanted(election, resolved, request)` (identity matches);
    - `sum(seats) == total_seats` (the schema checks this already; keep it
@@ -196,10 +196,10 @@ parser, config, clock)`. One `run(tracked) -> Outcome` per election:
    completes; the hash does not change because the identity does not),
    `unchanged_reads=1`. Stored and identical: `unchanged_reads += 1`; at
    `results.stable_after`, `status=final` and `next_refresh_at=None`.
-5. **Failures.** Any exception: `consecutive_failures += 1`, `last_error`
+6. **Failures.** Any exception: `consecutive_failures += 1`, `last_error`
    from `service._user_message`, backoff as in A2, `parked` at
    `failures.park_after`. Success resets the counter.
-6. **Release the lease** in a `finally`.
+7. **Release the lease** in a `finally`.
 
 `RefreshService` reuses `io_span` for logging; sizes and hashes only, never
 page text. Tests in `test_refresh.py` use `StubWikipedia`, the mock parser
@@ -321,20 +321,25 @@ anything personalised, and cost the one differentiator the page has.
    ("Figures from {source}, CC BY-SA where Wikipedia") and a paragraph in the
    README about the data licence. This matters for any later commercial
    licensing of the data: derived data stays share-alike.
-3. **Donate and sponsor.** A `support.link` string and a single link in the
+3. **Outreach.** The `outreach` plugin and
+   [04-reddit-outreach.md](04-reddit-outreach.md) cover the one marketing
+   channel this project has: answering coalition questions where they are
+   asked, with disclosure and one-by-one approval. Read that plan's "Before you
+   switch this on" before spending time on it.
+4. **Donate and sponsor.** A `support.link` string and a single link in the
    footer (GitHub Sponsors, Ko-fi or MobilePay, owner's choice) and an empty
    `support.sponsor` slot ("Supported by …") that stays hidden until set.
-4. **Grants to apply to**, with the open-source repository and the privacy
+5. **Grants to apply to**, with the open-source repository and the privacy
    stance as the pitch: NLnet (NGI Zero), Prototype Fund (Germany, needs a
    resident applicant), the EU's Next Generation Internet calls, and Danish
    democracy or digitisation foundations. Draft the one-page pitch from the
    README.
-5. **Business-to-business door, kept open but not built.** The
+6. **Business-to-business door, kept open but not built.** The
    `ElectionSummary` and `Election` JSON are already the shape an embed or an
    API would serve; document the endpoints as stable and add a
    `Cache-Control` and CORS story (`ALLOWED_ORIGINS` exists) so a newsroom
    could embed. Build nothing further until somebody asks.
-6. **README rewrite** as a project pitch: what it is, why a single tool for
+7. **README rewrite** as a project pitch: what it is, why a single tool for
    every election, how data gets in (requests, owner imports, the tracked
    calendar), how to run it, how to contribute an election or a country's
    seat rules, the licence and the data licence. Add

@@ -20,3 +20,5 @@ venv/
 
 # personal deploy scripts
 *.local.sh
+# outreach plugin: local credentials
+plugins/outreach/.env

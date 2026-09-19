@@ -21,3 +21,4 @@ data
 doc
 test
 node_modules
+plugins
