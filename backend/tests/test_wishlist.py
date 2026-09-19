@@ -417,14 +417,6 @@ def test_checkout_is_closed_and_says_when_to_come_back(client, selling, monkeypa
     assert selling.checkouts == [], "Stripe was never asked"
 
 
-def test_nothing_is_purchasable_while_checkout_is_closed(client, selling):
-    """Said in the config too, so a page cannot offer a button that 503s."""
-    config = client.get("/api/config").json()
-
-    assert config["payments_paused"] is True
-    assert [row["purchasable"] for row in config["tiers"]] == [False, False, False]
-
-
 def test_an_existing_subscriber_can_still_reach_the_portal(client, selling, accounts):
     """Paying is closed; leaving is not. Trapping a subscriber would be worse."""
     accounts.ensure("paid-1", "paid@example.org")
@@ -443,4 +435,3 @@ def test_one_variable_opens_checkout_again(client, selling, monkeypatch):
 
     assert started.status_code == 200
     assert started.json()["url"] == "https://checkout.test/basic"
-    assert client.get("/api/config").json()["payments_paused"] is False

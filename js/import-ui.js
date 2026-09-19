@@ -20,17 +20,16 @@
  * both the list and the preview say so: those numbers are ours, not the
  * pollster's.
  *
- * Importing is also the part that is sold. This module shows what the account
- * allows but never decides it: the form is disabled as a courtesy, and the
- * server refuses regardless — the two can disagree only in the safe direction.
+ * Importing spends money, so it is the owner's alone: the page imports only in
+ * admin mode (js/admin.js), or on a local run where the server says importing
+ * is open. This module never decides that — the server refuses regardless, and
+ * the two can disagree only in the safe direction.
  *
- * Anyone who may not import — signed out included — reaches the same form and
- * is not turned away at it. What it cannot do is make the server go and read pages,
- * which is the part that costs money; the election it wanted is still worth
- * knowing about, so the same button writes it down as an issue in the tracker
- * to be imported by hand (`POST /api/elections/requests`). The user types the
- * same three fields either way and the button keeps its name — from where they
- * stand they asked for an election, and the app did the most it could.
+ * Everyone else reaches the same form and is not turned away at it. The
+ * election they wanted is worth knowing about, so the same form writes it down
+ * as an issue in the tracker, to be imported later
+ * (`POST /api/elections/requests`). The fields are the same either way; the
+ * button says which of the two it will do.
  */
 
 import { ApiError, ImportStatus } from './api.js';
@@ -39,11 +38,12 @@ import { t } from './i18n.js';
 
 const LOCAL_VALUE = 'local';
 
-/** Why the server turned an import down, as the texts that say so in the page's own words. */
+/**
+ * Why the server turned an import down, as the texts that say so in the page's
+ * own words. Only the owner imports, so a refusal means the secret was wrong.
+ */
 const REFUSALS = {
-  401: 'import.refusal.signIn',
-  402: 'import.refusal.subscription',
-  429: 'import.refusal.usedUp',
+  403: 'admin.wrongSecret',
 };
 
 /**
@@ -67,7 +67,7 @@ export function mountImportUi({
   onSelect,
   bundled,
   config = {},
-  onImported = () => {},
+  onWrongSecret = () => {},
 }) {
   const el = elements;
   /**
@@ -78,8 +78,8 @@ export function mountImportUi({
   /** An upcoming election's forecasts, while the user chooses between them. */
   let offered = null;
   let summaries = [];
-  /** What the server last said this account may do; null when signed out. */
-  let account = null;
+  /** Whether the page holds the owner's secret. The server still checks it. */
+  let admin = false;
   /** True while a submit is under way, from the lookup to the last message. */
   let submitting = false;
 
@@ -101,50 +101,45 @@ export function mountImportUi({
   function busy(isBusy, label) {
     submitting = isBusy;
     renderSubmit();
-    el.submit.textContent = isBusy ? label : t('import.submit');
+    if (isBusy) el.submit.textContent = label;
   }
 
-  /** Whether importing is worth offering. The server still decides. */
+  /** Whether this page imports: the owner, or a local run with no secret. */
   function allowed() {
-    return account === null ? false : account.mayImport;
+    return admin || Boolean(config.importsOpen);
   }
 
   /**
    * Whether the button should write the election down instead of importing it.
    *
-   * Everyone who cannot import can, signed out included — asking needs no
-   * account, because nothing about it searches, fetches or spends. A visitor
-   * who never signs in is exactly the person most likely to find the election
-   * missing, and turning them away would lose the one signal this exists for.
+   * Everyone who cannot import can: asking needs nothing, because nothing about
+   * it searches, fetches or spends.
    */
   function canRequest() {
     return Boolean(config.requestsEnabled) && !allowed();
   }
 
   /**
-   * The one place the button's state is decided. The account is re-read in the
-   * middle of a submit, and that must not hand the user a second click racing
-   * the first over the preview.
+   * The one place the button's state is decided: whether it works, and — when
+   * nothing is under way — whether it imports or asks. The role can change in
+   * the middle of a submit, and that must not hand the user a second click
+   * racing the first over the preview.
    */
   function renderSubmit() {
     el.submit.disabled = submitting || !(allowed() || canRequest());
+    if (!submitting) el.submit.textContent = t(allowed() ? 'import.submit' : 'request.submit');
   }
 
-  /** The standing note under the form: why importing is or is not available. */
+  /** The standing note under the form: what the button will do, if anything. */
   function renderAvailability() {
-    if (canRequest()) {
-      // The button still works; it does something else. Saying which is the
-      // difference between an offer and a dead end. Checked before the rest
-      // because it is true of a signed-out visitor too.
-      el.availability.textContent = t('import.requestNote');
-    } else if (account === null) {
-      el.availability.textContent = t(REFUSALS[401]);
-    } else if (account.unlimited) {
+    if (allowed()) {
       el.availability.textContent = '';
-    } else if (!account.mayImport) {
-      el.availability.textContent = t(account.limit > 0 ? REFUSALS[429] : REFUSALS[402]);
+    } else if (canRequest()) {
+      // The button still works; it does something else. Saying which is the
+      // difference between an offer and a dead end.
+      el.availability.textContent = t('import.requestNote');
     } else {
-      el.availability.textContent = t('import.remaining', { remaining: account.remaining });
+      el.availability.textContent = t('import.unavailable');
     }
     renderSubmit();
   }
@@ -281,11 +276,11 @@ export function mountImportUi({
     setFieldErrors(errors);
     if (!valid) return;
 
-    // No subscription behind this account: the election is written down rather
-    // than fetched. Not preceded by a lookup — the server answers 409 if it
-    // already holds the election, which is the same round trip and one fewer.
-    if (!allowed() && canRequest()) {
-      await fileRequest(values);
+    // Not the owner: the election is written down rather than fetched. Not
+    // preceded by a lookup — the server answers 409 if it already holds the
+    // election, which is the same round trip and one fewer.
+    if (!allowed()) {
+      if (canRequest()) await fileRequest(values);
       return;
     }
 
@@ -307,8 +302,7 @@ export function mountImportUi({
 
       // An import already running, or already read and waiting to be checked —
       // from an earlier click, a reload, another tab — is picked up where it
-      // is. Importing again would reserve quota just to join it, and be refused
-      // outright if that import spent the last of the month.
+      // is rather than asked for again.
       let result = existing;
       if (existing.status === ImportStatus.PENDING) {
         busy(true, t('busy.fetching'));
@@ -320,17 +314,21 @@ export function mountImportUi({
       await handleResult(result);
     } catch (error) {
       setMessage(refusal(error), 'error');
-      // A refusal usually means the allowance moved; take the server's word for it.
-      if (error instanceof ApiError && REFUSALS[error.status]) await onImported();
+      forgetOnRefusal(error);
     } finally {
       busy(false);
     }
   }
 
-  /**
-   * Write the election down instead of importing it. Costs no quota, so the
-   * account is not re-read afterwards: nothing about it changed.
-   */
+  /** A 403 means the secret was wrong: drop it, so the page stops acting as the owner. */
+  function forgetOnRefusal(error) {
+    if (!(error instanceof ApiError) || error.status !== 403 || !admin) return;
+    admin = false;
+    renderAvailability();
+    onWrongSecret();
+  }
+
+  /** Write the election down instead of importing it. Nothing is fetched or read. */
   async function fileRequest(values) {
     try {
       busy(true, t('busy.requesting'));
@@ -385,13 +383,10 @@ export function mountImportUi({
     }
     if (result.status === ImportStatus.CHOOSE) {
       renderChoices(result);
-      await onImported();
       return;
     }
     pending = result;
     renderPreview(result.election);
-    // The import has been charged for, so the allowance has moved.
-    await onImported();
     setMessage(t('preview.check'), 'info');
   }
 
@@ -418,6 +413,7 @@ export function mountImportUi({
       onSelect(saved.election);
     } catch (error) {
       setMessage(t('saved.failed', { message: error.message }), 'error');
+      forgetOnRefusal(error);
     } finally {
       el.confirm.disabled = false;
     }
@@ -468,14 +464,10 @@ export function mountImportUi({
   el.picker.addEventListener('change', select);
 
   return {
-    /**
-     * Follow the signed-in account: what may be imported, and which elections
-     * are visible, both change when somebody signs in or out.
-     */
-    async setAccount(next) {
-      account = next;
+    /** Follow the admin mode: whether the form imports or asks. */
+    setAdmin(next) {
+      admin = Boolean(next);
       renderAvailability();
-      await refreshPicker(el.picker.value || undefined).catch(() => {});
     },
 
     /** Populate the picker; failures leave the bundled election in place. */

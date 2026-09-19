@@ -48,11 +48,7 @@ function node(tag = 'div') {
   };
 }
 
-const SUBSCRIBER = {
-  tier: 'basic', limit: 10, remaining: 7, used: 3, unlimited: false, mayImport: true,
-};
-
-function harness({ api, selected = [], account = SUBSCRIBER, config = {} } = {}) {
+function harness({ api, selected = [], admin = true, config = {} } = {}) {
   globalThis.document = { createElement: node };
   const el = {
     form: node('form'),
@@ -77,19 +73,19 @@ function harness({ api, selected = [], account = SUBSCRIBER, config = {} } = {})
     picker: node('select'),
     pickerRow: node(),
   };
-  const imported = [];
+  const forgotten = [];
   const ui = mountImportUi({
     api,
     elements: el,
     bundled,
     config,
     onSelect: (e) => selected.push(e),
-    onImported: () => imported.push(true),
+    onWrongSecret: () => forgotten.push(true),
   });
-  // Most cases are about the import flow, not the paywall, so the harness
-  // starts from an account that may import unless a test says otherwise.
-  if (account !== undefined) ui.setAccount(account);
-  return { el, ui, selected, imported };
+  // Most cases are about the import flow, so the harness starts as the owner
+  // unless a test says otherwise.
+  ui.setAdmin(admin);
+  return { el, ui, selected, forgotten };
 }
 
 function fillValidForm(el) {
@@ -280,7 +276,7 @@ test('a second submit while one is under way starts nothing', async () => {
   assert.equal(el.preview.hidden, false, 'the first import’s preview is still shown');
 });
 
-test('re-reading the account mid-import does not re-enable the button', async () => {
+test('the admin mode changing mid-import does not re-enable the button', async () => {
   const { api, calls } = fakeApi();
   const held = heldImport(api, calls);
   const { el, ui } = harness({ api });
@@ -288,7 +284,7 @@ test('re-reading the account mid-import does not re-enable the button', async ()
 
   const running = el.form.dispatch('submit');
   await settled();
-  await ui.setAccount(SUBSCRIBER);
+  ui.setAdmin(true);
   assert.equal(el.submit.disabled, true);
 
   held.finish({ requestKey: 'p1', electionHash: 'h', status: 'preview', election, reused: false });
@@ -398,119 +394,83 @@ test('an unreachable backend leaves the bundled election usable', async () => {
 });
 
 
-// --- what the account is allowed to do -------------------------------------
+// --- who the form is for -----------------------------------------------------
 
-test('a signed-out visitor is told to sign in and cannot submit', async () => {
+test('a visitor with nowhere to send a request cannot submit, and is told so', async () => {
   const { api, calls } = fakeApi();
-  const { el, ui } = harness({ api, account: undefined });
-
-  await ui.setAccount(null);
+  const { el } = harness({ api, admin: false });
 
   assert.equal(el.submit.disabled, true);
-  assert.match(el.availability.textContent, /Log ind/);
+  assert.match(el.availability.textContent, /hverken importeres eller ønskes/);
   assert.equal(calls.importElection, 0);
 });
 
-test('a free account is pointed at a subscription rather than at a dead form', async () => {
-  const { api } = fakeApi();
-  const { el, ui } = harness({ api });
-
-  await ui.setAccount({ tier: 'free', limit: 0, remaining: 0, unlimited: false, mayImport: false });
-
-  assert.equal(el.submit.disabled, true);
-  assert.match(el.availability.textContent, /kræver et abonnement/);
-});
-
-test('a subscriber with a spent quota is told when it comes back', async () => {
-  const { api } = fakeApi();
-  const { el, ui } = harness({ api });
-
-  await ui.setAccount({ tier: 'basic', limit: 10, remaining: 0, unlimited: false, mayImport: false });
-
-  assert.equal(el.submit.disabled, true);
-  assert.match(el.availability.textContent, /brugt op/);
-});
-
-test('a subscriber sees what is left and can submit', async () => {
+test('the owner imports, and the button says so', async () => {
   const { api } = fakeApi();
   const { el } = harness({ api });
 
   assert.equal(el.submit.disabled, false);
-  assert.match(el.availability.textContent, /7 importer tilbage/);
-});
-
-test('with gating off nothing is said about allowances', async () => {
-  const { api } = fakeApi();
-  const { el, ui } = harness({ api });
-
-  await ui.setAccount({ tier: 'free', limit: -1, remaining: -1, unlimited: true, mayImport: true });
-
-  assert.equal(el.submit.disabled, false);
+  assert.equal(el.submit.textContent, 'Hent valgresultat');
   assert.equal(el.availability.textContent, '');
 });
 
-test('an import that started an extraction refreshes the allowance', async () => {
-  const { api } = fakeApi();
-  const { el, imported } = harness({ api });
+test('a local run with no secret configured imports without admin mode', async () => {
+  const { api, calls } = fakeApi();
+  const { el } = harness({ api, admin: false, config: { importsOpen: true, requestsEnabled: true } });
   fillValidForm(el);
 
   await el.form.dispatch('submit');
 
-  assert.equal(imported.length, 1, 'the extraction was charged for; re-read the account');
+  assert.equal(calls.importElection, 1);
+  assert.equal(calls.requestElection, 0);
 });
 
-test('a refusal from the server is shown in the page language and re-reads the account', async () => {
+test('a refused secret is forgotten, said in the page language, and the form asks again', async () => {
   const { api } = fakeApi();
   api.importElection = async () => {
-    throw new ApiError("this month's 10 imports are used up", 429);
+    throw new ApiError("this needs the administrator's secret", 403);
   };
-  const { el, imported } = harness({ api });
+  const { el, forgotten } = harness({ api, config: { requestsEnabled: true } });
   fillValidForm(el);
 
   await el.form.dispatch('submit');
 
-  assert.match(el.message.textContent, /brugt op/);
+  assert.match(el.message.textContent, /afvist og er glemt/);
   assert.equal(el.message.className, 'msg msg-error');
-  assert.equal(imported.length, 1);
+  assert.deepEqual(forgotten, [true]);
+  assert.equal(el.submit.textContent, 'Ønsk valget', 'no longer the owner');
 });
 
-test('signing in reloads the picker, because a visitor saw only the selection', async () => {
-  const { api, calls } = fakeApi({
-    summaries: [{ electionHash: 'a', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179 }],
-  });
-  const { ui, el } = harness({ api, account: undefined });
-  await ui.start();
-  const before = calls.listElections;
+test('a refused confirmation forgets the secret too', async () => {
+  const { api } = fakeApi();
+  api.confirm = async () => {
+    throw new ApiError("this needs the administrator's secret", 403);
+  };
+  const { el, forgotten } = harness({ api });
+  fillValidForm(el);
+  await el.form.dispatch('submit');
 
-  await ui.setAccount(SUBSCRIBER);
+  await el.confirm.dispatch('click');
 
-  assert.equal(calls.listElections, before + 1);
-  assert.deepEqual(el.picker.children.map((o) => o.value), ['local', 'a']);
+  assert.deepEqual(forgotten, [true]);
 });
 
-// --- asking for an election, with no subscription to import it -------------
-
-/** A confirmed account on a tier that buys no imports, where asking is on. */
-const FREE_ACCOUNT = {
-  tier: 'free', limit: 0, remaining: 0, unlimited: false, mayImport: false, emailVerified: true,
-};
+// --- asking for an election ------------------------------------------------
 
 const asking = { requestsEnabled: true };
 
-test('a free account is offered the form rather than a dead button', async () => {
+test('a visitor is offered the form rather than a dead button', async () => {
   const { api } = fakeApi();
-  const { el, ui } = harness({ api, config: asking });
-
-  await ui.setAccount(FREE_ACCOUNT);
+  const { el } = harness({ api, config: asking, admin: false });
 
   assert.equal(el.submit.disabled, false, 'the button still does something');
-  assert.match(el.availability.textContent, /ønske/, 'and says what');
+  assert.equal(el.submit.textContent, 'Ønsk valget', 'and says what');
+  assert.match(el.availability.textContent, /ingen konto/);
 });
 
-test('submitting without a subscription writes the election down instead of importing it', async () => {
+test('a visitor submitting writes the election down instead of importing it', async () => {
   const { api, calls } = fakeApi();
-  const { el, ui, imported } = harness({ api, config: asking });
-  await ui.setAccount(FREE_ACCOUNT);
+  const { el } = harness({ api, config: asking, admin: false });
   fillValidForm(el);
 
   await el.form.dispatch('submit');
@@ -520,14 +480,12 @@ test('submitting without a subscription writes the election down instead of impo
   assert.deepEqual(calls.requestedWith, { year: 2026, nation: 'Danmark', subnation: null });
   assert.match(el.message.textContent, /#12/);
   assert.equal(el.message.className, 'msg msg-ok');
-  assert.deepEqual(imported, [], 'no quota moved, so the account is not re-read');
   assert.equal(el.submit.disabled, false, 'and the form is usable again');
 });
 
 test('the filed request is linked, not just numbered', async () => {
   const { api } = fakeApi();
-  const { el, ui } = harness({ api, config: asking });
-  await ui.setAccount(FREE_ACCOUNT);
+  const { el } = harness({ api, config: asking, admin: false });
   fillValidForm(el);
 
   await el.form.dispatch('submit');
@@ -541,8 +499,7 @@ test('asking for something somebody already asked for says so', async () => {
   const { api } = fakeApi({
     requestElection: { url: 'https://github.test/issues/5', number: 5, duplicate: true },
   });
-  const { el, ui } = harness({ api, config: asking });
-  await ui.setAccount(FREE_ACCOUNT);
+  const { el } = harness({ api, config: asking, admin: false });
   fillValidForm(el);
 
   await el.form.dispatch('submit');
@@ -556,8 +513,7 @@ test('an election already imported is shown rather than wished for', async () =>
     requestElection: new ApiError('this election is already imported', 409),
     summaries: [{ electionHash: 'a', nation: 'Danmark', electionDate: '2026-03-25', title: 'T', totalSeats: 10, selected: false, forecast: null }],
   });
-  const { el, ui } = harness({ api, config: asking });
-  await ui.setAccount(FREE_ACCOUNT);
+  const { el } = harness({ api, config: asking, admin: false });
   fillValidForm(el);
 
   await el.form.dispatch('submit');
@@ -571,8 +527,7 @@ test('a refusal to file is reported in the page’s own words', async () => {
   const { api } = fakeApi({
     requestElection: new ApiError('election requests are not configured', 503),
   });
-  const { el, ui } = harness({ api, config: asking });
-  await ui.setAccount(FREE_ACCOUNT);
+  const { el } = harness({ api, config: asking, admin: false });
   fillValidForm(el);
 
   await el.form.dispatch('submit');
@@ -584,8 +539,7 @@ test('a refusal to file is reported in the page’s own words', async () => {
 
 test('an incomplete form is not written down either', async () => {
   const { api, calls } = fakeApi();
-  const { el, ui } = harness({ api, config: asking });
-  await ui.setAccount(FREE_ACCOUNT);
+  const { el } = harness({ api, config: asking, admin: false });
   el.year.value = '';
   el.nation.value = '';
 
@@ -593,51 +547,4 @@ test('an incomplete form is not written down either', async () => {
 
   assert.equal(calls.requestElection, 0);
   assert.ok(el.fieldErrors.year.textContent);
-});
-
-test('an account waiting on its confirmation link can still ask', async () => {
-  const { api } = fakeApi();
-  const { el, ui } = harness({ api, config: asking });
-
-  await ui.setAccount({ ...FREE_ACCOUNT, emailVerified: false });
-
-  assert.equal(el.submit.disabled, false, 'asking needs no confirmed address');
-  assert.match(el.availability.textContent, /ønske/);
-});
-
-test('a signed-out visitor can ask without signing in first', async () => {
-  const { api, calls } = fakeApi();
-  const { el, ui } = harness({ api, config: asking, account: undefined });
-  await ui.setAccount(null);
-
-  assert.equal(el.submit.disabled, false);
-  assert.match(el.availability.textContent, /ønske/);
-
-  fillValidForm(el);
-  await el.form.dispatch('submit');
-
-  assert.equal(calls.requestElection, 1);
-  assert.equal(calls.importElection, 0);
-  assert.match(el.message.textContent, /#12/);
-});
-
-test('a signed-out visitor with no tracker behind the page is told to sign in', async () => {
-  const { api, calls } = fakeApi();
-  const { el, ui } = harness({ api, config: { requestsEnabled: false }, account: undefined });
-
-  await ui.setAccount(null);
-
-  assert.equal(el.submit.disabled, true);
-  assert.match(el.availability.textContent, /Log ind/);
-  assert.equal(calls.requestElection, 0);
-});
-
-test('where the backend offers no tracker, a free account is pointed at a subscription', async () => {
-  const { api } = fakeApi();
-  const { el, ui } = harness({ api, config: { requestsEnabled: false } });
-
-  await ui.setAccount(FREE_ACCOUNT);
-
-  assert.equal(el.submit.disabled, true);
-  assert.match(el.availability.textContent, /kræver et abonnement/);
 });

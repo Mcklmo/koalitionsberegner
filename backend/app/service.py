@@ -150,21 +150,18 @@ class ImportService:
         self,
         request: ImportRequest,
         *,
-        owner: str | None = None,
         on_parse_failed: Callable[[], None] | None = None,
     ) -> ImportResult:
         """Claim the request and import only if nobody else already has.
 
-        ``on_parse_failed`` runs if this call's own import fails. It exists so a
-        caller that paid for the attempt can be refunded: a request whose
-        election could not be found produced nothing, and charging for it would
-        make a misremembered year cost the same as a stored election.
+        ``on_parse_failed`` runs if this call's own import fails, so the caller
+        can count a failed import.
 
-        ``owner`` is the account starting the import, recorded on the job if this
-        call is the one that starts it.
+        Only the owner imports, so no importer is recorded on the job: its owner
+        field stays ``None``, kept in storage for the rows that already have one.
         """
         key = self.request_key_for(request)
-        claim = await self._in_thread(self._store.claim, key, request, owner)
+        claim = await self._in_thread(self._store.claim, key, request, None)
         # One line per state transition, so the decision is visible whichever
         # store backend is in use (Firestore logs its own wire-level spans).
         log.info(
@@ -363,11 +360,6 @@ class ImportService:
             election_hash=confirmation.election_hash,
             duplicate=confirmation.duplicate,
         )
-
-    async def owner_of(self, key: str) -> str | None:
-        """The account that started the current attempt at this request, if known."""
-        job = await self._in_thread(self._store.get_job, key)
-        return job.owner if job else None
 
     async def discard(self, key: str) -> bool:
         """Reject a previewed election, freeing the request for another attempt."""

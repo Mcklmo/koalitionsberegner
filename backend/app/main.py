@@ -1,14 +1,11 @@
 """FastAPI surface over the shared election store.
 
-Access follows one rule, applied in three places below: *viewing is open,
-importing is bought*. Anyone sees everything stored, and only a subscriber with
-quota left can make the server go and look for an election it does not already
-hold.
-
-The quota is charged for the one thing that costs money — going out to find and
-read an election — and nothing else. An election somebody already imported is
-served to every subscriber for free, which is the whole point of the shared
-store.
+Access follows one rule: *viewing and asking are open, importing is the
+owner's*. Anyone sees everything stored and may ask for an election that is
+missing; only a caller presenting ``ADMIN_SECRET`` can make the server go and
+look for an election it does not already hold, because that is the one thing
+here that costs money. An election once imported is served to everyone for
+free, which is the whole point of the shared store.
 """
 
 from __future__ import annotations
@@ -60,7 +57,7 @@ from .auth import (
 )
 from .billing import Billing, BillingUnavailable
 from .config import (
-    firebase_web_config,
+    admin_secret,
     get_accounts,
     get_billing,
     get_identity_remover,
@@ -72,6 +69,7 @@ from .config import (
     get_usage_recorder,
     get_verifier,
     get_wishlist,
+    imports_enabled,
     max_wait_seconds,
     origin_secret,
     payments_paused,
@@ -138,9 +136,9 @@ if _origins:
         CORSMiddleware,
         allow_origins=_origins,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
-        # The ID token rides in Authorization, so a cross-origin page cannot
-        # sign in without it being allowed through.
-        allow_headers=["content-type", "authorization"],
+        # The ID token rides in Authorization and the owner's secret in its own
+        # header, so a cross-origin page needs both allowed through.
+        allow_headers=["content-type", "authorization", "x-admin-secret"],
     )
 
 
@@ -346,33 +344,25 @@ def require_account(
     return accounts.ensure(principal.uid, principal.email)
 
 
-def require_admin(principal: Principal = Depends(require_verified)) -> Principal:
-    if not principal.admin:
-        raise HTTPException(403, detail="this needs an administrator")
-    return principal
+#: The header the owner proves themselves with, from the page's admin mode.
+ADMIN_SECRET_HEADER = "x-admin-secret"
 
 
-async def require_importer(
-    request_key: str,
-    service: ImportService = Depends(get_service),
-    principal: Principal = Depends(require_verified),
-    _account: UserAccount = Depends(require_account),
-) -> Principal:
-    """The caller, if they started the import at ``request_key`` or administer the app.
+def require_admin(x_admin_secret: str | None = Header(default=None)) -> None:
+    """The caller is the owner, proven by ``ADMIN_SECRET``.
 
-    A request key follows from the year and the place alone, so anyone can know
-    one. What an import produced is still its importer's to accept or throw
-    away: saving a preview they would have rejected puts wrong numbers in front
-    of every account, and discarding one makes them pay for the import again.
-
-    A job with no recorded importer stays open to any account. Either it
-    predates the record, and its lease runs out within minutes, or it is over —
-    saved or failed — and there is nothing left to accept or throw away.
+    Importing spends money and is the owner's alone, so everything that starts,
+    follows, saves or throws away an import sits behind this, and so does the
+    usage preview. Compared in constant time, exactly as the schedule's secret
+    is. With no secret configured a local run is the owner's own and passes; a
+    deployment on Cloud Run refuses to boot that way
+    (:func:`app.config.validate_configuration`).
     """
-    owner = await service.owner_of(request_key)
-    if owner is not None and owner != principal.uid and not principal.admin:
-        raise HTTPException(403, detail="only the account that started this import can do that")
-    return principal
+    expected = admin_secret()
+    if not expected:
+        return  # a local run with no secret configured is the owner's own
+    if not hmac.compare_digest((x_admin_secret or "").encode(), expected.encode()):
+        raise HTTPException(403, detail="this needs the administrator's secret")
 
 
 # --- request and response models -------------------------------------------
@@ -472,26 +462,15 @@ class ElectionSummary(BaseModel):
         )
 
 
-class TierInfo(BaseModel):
-    tier: Tier
-    monthly_imports: int
-    purchasable: bool
-
-
 class PublicConfig(BaseModel):
-    """Everything the page needs before anyone has signed in."""
+    """Everything the page needs before it offers the import form."""
 
-    auth_required: bool
-    """False when gating is off, so the page can skip the whole sign-in flow."""
-    auth_provider: str
-    """Which sign-in flow the page should run: ``firebase``, ``password``, ``none``."""
-    firebase: dict[str, str]
-    billing_enabled: bool
-    payments_paused: bool
-    """Checkout is closed for repairs; existing subscriptions are unaffected."""
     requests_enabled: bool
-    """Whether an account with no subscription can ask for an election instead."""
-    tiers: list[TierInfo]
+    """Whether anyone may ask for an election to be imported."""
+    imports_enabled: bool
+    """Whether this deployment imports at all; the owner still needs the secret."""
+    imports_open: bool
+    """Whether importing needs no secret here: a local run with none configured."""
 
 
 class AccountResponse(BaseModel):
@@ -579,47 +558,21 @@ def healthz() -> dict[str, str]:
 def public_config(
     request: Request,
     background: BackgroundTasks,
-    policy: QuotaPolicy = Depends(get_policy),
-    billing: Billing = Depends(get_billing_provider),
-    verifier: TokenVerifier = Depends(get_token_verifier),
     wishlist: Wishlist = Depends(get_wishlist_provider),
     usage: UsageRecorder = Depends(get_usage),
 ) -> PublicConfig:
-    """Public settings for the page: how to sign in, and what is for sale.
-
-    The Firebase API key here identifies the project to Google's identity
-    endpoints; it grants nothing on its own, and every authorisation decision
-    is made server-side from the token it eventually produces.
+    """Public settings for the page: whether it may ask, and whether it may import.
 
     Every page load asks for this exactly once, which makes it where page loads
     are counted — by the language the browser already sends, and nothing else
     about the visitor. No script was added to the page to do it.
     """
     background.add_task(usage.record, page_load_key(request.headers.get("accept-language")))
-    purchasable = set(billing.tiers())
-    paused = payments_paused()
+    enabled = imports_enabled()
     return PublicConfig(
-        # Asked of the verifier rather than the environment: it is the thing
-        # that decides, and with gating off it hands out an identity to everyone.
-        auth_required=verifier.anonymous() is None,
-        # Also the verifier's answer rather than the environment's: it is the
-        # thing that knows what would satisfy it.
-        auth_provider=verifier.provider,
-        firebase=firebase_web_config(),
-        billing_enabled=billing.enabled,
-        payments_paused=paused,
         requests_enabled=wishlist.enabled,
-        tiers=[
-            TierInfo(
-                tier=tier,
-                monthly_imports=policy.limit(tier),
-                # Nothing is purchasable while checkout is closed. Said here
-                # rather than left to the page: a client that had the old
-                # answer cached would otherwise offer a button that 503s.
-                purchasable=tier in purchasable and not paused,
-            )
-            for tier in Tier
-        ],
+        imports_enabled=enabled,
+        imports_open=enabled and not admin_secret(),
     )
 
 
@@ -651,101 +604,32 @@ async def import_election(
     background: BackgroundTasks,
     wait_seconds: float = Query(0.0, ge=0.0, description="Block for up to this long for a result."),
     service: ImportService = Depends(get_service),
-    principal: Principal = Depends(require_principal),
-    account: UserAccount = Depends(require_account),
-    accounts: AccountStore = Depends(get_account_store),
-    policy: QuotaPolicy = Depends(get_policy),
+    _admin: None = Depends(require_admin),
     usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
     """Import an election named by year, nation and — optionally — region.
 
-    The caller supplies no address: the resolver works out which election that
-    is, and where its results are published. A request made before is served
-    from storage without searching or extracting anything — and without costing
-    quota.
-
-    The allowance is taken *before* the request is claimed and given back if the
-    claim turns out not to need any work. Reserving first is what keeps two
-    simultaneous imports from both spending the last unit of a month.
-
-    What is already there — a stored election, or an import running or waiting
-    for its importer — is handed back before the allowance is looked at at all.
-    Otherwise asking again for an import that spent the month's last unit is
-    refused, and with it the way back to the preview that unit paid for. A race
-    past this check is still caught by the claim, and refunded.
+    The owner's alone (:func:`require_admin`). The caller supplies no address:
+    the resolver works out which election that is, and where its results are
+    published. A request made before is served from storage without searching
+    or extracting anything, and an import running or waiting to be checked is
+    handed back rather than started again.
     """
     request = body.to_request()
     joined = await service.peek(request)
     if joined is not None:
         return await _answer(joined, response, service, wait_seconds)
 
-    period = billing_period()
-    limit = policy.limit(account.tier)
-    charged = not principal.unmetered
-
-    if charged:
-        # Refusals are counted before raising: a response that is an error
-        # carries no background tasks.
-        if limit <= 0:
-            await run_in_threadpool(usage.record, UsageEvent.REFUSED_NO_SUBSCRIPTION)
-            raise HTTPException(
-                402,
-                detail=(
-                    f"the {account.tier.value} tier cannot import elections — "
-                    "subscribe to import new ones"
-                ),
-            )
-        if not await run_in_threadpool(accounts.reserve_import, account.uid, period, limit):
-            await run_in_threadpool(usage.record, UsageEvent.REFUSED_LIMIT_REACHED)
-            current = await run_in_threadpool(accounts.get, account.uid) or account
-            if current.used_in(period) < limit:
-                raise HTTPException(
-                    429,
-                    detail=(
-                        "too many of this month's imports found no election; "
-                        "the allowance resets at the start of next month"
-                    ),
-                )
-            raise HTTPException(
-                429,
-                detail=(
-                    f"this month's {limit} imports are used up; "
-                    "the allowance resets at the start of next month"
-                ),
-            )
-
-    def refund(*, keep_attempt: bool = False) -> None:
-        """Give the reserved import back. A no-op when nothing was taken.
-
-        An import that searched and read pages before failing keeps its attempt:
-        the allowance comes back, but failures are refunded only so often
-        (:func:`app.accounts.attempt_limit`), because each one cost model calls.
-        """
-        if charged:
-            accounts.release_import(account.uid, period, keep_attempt=keep_attempt)
-
-    def parse_failed() -> None:
-        usage.record(UsageEvent.IMPORT_FAILED)
-        refund(keep_attempt=True)
-
     try:
         result = await service.submit(
-            request,
-            owner=principal.uid,
-            on_parse_failed=parse_failed,
+            request, on_parse_failed=lambda: usage.record(UsageEvent.IMPORT_FAILED)
         )
     except ValueError as exc:
-        await run_in_threadpool(refund)
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    except BaseException:
-        await run_in_threadpool(refund)
-        raise
 
-    if result.reused:
-        # Joined to an import somebody started between the look above and the
-        # claim: nothing was searched for or read on this caller's behalf.
-        await run_in_threadpool(refund)
-    else:
+    if not result.reused:
+        # A join to an import started between the look above and the claim
+        # searched for and read nothing, so it is not counted as one.
         background.add_task(usage.record, UsageEvent.IMPORT_STARTED)
 
     return await _answer(result, response, service, wait_seconds)
@@ -778,7 +662,6 @@ async def lookup_request(
     nation: str,
     subnation: str | None = None,
     service: ImportService = Depends(get_service),
-    _account: UserAccount = Depends(require_account),
 ) -> ImportResponse:
     """Has this election been imported already? Answered without looking it up.
 
@@ -787,8 +670,8 @@ async def lookup_request(
     is the election itself already stored, whoever asked for it and however they
     spelled it, which the store can answer from the year and the place alone.
 
-    Part of the import flow rather than of viewing, so it needs an account — but
-    not a subscription, because nothing here searches, fetches or extracts.
+    Open to anyone: it is store reads behind the read cache, and nothing here
+    searches, fetches or extracts.
     """
     try:
         body = ImportBody(year=year, nation=nation, subnation=subnation)
@@ -827,17 +710,13 @@ async def request_election(
 ) -> ElectionRequestResponse:
     """Ask for an election nobody has imported. Open to anyone who can see the page.
 
-    The other end of the paywall. Importing makes the server go and read pages,
-    which is what is sold; writing down *which* election was wanted costs
-    nothing and is worth more than a refusal — so instead of being turned away,
-    the asker has the election filed in the issue tracker to be imported by
-    hand.
+    Importing makes the server go and read pages, which costs money and is the
+    owner's to do; writing down *which* election was wanted costs nothing and is
+    worth more than a refusal. So a visitor's submit ends up here, and the
+    election is filed in the issue tracker to be imported later.
 
-    Unlike every other route in the import flow this asks for no account at all,
-    which is a deliberate exception to "part of the import flow, so it needs an
-    account" (``/api/elections/lookup``). The reasoning that gates the rest does
-    not apply: nothing here searches, fetches, extracts or spends. What it does
-    do is *write*, to a public tracker, on behalf of a caller nobody
+    Nothing here searches, fetches, extracts or spends, so it asks for nobody.
+    What it does do is *write*, to a public tracker, on behalf of a caller nobody
     authenticated — bounded by one issue per election and by the rate limiting
     in front of the app, and accepted as such (doc/threat-model.md T12).
 
@@ -884,7 +763,7 @@ async def get_import(
     response: Response,
     wait_seconds: float = Query(0.0, ge=0.0),
     service: ImportService = Depends(get_service),
-    _account: UserAccount = Depends(require_account),
+    _admin: None = Depends(require_admin),
 ) -> ImportResponse:
     """How one import is getting on. Polled while the state is pending."""
     result = await service.status(request_key)
@@ -905,14 +784,12 @@ async def confirm_election(
         None, ge=0, description="Which offered forecast to save, for an election not yet held."
     ),
     service: ImportService = Depends(get_service),
-    _importer: Principal = Depends(require_importer),
+    _admin: None = Depends(require_admin),
     usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
     """Save a previewed election under the identity that was read off the page.
 
-    Only its importer may (:func:`require_importer`), and without paying again:
-    the import was paid for when it ran, so a subscription that has lapsed since
-    cannot strand it halfway. For the same reason every forecast of an upcoming
+    The owner's alone (:func:`require_admin`). Every forecast of an upcoming
     election may be saved, not just one.
     """
     try:
@@ -943,12 +820,12 @@ async def confirm_election(
 async def discard_preview(
     request_key: str,
     service: ImportService = Depends(get_service),
-    _importer: Principal = Depends(require_importer),
+    _admin: None = Depends(require_admin),
     usage: UsageRecorder = Depends(get_usage),
 ) -> Response:
     """Reject a previewed election, leaving the request free to import again.
 
-    Only its importer may (:func:`require_importer`).
+    The owner's alone (:func:`require_admin`).
     """
     if not await service.discard(request_key):
         raise HTTPException(status_code=404, detail="no preview to discard for that import")
@@ -1336,7 +1213,7 @@ async def preview_usage_report(
     before: date | None = Query(
         None, description="Report the last complete period before this day; today by default."
     ),
-    _admin: Principal = Depends(require_admin),
+    _admin: None = Depends(require_admin),
     usage: UsageRecorder = Depends(get_usage),
     accounts: AccountStore = Depends(get_account_store),
 ) -> UsageReport:

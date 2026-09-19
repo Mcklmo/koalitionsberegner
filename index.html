@@ -641,8 +641,19 @@
     <p class="msg" id="account-message"></p>
   </details>
 
-  <details class="import">
+  <details class="import" id="import">
     <summary data-i18n="import.summary">Importér et valg</summary>
+
+    <!-- Only at #admin: where the owner pastes the secret that lets this page import. -->
+    <form id="admin-form" hidden>
+      <div class="field">
+        <label for="f-admin-secret" data-i18n="admin.label">Administratorens nøgle</label>
+        <input id="f-admin-secret" type="password" autocomplete="current-password">
+      </div>
+      <button class="secondary" id="admin-save" type="submit" data-i18n="admin.save">Gem nøglen</button>
+      <button class="link-btn" id="admin-forget" type="button" data-i18n="admin.forget" hidden>Glem nøglen</button>
+      <p class="msg" id="admin-message"></p>
+    </form>
 
     <form id="import-form" novalidate>
       <div class="row-2">

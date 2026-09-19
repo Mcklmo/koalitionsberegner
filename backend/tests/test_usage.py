@@ -441,7 +441,8 @@ BODY = {"year": 2026, "nation": "Danmark"}
 OTHER_BODY = {"year": 2021, "nation": "Deutschland", "subnation": "Sachsen-Anhalt"}
 FREE = {"Authorization": "Bearer free-1:free@example.org"}
 SUBSCRIBER = {"Authorization": "Bearer paid-1:paid@example.org"}
-ADMIN = {"Authorization": "Bearer admin-1:admin@example.org:admin"}
+ADMIN_SECRET = "a" * 40
+ADMIN = {"x-admin-secret": ADMIN_SECRET}
 REPORT_SECRET = "r" * 40
 REPORT = {"x-report-secret": REPORT_SECRET}
 REPORTS_URL = "/api/internal/usage-reports"
@@ -599,15 +600,6 @@ def test_what_a_free_account_asks_for_is_counted_by_what_came_of_it(client, usag
     }
 
 
-def test_imports_the_paywall_turns_away_are_counted(client, usage, accounts):
-    assert client.post("/api/elections/import", json=BODY, headers=FREE).status_code == 402
-    for _ in range(5):
-        accounts.reserve_import("paid-1", billing_period(), 5)
-    assert client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER).status_code == 429
-
-    assert counted(usage) == {"refused_no_subscription": 1, "refused_limit_reached": 1}
-
-
 def test_an_account_is_active_once_a_day_however_often_it_loads_the_page(client, usage):
     for headers in (SUBSCRIBER, SUBSCRIBER, FREE):
         assert client.get("/api/me", headers=headers).status_code == 200
@@ -687,7 +679,10 @@ def test_every_run_forgets_active_accounts_older_than_retention(client, usage, m
     assert usage.store.active_accounts(kept, kept + timedelta(days=1)) == 1
 
 
-def test_an_administrator_can_read_a_report_without_it_being_sent(client, usage, mailer):
+def test_an_administrator_can_read_a_report_without_it_being_sent(
+    client, usage, mailer, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_SECRET", ADMIN_SECRET)
     usage.store.increment(date(2026, 9, 10), "request_filed")
 
     response = client.get("/api/admin/usage?period=weekly&before=2026-09-14", headers=ADMIN)

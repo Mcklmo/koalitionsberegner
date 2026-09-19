@@ -155,7 +155,7 @@ function harness(overrides = {}) {
   el.nation.value = 'Danmark';
   const selected = [];
   const ui = mountImportUi({ api, elements: el, bundled: stated, onSelect: (e) => selected.push(e) });
-  ui.setAccount({ tier: 'basic', limit: 10, remaining: 5, unlimited: false, mayImport: true });
+  ui.setAdmin(true);
   return { el, calls, selected };
 }
 

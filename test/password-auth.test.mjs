@@ -9,7 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiError, createApiClient } from '../js/api.js';
+import { ApiError } from '../js/api.js';
 import { AuthError, createAuth } from '../js/auth.js';
 import { createPasswordAuth } from '../js/password-auth.js';
 import { setLanguage } from '../js/i18n.js';
@@ -181,21 +181,4 @@ test('it is interchangeable with the Firebase provider', () => {
   const surface = (auth) => Object.keys(auth).filter((key) => !MAIL_ONLY.has(key)).sort();
   assert.deepEqual(surface(local), surface(firebase),
     'the account panel is written against one shape and handed either');
-});
-
-test('the token it produces is what the API client sends', async () => {
-  const { auth } = session();
-  await auth.signIn('a@example.org', 'hunter22');
-  const seen = [];
-  const api = createApiClient({
-    fetch: async (url, options) => {
-      seen.push(options.headers.authorization);
-      return { ok: true, status: 200, json: async () => [] };
-    },
-    getToken: () => auth.getIdToken(),
-  });
-
-  await api.listElections();
-
-  assert.deepEqual(seen, ['Bearer sess-1']);
 });

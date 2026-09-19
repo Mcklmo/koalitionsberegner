@@ -5,10 +5,10 @@
  * speaks camelCase. That translation lives here and nowhere else, and every
  * election crossing the boundary is validated before anything else touches it.
  *
- * Every request carries the caller's ID token when there is one, and none when
- * there is not — a signed-out visitor is a legitimate caller here, served every
- * stored election. What that identity is *allowed* to do is decided by the
- * backend alone; nothing in this file gates anything.
+ * Nobody signs in. Every request goes out as it is, except that the owner's
+ * secret rides along in `x-admin-secret` once the page's admin mode holds one
+ * (js/admin.js). What a request is *allowed* to do is decided by the backend
+ * alone; nothing in this file gates anything.
  */
 
 import { validateElection } from './election.js';
@@ -114,23 +114,12 @@ function toAccount(body) {
 
 function toConfig(body) {
   return {
-    authRequired: Boolean(body.auth_required),
-    // Which sign-in flow to run: 'firebase', 'password' (this backend holds the
-    // passwords itself), or 'none' when the page cannot obtain a token at all.
-    authProvider: body.auth_provider ?? 'none',
-    firebase: body.firebase ?? {},
-    billingEnabled: Boolean(body.billing_enabled),
-    // Checkout is closed for repairs. Older backends do not say, and the page
-    // must not invent an outage they are not having.
-    paymentsPaused: Boolean(body.payments_paused),
-    // Whether an account with no subscription can ask for an election instead
-    // of importing it.
+    // Whether anyone may ask for an election to be imported later.
     requestsEnabled: Boolean(body.requests_enabled),
-    tiers: (body.tiers ?? []).map((row) => ({
-      tier: row.tier,
-      monthlyImports: row.monthly_imports,
-      purchasable: Boolean(row.purchasable),
-    })),
+    // Whether this deployment imports at all; the owner still needs the secret.
+    importsEnabled: Boolean(body.imports_enabled),
+    // Whether importing needs no secret here: a local run with none configured.
+    importsOpen: Boolean(body.imports_open),
   };
 }
 
@@ -171,29 +160,29 @@ function toResult(body) {
   };
 }
 
+/** The header the owner's secret travels in; the backend's `ADMIN_SECRET_HEADER`. */
+export const ADMIN_SECRET_HEADER = 'x-admin-secret';
+
 /**
- * @param {{baseUrl?: string, fetch?: Function, getToken?: () => Promise<string|null>}} options
- *   `getToken` supplies the caller's ID token, or null when signed out.
+ * @param {{baseUrl?: string, fetch?: Function, getAdminSecret?: () => string|null}} options
+ *   `getAdminSecret` supplies the owner's secret, or null for everyone else.
  */
-export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {}) {
+export function createApiClient({ baseUrl = '', fetch: fetchImpl, getAdminSecret } = {}) {
   const doFetch = fetchImpl ?? globalThis.fetch?.bind(globalThis);
   if (!doFetch) throw new TypeError('no fetch implementation available');
 
-  async function authHeaders() {
-    if (!getToken) return {};
-    // A session that cannot produce a token is simply signed out as far as
-    // this request is concerned; the visitor view is still worth serving.
-    const token = await getToken().catch(() => null);
-    return token ? { authorization: `Bearer ${token}` } : {};
+  /** Read per request, so a secret saved or forgotten later takes effect at once. */
+  function adminHeaders() {
+    const secret = getAdminSecret?.();
+    return secret ? { [ADMIN_SECRET_HEADER]: secret } : {};
   }
 
   async function request(path, options = {}) {
     let response;
-    const authorization = await authHeaders();
     try {
       response = await doFetch(baseUrl + path, {
         ...options,
-        headers: { 'content-type': 'application/json', ...authorization, ...options.headers },
+        headers: { 'content-type': 'application/json', ...adminHeaders(), ...options.headers },
       });
     } catch (cause) {
       throw new ApiError(`could not reach the election store: ${cause.message}`, 0);
@@ -213,7 +202,7 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {
     ).toString();
 
   return {
-    /** Public settings: how to sign in, and what is for sale. */
+    /** Public settings: whether the page may ask, and whether it may import. */
     async getConfig() {
       return toConfig(await request('/api/config'));
     },
@@ -272,9 +261,8 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {
     },
 
     /**
-     * Ask for an election this account may not import itself. Costs no quota:
-     * nothing is searched for or read — the election is written down for
-     * somebody to import by hand.
+     * Ask for an election nobody has imported. Needs no secret: nothing is
+     * searched for or read — the election is written down to be imported later.
      */
     async requestElection({ year, nation, subnation }) {
       return toFiledRequest(

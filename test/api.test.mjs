@@ -163,72 +163,49 @@ test('hashes are escaped into the path', async () => {
 });
 
 
-// --- carrying the caller's identity ----------------------------------------
+// --- carrying the owner's secret ------------------------------------------
 
-test('a signed-in caller sends their ID token', async () => {
+test('the owner sends their secret with every request', async () => {
   const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }]);
-  const api = createApiClient({ fetch: fetchImpl, getToken: async () => 'id-token-1' });
+  const api = createApiClient({ fetch: fetchImpl, getAdminSecret: () => 's3cret' });
 
   await api.listElections();
 
-  assert.equal(calls[0].headers.authorization, 'Bearer id-token-1');
+  assert.equal(calls[0].headers['x-admin-secret'], 's3cret');
   assert.equal(calls[0].headers['content-type'], 'application/json');
+  assert.equal(calls[0].headers.authorization, undefined, 'nobody signs in');
 });
 
-test('a signed-out caller sends no credential and is still served', async () => {
-  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }]);
-  const api = createApiClient({ fetch: fetchImpl, getToken: async () => null });
-
-  await api.listElections();
-
-  assert.equal(calls[0].headers.authorization, undefined, 'a visitor is a legitimate caller');
-});
-
-test('a session that cannot produce a token falls back to the visitor view', async () => {
-  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }]);
-  const api = createApiClient({
-    fetch: fetchImpl,
-    getToken: async () => {
-      throw new Error('refresh token rejected');
-    },
-  });
-
-  await api.listElections();
-
-  assert.equal(calls[0].headers.authorization, undefined);
-});
-
-test('the token is read per request, not captured once', async () => {
-  const tokens = ['first', 'second'];
+test('everyone else sends no secret and is still served', async () => {
   const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }, { status: 200, body: [] }]);
-  const api = createApiClient({ fetch: fetchImpl, getToken: async () => tokens.shift() });
+
+  await createApiClient({ fetch: fetchImpl }).listElections();
+  await createApiClient({ fetch: fetchImpl, getAdminSecret: () => null }).listElections();
+
+  assert.deepEqual(calls.map((c) => c.headers['x-admin-secret']), [undefined, undefined]);
+});
+
+test('the secret is read per request, so forgetting it takes effect at once', async () => {
+  const secrets = ['first', null];
+  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: [] }, { status: 200, body: [] }]);
+  const api = createApiClient({ fetch: fetchImpl, getAdminSecret: () => secrets.shift() });
 
   await api.listElections();
   await api.listElections();
 
-  assert.deepEqual(calls.map((c) => c.headers.authorization), ['Bearer first', 'Bearer second']);
+  assert.deepEqual(calls.map((c) => c.headers['x-admin-secret']), ['first', undefined]);
 });
 
 // --- the account and config endpoints --------------------------------------
 
 test('the public config is mapped to camelCase', async () => {
   const { fetchImpl } = fakeFetch([
-    {
-      status: 200,
-      body: {
-        auth_required: true,
-        firebase: { apiKey: 'AIza', projectId: 'demo' },
-        billing_enabled: true,
-        tiers: [{ tier: 'basic', monthly_imports: 10, purchasable: true }],
-      },
-    },
+    { status: 200, body: { requests_enabled: true, imports_enabled: true, imports_open: false } },
   ]);
 
   const config = await createApiClient({ fetch: fetchImpl }).getConfig();
 
-  assert.equal(config.authRequired, true);
-  assert.equal(config.firebase.apiKey, 'AIza');
-  assert.deepEqual(config.tiers, [{ tier: 'basic', monthlyImports: 10, purchasable: true }]);
+  assert.deepEqual(config, { requestsEnabled: true, importsEnabled: true, importsOpen: false });
 });
 
 test('the account reports the tier and what is left', async () => {
@@ -279,13 +256,13 @@ test('starting a checkout returns the URL to send the user to', async () => {
 });
 
 test('a refused import surfaces the status the page needs to explain it', async () => {
-  const { fetchImpl } = fakeFetch([{ status: 402, body: { detail: 'subscribe to import new ones' } }]);
+  const { fetchImpl } = fakeFetch([{ status: 403, body: { detail: "this needs the administrator's secret" } }]);
 
   await assert.rejects(
     () => createApiClient({ fetch: fetchImpl }).importElection({ year: 2026, nation: 'Danmark' }),
     (error) => {
       assert.ok(error instanceof ApiError);
-      assert.equal(error.status, 402);
+      assert.equal(error.status, 403);
       return true;
     }
   );

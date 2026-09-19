@@ -629,6 +629,23 @@ def origin_secret() -> str:
     return _env_str("ORIGIN_SECRET")
 
 
+def admin_secret() -> str:
+    """The secret the owner presents to import, or empty on a local run.
+
+    Importing is the one thing on this site that spends money, and it is the
+    owner's alone: the page sends this as ``x-admin-secret`` once it has been
+    pasted in. With none configured every caller is the owner, which is right
+    for a checkout on a laptop and nowhere else — see
+    :func:`validate_configuration`, which refuses to boot on Cloud Run without it.
+    """
+    return _env_str("ADMIN_SECRET")
+
+
+def imports_enabled() -> bool:
+    """Whether this deployment imports at all. ``LLM_MODE=off`` switches it off."""
+    return _env_choice("LLM_MODE", LLM_MODES, "mock") != "off"
+
+
 def firebase_web_config() -> dict[str, str]:
     """The public Firebase settings the browser needs to sign users in.
 
@@ -697,9 +714,20 @@ def validate_configuration() -> dict[str, str]:
     get_wishlist()
     get_usage()
     get_mailer()
-    for name, secret in (("ORIGIN_SECRET", origin_secret()), ("USAGE_REPORT_SECRET", usage_report_secret())):
+    for name, secret in (
+        ("ORIGIN_SECRET", origin_secret()),
+        ("USAGE_REPORT_SECRET", usage_report_secret()),
+        ("ADMIN_SECRET", admin_secret()),
+    ):
         if secret and len(secret) < MIN_ORIGIN_SECRET_CHARS:
             raise ConfigError(f"{name} must be at least {MIN_ORIGIN_SECRET_CHARS} characters")
+    if on_cloud_run() and not admin_secret():
+        # Without a secret every caller is the owner, which is what a local run
+        # wants. On Cloud Run it would be a deployment where anyone can spend
+        # the owner's money on imports, so it must not boot.
+        raise ConfigError(
+            "ADMIN_SECRET is required on Cloud Run: without it every caller may import"
+        )
     if chosen["auth_mode"] == "firebase" and not _env_str("FIREBASE_API_KEY"):
         # Not fatal: the API still verifies tokens. But nothing in the browser
         # can obtain one, so sign-in is dead until this is set.

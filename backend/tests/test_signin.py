@@ -154,22 +154,6 @@ def test_viewing_is_still_open_to_somebody_who_never_signed_in(client):
 
 # --- the rules, over HTTP ---------------------------------------------------
 
-def test_an_allowlisted_address_may_administer_and_an_ordinary_one_may_not(client):
-    ordinary = register(client)
-    boss = register(client, email="boss@example.org")
-
-    for token, expected in ((ordinary["token"], 403), (boss["token"], 200)):
-        response = client.get("/api/admin/usage", headers=auth(token))
-        assert response.status_code == expected
-
-
-def test_the_page_is_told_to_run_the_password_flow(client):
-    config = client.get("/api/config").json()
-
-    assert config["auth_provider"] == "password"
-    assert config["auth_required"] is True
-
-
 # --- the modes that have no password to manage ------------------------------
 
 @pytest.fixture

@@ -65,6 +65,9 @@ def clean_config():
         ({"WIKIPEDIA_LANGUAGE": "DE"}, None),
         # And auto asks for nothing: a local checkout with no keys still boots.
         ({"SEARCH_MODE": "auto"}, None),
+        # A placeholder is a boot failure, like the other two secrets.
+        ({"ADMIN_SECRET": "changeme"}, "ADMIN_SECRET must be at least 32"),
+        ({"ADMIN_SECRET": "a" * 32}, None),
         ({"AUTH_MODE": "firebase", "FIREBASE_PROJECT_ID": "", "GOOGLE_CLOUD_PROJECT": ""},
          "requires FIREBASE_PROJECT_ID"),
         ({"AUTH_MODE": "on"}, "AUTH_MODE must be one of"),
@@ -400,3 +403,19 @@ def test_firebase_runs_on_cloud_run(monkeypatch, clean_config):
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo")
 
     assert get_verifier().provider == "firebase"
+
+
+def test_cloud_run_refuses_to_boot_without_an_admin_secret(monkeypatch, clean_config):
+    """Without one every caller is the owner: right on a laptop, never deployed."""
+    from app.config import ConfigError, validate_configuration
+
+    monkeypatch.setenv("K_SERVICE", "koalitionsberegner")
+    monkeypatch.setenv("AUTH_MODE", "firebase")
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo")
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+
+    with pytest.raises(ConfigError, match="ADMIN_SECRET is required on Cloud Run"):
+        validate_configuration()
+
+    monkeypatch.setenv("ADMIN_SECRET", "a" * 32)
+    validate_configuration()

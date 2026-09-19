@@ -147,309 +147,7 @@ def test_an_unknown_election_is_404_to_anyone(client):
     assert response.status_code == 404
 
 
-# --- importing --------------------------------------------------------------
-
-def test_a_visitor_cannot_import(client, parser):
-    response = client.post("/api/elections/import", json=BODY, headers=VISITOR)
-
-    assert response.status_code == 401
-    assert parser.call_count == 0, "no page is fetched for an unauthenticated caller"
-
-
-def test_a_free_account_cannot_import(client, parser):
-    response = client.post("/api/elections/import", json=BODY, headers=FREE)
-
-    assert response.status_code == 402, "an account is free; importing is what is sold"
-    assert "subscribe" in response.json()["detail"]
-    assert parser.call_count == 0
-
-
-def test_a_subscriber_imports_within_the_monthly_quota(client, accounts, parser):
-    uid = subscribe(accounts, SUBSCRIBER)
-
-    body = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                       headers=SUBSCRIBER).json()
-
-    assert body["state"] == "preview"
-    assert parser.call_count == 1
-    assert used(accounts, uid) == 1
-
-
-def test_the_quota_is_enforced_on_the_server_not_the_client(client, accounts, parser):
-    uid = subscribe(accounts, SUBSCRIBER)
-    asked = [{"year": 2000 + n, "nation": "Danmark"} for n in range(BASIC_LIMIT + 2)]
-
-    statuses = [
-        client.post("/api/elections/import?wait_seconds=2",
-                    json=body, headers=SUBSCRIBER).status_code
-        for body in asked
-    ]
-
-    assert statuses == [200] * BASIC_LIMIT + [429, 429]
-    assert parser.call_count == BASIC_LIMIT, "nothing is looked up once the quota is spent"
-    assert used(accounts, uid) == BASIC_LIMIT
-
-
-def test_a_spent_quota_says_when_it_comes_back(client, accounts):
-    subscribe(accounts, SUBSCRIBER)
-    for n in range(BASIC_LIMIT):
-        client.post("/api/elections/import?wait_seconds=2",
-                    json={"year": 2000 + n, "nation": "Danmark"},
-                    headers=SUBSCRIBER)
-
-    refused = client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
-
-    assert refused.status_code == 429
-    assert "next month" in refused.json()["detail"]
-
-
-def test_an_administrator_imports_without_a_quota(client, accounts, parser):
-    """On the free tier, which may import nothing, and more often than basic may."""
-    for body in (BODY, OTHER_BODY, {"year": 2022, "nation": "Danmark"}):
-        response = client.post("/api/elections/import?wait_seconds=2", json=body, headers=ADMIN)
-        assert response.status_code == 200, response.text
-
-    assert used(accounts, "admin-1") == 0
-
-
-def test_premium_gets_a_larger_allowance_than_basic(client, accounts):
-    basic = subscribe(accounts, SUBSCRIBER, Tier.BASIC)
-    premium = subscribe(accounts, OTHER_SUBSCRIBER, Tier.PREMIUM)
-
-    assert client.get("/api/me", headers=SUBSCRIBER).json()["limit"] == BASIC_LIMIT
-    assert client.get("/api/me", headers=OTHER_SUBSCRIBER).json()["limit"] == PREMIUM_LIMIT
-    assert used(accounts, basic) == used(accounts, premium) == 0
-
-
-def test_one_quota_is_not_another_users(client, accounts):
-    first = subscribe(accounts, SUBSCRIBER)
-    second = subscribe(accounts, OTHER_SUBSCRIBER)
-
-    client.post("/api/elections/import?wait_seconds=2", json=BODY, headers=SUBSCRIBER)
-
-    assert used(accounts, first) == 1
-    assert used(accounts, second) == 0
-
-
-def test_the_allowance_comes_back_the_next_month(client, accounts):
-    """No scheduled job resets anything; last month's counter simply stops counting."""
-    uid = subscribe(accounts, SUBSCRIBER)
-    accounts.reserve_import(uid, "2020-01", BASIC_LIMIT)
-    accounts.reserve_import(uid, "2020-01", BASIC_LIMIT)
-
-    response = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                           headers=SUBSCRIBER)
-
-    assert response.status_code == 200
-    assert used(accounts, uid) == 1
-
-
-# --- what does not cost quota ----------------------------------------------
-
-def test_an_election_already_stored_costs_nothing(client, accounts, parser):
-    """The point of a shared store: the second person to want an election pays nothing."""
-    owner = subscribe(accounts, SUBSCRIBER)
-    save(client, SUBSCRIBER)
-    calls_after_first = parser.call_count
-    reader = subscribe(accounts, OTHER_SUBSCRIBER)
-
-    reused = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                         headers=OTHER_SUBSCRIBER).json()
-
-    assert reused["state"] == "ready"
-    assert reused["reused"] is True
-    assert parser.call_count == calls_after_first, "nothing was fetched or read"
-    assert used(accounts, reader) == 0, "a stored election is free"
-    assert used(accounts, owner) == 1, "the person who paid to read it still paid"
-
-
-def test_joining_an_extraction_somebody_else_started_costs_nothing(client, accounts, parser):
-    first = subscribe(accounts, SUBSCRIBER)
-    second = subscribe(accounts, OTHER_SUBSCRIBER)
-    parser.hold()
-    client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
-
-    attached = client.post("/api/elections/import", json=BODY, headers=OTHER_SUBSCRIBER).json()
-    parser.release()
-
-    assert attached["reused"] is True
-    assert parser.call_count == 1, "one extraction, however many callers want it"
-    assert used(accounts, first) == 1
-    assert used(accounts, second) == 0
-
-
-def test_asking_again_for_a_running_import_needs_no_allowance_left(client, accounts, parser):
-    """The import being repeated may be the one that spent the month's last unit.
-
-    Reserving before looking would refuse the repeat outright — and with it the
-    way back to the preview that unit paid for.
-    """
-    uid = subscribe(accounts, SUBSCRIBER)
-    for n in range(BASIC_LIMIT - 1):
-        client.post("/api/elections/import?wait_seconds=2",
-                    json={"year": 2000 + n, "nation": "Danmark"}, headers=SUBSCRIBER)
-    parser.hold()
-    client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
-    assert used(accounts, uid) == BASIC_LIMIT
-
-    again = client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
-    parser.release()
-    after = client.post("/api/elections/import?wait_seconds=2", json=BODY, headers=SUBSCRIBER)
-
-    assert again.status_code == 202, again.text
-    assert again.json()["reused"] is True
-    assert after.status_code == 200, after.text
-    assert after.json()["state"] == "preview"
-    assert parser.call_count == BASIC_LIMIT
-    assert used(accounts, uid) == BASIC_LIMIT
-
-
-def test_a_failed_extraction_is_refunded(client, accounts, store):
-    """An unreadable page produced nothing; charging for it would punish bad luck."""
-    main.app.dependency_overrides[main.get_service] = lambda: ImportService(
-        store, CountingParser(fail_times=1)
-    )
-    uid = subscribe(accounts, SUBSCRIBER)
-
-    failed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                         headers=SUBSCRIBER).json()
-
-    assert failed["state"] == "failed"
-    assert used(accounts, uid) == 0, "the quota is back by the time the failure is visible"
-
-
-def test_failed_extractions_are_refunded_only_so_often(client, accounts, store):
-    """Every failure still ran the resolver and a model over pages.
-
-    Refunding each one without end would make the cheapest subscription an
-    unlimited budget for model calls — a year that does not exist costs
-    exactly as much to look for as one that does.
-    """
-    parser = CountingParser(fail_times=1000)
-    main.app.dependency_overrides[main.get_service] = lambda: ImportService(store, parser)
-    uid = subscribe(accounts, SUBSCRIBER)
-    allowed = attempt_limit(BASIC_LIMIT)
-
-    for _ in range(allowed):
-        failed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                             headers=SUBSCRIBER).json()
-        assert failed["state"] == "failed"
-    assert used(accounts, uid) == 0
-
-    refused = client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
-
-    assert refused.status_code == 429
-    assert "found no election" in refused.json()["detail"]
-    assert parser.call_count == allowed
-    assert client.get("/api/me", headers=SUBSCRIBER).json()["may_import"] is False
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        {"year": "not-a-year", "nation": "Danmark"},
-        {"year": 20226, "nation": "Danmark"},
-        {"year": 2026, "nation": "   "},
-        {"year": 2026},
-        {"year": 2026, "nation": "Danmark", "source_url": "https://x.example"},
-    ],
-)
-def test_a_request_that_is_not_one_costs_nothing(client, accounts, parser, body):
-    uid = subscribe(accounts, SUBSCRIBER)
-
-    refused = client.post("/api/elections/import", json=body, headers=SUBSCRIBER)
-
-    assert refused.status_code == 422
-    assert parser.call_count == 0
-    assert used(accounts, uid) == 0
-
-
-def test_looking_up_a_request_costs_nothing_and_needs_only_an_account(client, accounts, parser):
-    uid = subscribe(accounts, SUBSCRIBER)
-
-    assert client.get("/api/elections/lookup", params=BODY,
-                      headers=FREE).status_code == 200
-    assert client.get("/api/elections/lookup", params=BODY,
-                      headers=VISITOR).status_code == 401
-    assert parser.call_count == 0
-    assert used(accounts, uid) == 0
-
-
-def test_confirming_a_preview_needs_its_importer_but_no_further_payment(client, accounts):
-    """The extraction has already been paid for; saving what it read is not a second sale.
-
-    Nor is it anybody else's to save: a preview its importer would have rejected
-    is wrong numbers for every account.
-    """
-    subscribe(accounts, SUBSCRIBER)
-    previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                            headers=SUBSCRIBER).json()
-    url = f"/api/elections/imports/{previewed['request_key']}/confirm"
-
-    assert client.post(url, headers=VISITOR).status_code == 401
-    assert client.post(url, headers=FREE).status_code == 403
-    assert client.get("/api/elections", headers=FREE).json() == [], "nothing was saved"
-
-    accounts.set_subscription("paid-1", Tier.FREE, status="canceled")
-    assert client.post(url, headers=SUBSCRIBER).status_code == 200
-
-
-def test_an_administrator_may_confirm_anyones_preview(client, accounts):
-    subscribe(accounts, SUBSCRIBER)
-    previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                            headers=SUBSCRIBER).json()
-
-    confirmed = client.post(
-        f"/api/elections/imports/{previewed['request_key']}/confirm", headers=ADMIN
-    )
-
-    assert confirmed.status_code == 200
-
-
-def test_discarding_a_preview_needs_the_account_that_started_it(client, accounts):
-    """The request key follows from the year and the place, so anyone can know it.
-
-    The preview is still not theirs to throw away: the subscriber paid for it,
-    and importing again would charge them again.
-    """
-    subscribe(accounts, SUBSCRIBER)
-    previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                            headers=SUBSCRIBER).json()
-    key = previewed["request_key"]
-    url = f"/api/elections/imports/{key}/preview"
-
-    assert client.delete(url, headers=VISITOR).status_code == 401
-    assert client.delete(url, headers=FREE).status_code == 403
-    assert client.get(f"/api/elections/imports/{key}", headers=FREE).json()["state"] == "preview"
-    assert client.delete(url, headers=SUBSCRIBER).status_code == 204
-
-
-def test_an_administrator_may_discard_anyones_preview(client, accounts):
-    subscribe(accounts, SUBSCRIBER)
-    previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY,
-                            headers=SUBSCRIBER).json()
-
-    discarded = client.delete(
-        f"/api/elections/imports/{previewed['request_key']}/preview", headers=ADMIN
-    )
-
-    assert discarded.status_code == 204
-
-
 # --- the account endpoint ---------------------------------------------------
-
-def test_me_reports_the_tier_and_what_is_left(client, accounts):
-    subscribe(accounts, SUBSCRIBER)
-    client.post("/api/elections/import?wait_seconds=2", json=BODY, headers=SUBSCRIBER)
-
-    body = client.get("/api/me", headers=SUBSCRIBER).json()
-
-    assert body["tier"] == "basic"
-    assert body["email"] == "paid@example.org"
-    assert (body["used"], body["limit"], body["remaining"]) == (1, BASIC_LIMIT, BASIC_LIMIT - 1)
-    assert body["may_import"] is True
-    assert body["period"] == billing_period()
-
 
 def test_me_on_a_first_sign_in_creates_a_free_account(client, accounts):
     body = client.get("/api/me", headers=FREE).json()
@@ -472,17 +170,6 @@ def test_me_needs_a_credential(client):
     assert client.get("/api/me", headers=VISITOR).status_code == 401
 
 
-def test_the_public_config_is_readable_signed_out(client):
-    """The page has to know how to sign in before anyone has."""
-    body = client.get("/api/config", headers=VISITOR).json()
-
-    assert body["auth_required"] is True
-    assert body["billing_enabled"] is False
-    assert {t["tier"]: t["monthly_imports"] for t in body["tiers"]} == {
-        "free": 0, "basic": BASIC_LIMIT, "premium": PREMIUM_LIMIT
-    }
-
-
 # --- an address nobody has confirmed yet ------------------------------------
 
 def test_me_tells_an_unconfirmed_account_what_it_is_waiting_for(client):
@@ -491,24 +178,6 @@ def test_me_tells_an_unconfirmed_account_what_it_is_waiting_for(client):
     assert body["email_verified"] is False
     assert body["may_import"] is False
     assert client.get("/api/me", headers=FREE).json()["email_verified"] is True
-
-
-def test_an_unconfirmed_account_cannot_import_even_on_a_paid_tier(client, accounts, parser):
-    uid = subscribe(accounts, UNVERIFIED)
-
-    response = client.post("/api/elections/import", json=BODY, headers=UNVERIFIED)
-
-    assert response.status_code == 403
-    assert "confirm your email" in response.json()["detail"]
-    assert parser.call_count == 0, "no page is fetched on an unconfirmed address's behalf"
-    assert used(accounts, uid) == 0
-
-
-def test_an_unconfirmed_account_cannot_look_up_or_confirm_imports(client):
-    lookup = client.get("/api/elections/lookup?year=2026&nation=Danmark", headers=UNVERIFIED)
-    confirm = client.post("/api/elections/imports/some-key/confirm", headers=UNVERIFIED)
-
-    assert (lookup.status_code, confirm.status_code) == (403, 403)
 
 
 def test_an_unconfirmed_account_cannot_pay(billing_client, fake_billing):
@@ -572,12 +241,10 @@ def webhook(client):
     return client.post("/api/billing/webhook", content=b"{}").json()
 
 
-def test_a_subscription_webhook_grants_the_tier_and_the_quota_with_it(
+def test_a_subscription_webhook_grants_the_tier(
     billing_client, fake_billing
 ):
     billing_client.get("/api/me", headers=FREE)  # the account exists, still free
-    refused = billing_client.post("/api/elections/import", json=BODY, headers=FREE)
-    assert refused.status_code == 402
 
     fake_billing.event = BillingEvent(
         customer_id="cus_9", uid="free-1", tier=Tier.PREMIUM,
@@ -586,10 +253,6 @@ def test_a_subscription_webhook_grants_the_tier_and_the_quota_with_it(
     assert webhook(billing_client) == {"handled": True}
 
     assert billing_client.get("/api/me", headers=FREE).json()["tier"] == "premium"
-    allowed = billing_client.post(
-        "/api/elections/import?wait_seconds=2", json=BODY, headers=FREE
-    )
-    assert allowed.status_code == 200, "the quota arrives with the tier"
 
 
 def test_a_cancellation_takes_effect_without_anything_else_running(
@@ -603,8 +266,6 @@ def test_a_cancellation_takes_effect_without_anything_else_running(
     webhook(billing_client)
 
     assert billing_client.get("/api/me", headers=SUBSCRIBER).json()["tier"] == "free"
-    refused = billing_client.post("/api/elections/import", json=BODY, headers=SUBSCRIBER)
-    assert refused.status_code == 402
 
 
 def test_a_webhook_that_names_only_a_customer_still_finds_the_account(

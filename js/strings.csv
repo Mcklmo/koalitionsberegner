@@ -92,6 +92,15 @@ import.subnation,Region (kun ved regionale valg),Region (regional elections only
 import.subnationPlaceholder,fx Sachsen-Anhalt,e.g. Saxony-Anhalt
 import.hint,"Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt endnu, kan du vælge mellem de seneste meningsmålinger.","Typos are fine. We find the election and show which one we found — and where the numbers come from — before anything is saved. If the election hasn't been held yet, you can choose from the latest opinion polls."
 import.submit,Hent valgresultat,Get the results
+request.submit,Ønsk valget,Request the election
+import.unavailable,Her kan der hverken importeres eller ønskes valg lige nu.,Elections can't be imported or requested here right now.
+admin.label,Administratorens nøgle,Administrator's secret
+admin.save,Gem nøglen,Save the secret
+admin.forget,Glem nøglen,Forget the secret
+admin.saved,"Nøglen er gemt, indtil fanen lukkes. Formularen importerer nu.",The secret is kept until this tab closes. The form now imports.
+admin.forgotten,Nøglen er glemt. Formularen ønsker nu valg i stedet.,The secret is forgotten. The form now requests elections instead.
+admin.notSaved,Browseren vil ikke gemme nøglen. Tillad lagring for siden og prøv igen.,The browser won't keep the secret. Allow storage for this site and try again.
+admin.wrongSecret,Nøglen blev afvist og er glemt. Indtast den igen under #admin.,The secret was refused and has been forgotten. Enter it again under #admin.
 form.yearMissing,Angiv valgåret.,Enter the election year.
 form.yearInvalid,Året skal være et årstal mellem {min} og {max}.,The year must be between {min} and {max}.
 form.nationMissing,Angiv landet.,Enter the country.

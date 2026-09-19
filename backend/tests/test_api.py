@@ -254,3 +254,75 @@ def test_the_page_is_served_from_the_same_origin_as_the_api(client):
 
     assert client.get("/js/app.js").status_code == 200
     assert client.get("/api/elections").status_code == 200, "the mount must not shadow the API"
+
+
+# --- the owner's secret -----------------------------------------------------
+
+SECRET = "an-administrator-secret-of-forty-chars!!"
+OWNER = {"x-admin-secret": SECRET}
+
+
+@pytest.fixture
+def secret(monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", SECRET)
+
+
+def test_with_a_secret_configured_an_import_without_it_is_refused(client, parser, secret):
+    for headers in ({}, {"x-admin-secret": "not-the-secret"}):
+        refused = client.post("/api/elections/import", json=BODY, headers=headers)
+
+        assert refused.status_code == 403
+        assert "administrator's secret" in refused.json()["detail"]
+    assert parser.call_count == 0, "nothing is looked up for a caller who is not the owner"
+
+
+def test_the_right_secret_imports_and_saves(client, parser, secret):
+    parser.hold()
+    started = client.post("/api/elections/import", json=BODY, headers=OWNER)
+    assert started.status_code == 202
+    parser.release()
+
+    key = started.json()["request_key"]
+    previewed = client.get(f"/api/elections/imports/{key}?wait_seconds=2", headers=OWNER)
+    assert previewed.status_code == 200
+    assert previewed.json()["state"] == "preview"
+
+    saved = client.post(f"/api/elections/imports/{key}/confirm", headers=OWNER)
+    assert saved.status_code == 200
+    assert len(client.get("/api/elections").json()) == 1
+
+
+def test_with_no_secret_configured_a_local_run_is_the_owners_own(client, monkeypatch):
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+
+    assert client.post("/api/elections/import?wait_seconds=2", json=BODY).status_code == 200
+
+
+def test_every_step_past_the_import_needs_the_secret_too(client, secret):
+    key = "0" * 64
+    refused = [
+        client.get(f"/api/elections/imports/{key}"),
+        client.post(f"/api/elections/imports/{key}/confirm"),
+        client.delete(f"/api/elections/imports/{key}/preview"),
+        client.get("/api/admin/usage"),
+    ]
+
+    assert [response.status_code for response in refused] == [403] * 4
+
+
+def test_reading_and_looking_up_need_no_secret(client, secret):
+    assert client.get("/api/elections").status_code == 200
+    assert client.get("/api/elections/lookup?year=2026&nation=Danmark").status_code == 200
+
+
+def test_the_page_is_told_whether_it_may_import(client, monkeypatch):
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+    local = client.get("/api/config").json()
+    assert local == {"requests_enabled": False, "imports_enabled": True, "imports_open": True}
+
+    monkeypatch.setenv("ADMIN_SECRET", SECRET)
+    deployed = client.get("/api/config").json()
+    assert (deployed["imports_enabled"], deployed["imports_open"]) == (True, False)
+
+    monkeypatch.setenv("LLM_MODE", "off")
+    assert client.get("/api/config").json()["imports_enabled"] is False
