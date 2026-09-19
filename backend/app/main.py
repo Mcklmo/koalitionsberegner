@@ -10,6 +10,7 @@ free, which is the whole point of the shared store.
 
 from __future__ import annotations
 
+import dataclasses
 import hmac
 import logging
 import os
@@ -51,8 +52,11 @@ from .config import (
 from .identity import normalize_year
 from .mailer import Mailer, MailUnavailable
 from .observability import configure_logging, io_span, scrub
+from .og_image import render as render_og_image
 from .schema import Election, Forecast, clean_text
-from .service import ImportRequest, ImportResult, ImportService, ImportState
+from .service import AmbiguousId, ImportRequest, ImportResult, ImportService, ImportState
+from .share import card as build_card
+from .share import image_etag, parse_seats, parse_selection, valid_id
 from .store import StoredElection
 from .usage import (
     Period,
@@ -637,6 +641,28 @@ async def discard_preview(
     )
 
 
+async def _resolve_shared_id(election_hash: str, service: ImportService) -> StoredElection:
+    """The stored election a share link's id names: a hash or a prefix of one.
+
+    Shared by the picker route and the two link-preview routes below: all three
+    take the same id and answer the same way when it does not resolve to
+    exactly one election (``doc/plans/02-share-links.md``, WP1).
+    """
+    if not valid_id(election_hash):
+        raise HTTPException(
+            status_code=422, detail="id must be 12 to 64 lowercase hex characters"
+        )
+    try:
+        stored = await service.resolve_id(election_hash)
+    except AmbiguousId:
+        raise HTTPException(
+            status_code=409, detail="that prefix matches more than one election"
+        ) from None
+    if stored is None:
+        raise HTTPException(status_code=404, detail="no stored election with that hash")
+    return stored
+
+
 @app.get("/api/elections/{election_hash}", response_model=ImportResponse)
 async def get_election(
     election_hash: str,
@@ -644,17 +670,66 @@ async def get_election(
     service: ImportService = Depends(get_service),
     usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
-    """Fetch a stored election by identity, for the picker. Open to anyone."""
-    stored = await service.get_stored(election_hash)
-    if stored is None:
-        raise HTTPException(status_code=404, detail="no stored election with that hash")
+    """Fetch a stored election by its hash or a prefix of it. Open to anyone."""
+    stored = await _resolve_shared_id(election_hash, service)
     # Only the picker asks for one election by hash, so this is a pick.
     background.add_task(usage.record, UsageEvent.ELECTION_PICKED)
     return ImportResponse(
         request_key="",
         state=ImportState.READY,
         election=stored.election,
-        election_hash=election_hash,
+        election_hash=stored.election_hash,
+    )
+
+
+# --- shared links: the card a link unfurls into, and its preview image ------
+
+SHARE_CACHE_CONTROL = "public, max-age=3600"
+
+
+@app.get("/api/elections/{election_hash}/card")
+async def get_card(
+    election_hash: str,
+    background: BackgroundTasks,
+    c: str | None = Query(None, description="Selected parties, as positions: 0,2,3"),
+    s: str | None = Query(None, description="The seat total the link was made with"),
+    service: ImportService = Depends(get_service),
+    usage: UsageRecorder = Depends(get_usage),
+) -> Response:
+    """The wording and numbers a shared link unfurls into.
+
+    The Worker calls this once per ``/e/*`` page view, crawlers included, to
+    fill in the page's ``<meta>`` tags; :func:`get_og_image` renders the same
+    :class:`~app.share.Card` as the picture, so the two never disagree.
+    """
+    stored = await _resolve_shared_id(election_hash, service)
+    selection = parse_selection(c, stored.election)
+    seats_claimed = parse_seats(s)
+    result = build_card(stored.election, stored.election_hash, selection, seats_claimed)
+    background.add_task(usage.record, UsageEvent.LINK_OPENED)
+    return JSONResponse(
+        dataclasses.asdict(result), headers={"Cache-Control": SHARE_CACHE_CONTROL}
+    )
+
+
+@app.get("/api/og/{election_hash}.png")
+async def get_og_image(
+    election_hash: str,
+    c: str | None = Query(None, description="Selected parties, as positions: 0,2,3"),
+    s: str | None = Query(None, description="The seat total the link was made with"),
+    service: ImportService = Depends(get_service),
+) -> Response:
+    """The 1200x630 preview image a shared link unfurls into."""
+    stored = await _resolve_shared_id(election_hash, service)
+    selection = parse_selection(c, stored.election)
+    seats_claimed = parse_seats(s)
+    result = build_card(stored.election, stored.election_hash, selection, seats_claimed)
+    etag = image_etag(stored.election_hash, selection, seats_claimed, stored.stored_at)
+    image_bytes = await run_in_threadpool(render_og_image, result)
+    return Response(
+        image_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": SHARE_CACHE_CONTROL, "ETag": etag},
     )
 
 

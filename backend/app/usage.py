@@ -42,6 +42,7 @@ class UsageEvent(str, Enum):
     """Everything counted. The value is the counter's name in storage."""
 
     ELECTION_PICKED = "election_picked"
+    LINK_OPENED = "link_opened"
     IMPORT_STARTED = "import_started"
     IMPORT_FAILED = "import_failed"
     IMPORT_SAVED_RESULT = "import_saved_result"
@@ -232,6 +233,7 @@ SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     )),
     ("Elections", (
         ("Picked from the list", E.ELECTION_PICKED.value),
+        ("Shared links opened (crawlers included)", E.LINK_OPENED.value),
     )),
     ("Imports", (
         ("Started", E.IMPORT_STARTED.value),

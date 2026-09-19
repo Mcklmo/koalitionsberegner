@@ -12,9 +12,13 @@
     // The repo root. .assetsignore is what keeps everything but index.html and
     // js/ from becoming a public URL — .env included.
     "directory": ".",
-    // Only the API runs the Worker. Static files are served without it, and so
-    // never count against the Worker's request allowance.
-    "run_worker_first": ["/api/*"]
+    // So the Worker can fetch the page itself to unfurl it (worker/index.js,
+    // servePage): the asset copy of index.html, headers included.
+    "binding": "ASSETS",
+    // Only the API and shared links run the Worker. Every other static file
+    // is served without it, and so never counts against the Worker's request
+    // allowance.
+    "run_worker_first": ["/api/*", "/e/*"]
   },
   // Once a day the Worker asks the origin to email whichever usage reports are
   // due (daily always, weekly on Mondays, monthly on the 1st). 06:00 UTC.
