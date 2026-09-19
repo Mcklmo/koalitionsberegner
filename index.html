@@ -266,22 +266,6 @@
       color: #888
     }
 
-    .picker-row .curate {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      white-space: nowrap
-    }
-
-    .picker-row .curate[hidden] {
-      display: none
-    }
-
-    .picker-row .curate input {
-      width: auto;
-      margin: 0
-    }
-
     select,
     input {
       font: inherit;
@@ -565,10 +549,6 @@
   <div class="picker-row" id="picker-row" hidden>
     <label for="picker" data-i18n="picker.label">Valg</label>
     <select id="picker"></select>
-    <label class="curate" id="curate-row" title="Vis valget for besøgende, der ikke er logget ind"
-      data-i18n-title="curate.title" hidden>
-      <input type="checkbox" id="curate"> <span data-i18n="curate.label">Offentlig</span>
-    </label>
   </div>
 
   <h2 id="title"></h2>

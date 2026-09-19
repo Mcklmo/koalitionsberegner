@@ -71,7 +71,7 @@ test('listElections maps summaries to camelCase', async () => {
   ]);
   const listed = await createApiClient({ fetch: fetchImpl }).listElections();
   assert.deepEqual(listed, [
-    { electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179, selected: false, forecast: null },
+    { electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179, forecast: null },
   ]);
 });
 
@@ -265,19 +265,6 @@ test('a negative limit reads as no tier at all', async () => {
 
   assert.equal(account.unlimited, true);
   assert.equal(account.mayImport, true);
-});
-
-test('curation is a PUT carrying the new flag', async () => {
-  const { fetchImpl, calls } = fakeFetch([
-    { status: 200, body: { election_hash: 'abc', nation: 'Danmark', state: null, election_date: '2026-03-25', title: 'T', total_seats: 179, selected: true } },
-  ]);
-
-  const summary = await createApiClient({ fetch: fetchImpl }).setSelected('abc', true);
-
-  assert.equal(calls[0].method, 'PUT');
-  assert.equal(calls[0].url, '/api/elections/abc/selected');
-  assert.deepEqual(JSON.parse(calls[0].body), { selected: true });
-  assert.equal(summary.selected, true);
 });
 
 test('starting a checkout returns the URL to send the user to', async () => {

@@ -20,11 +20,6 @@
  * both the list and the preview say so: those numbers are ours, not the
  * pollster's.
  *
- * An administrator also decides which stored elections a signed-out visitor
- * sees: a checkbox next to the picker says whether the chosen one is public and
- * changes it. It is shown only to an account the server calls an administrator,
- * and the server checks again.
- *
  * Importing is also the part that is sold. This module shows what the account
  * allows but never decides it: the form is disabled as a courtesy, and the
  * server refuses regardless — the two can disagree only in the safe direction.
@@ -156,22 +151,9 @@ export function mountImportUi({
 
   function optionLabel(summary) {
     const where = placeOf(summary);
-    const label = summary.forecast
+    return summary.forecast
       ? t('picker.forecast', { where, label: forecastLabel(summary.forecast) })
       : `${where} · ${summary.electionDate}`;
-    // Only an administrator is told, since only they can change it.
-    return account?.admin && summary.selected ? `${label} · ${t('picker.public')}` : label;
-  }
-
-  /** The stored election the picker is on; null for the bundled one. */
-  function chosen() {
-    return summaries.find((summary) => summary.electionHash === el.picker.value) ?? null;
-  }
-
-  function renderCuration() {
-    const summary = chosen();
-    show(el.curateRow, Boolean(account?.admin && summary));
-    el.curate.checked = Boolean(summary?.selected);
   }
 
   function renderPicker() {
@@ -187,7 +169,6 @@ export function mountImportUi({
       el.picker.appendChild(option);
     }
     show(el.pickerRow, el.picker.options.length > 1);
-    renderCuration();
   }
 
   async function refreshPicker(selectHash) {
@@ -201,7 +182,6 @@ export function mountImportUi({
     }
     renderPicker();
     if (selectHash) el.picker.value = selectHash;
-    renderCuration();
   }
 
   function renderPreview(election) {
@@ -467,33 +447,7 @@ export function mountImportUi({
     await api.discardPreview(requestKey).catch(() => {});
   }
 
-  async function curate() {
-    const summary = chosen();
-    if (!summary) return;
-    const wanted = el.curate.checked;
-    el.curate.disabled = true;
-    try {
-      const saved = await api.setSelected(summary.electionHash, wanted);
-      summaries = summaries.map((s) => (s.electionHash === saved.electionHash ? saved : s));
-      renderPicker();
-      el.picker.value = saved.electionHash;
-      renderCuration();
-      setMessage(
-        saved.selected
-          ? t('curate.nowPublic')
-          : t('curate.nowPrivate'),
-        'ok'
-      );
-    } catch (error) {
-      el.curate.checked = !wanted;
-      setMessage(t('curate.failed', { message: refusal(error) }), 'error');
-    } finally {
-      el.curate.disabled = false;
-    }
-  }
-
   async function select() {
-    renderCuration();
     const value = el.picker.value;
     if (value === LOCAL_VALUE) {
       onSelect(bundled);
@@ -512,7 +466,6 @@ export function mountImportUi({
   el.discard.addEventListener('click', discard);
   el.choicesDiscard.addEventListener('click', discardChoices);
   el.picker.addEventListener('change', select);
-  el.curate.addEventListener('change', curate);
 
   return {
     /**

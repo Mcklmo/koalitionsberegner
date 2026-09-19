@@ -1,13 +1,12 @@
 """A short-lived read cache in front of the shared election store.
 
 Viewing is open, and every view is a store read: the list a visitor loads is one
-read per curated election, the list an account loads one per stored election,
-and a lookup reads them all. Firestore bills per document read, so without this
+read per stored election, and a lookup reads them all. Firestore bills per document read, so without this
 a script reloading the front page turns straight into a bill.
 
 Only stored elections are cached, and only positively. They never change once
-stored except for the curation flag and a backfill's corrections, so a copy up to
-:data:`TTL_SECONDS` old is right in everything but whether a visitor sees it yet. Jobs are never cached:
+stored except for a backfill's corrections, so a copy up to :data:`TTL_SECONDS`
+old is right in everything but whether a new one is listed yet. Jobs are never cached:
 an import's progress has to be read fresh. An election that is *not* found is
 not cached either, so one confirmed on another instance is visible here at once.
 """
@@ -31,7 +30,7 @@ class CachedElectionStore:
         self._ttl = ttl
         self._clock = clock
         self._lock = Lock()
-        self._lists: dict[bool, tuple[float, list[StoredElection]]] = {}
+        self._list: tuple[float, list[StoredElection]] | None = None
         self._stored: dict[str, tuple[float, StoredElection]] = {}
 
     def __getattr__(self, name):
@@ -42,20 +41,20 @@ class CachedElectionStore:
 
     def _forget(self, election_hash: str | None = None) -> None:
         with self._lock:
-            self._lists.clear()
+            self._list = None
             if election_hash is not None:
                 self._stored.pop(election_hash, None)
 
     # --- reads --------------------------------------------------------------
 
-    def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]:
+    def list_elections(self) -> list[StoredElection]:
         with self._lock:
-            entry = self._lists.get(selected_only)
+            entry = self._list
             if self._fresh(entry):
                 return list(entry[1])
-        listed = self._inner.list_elections(selected_only=selected_only)
+        listed = self._inner.list_elections()
         with self._lock:
-            self._lists[selected_only] = (self._clock(), listed)
+            self._list = (self._clock(), listed)
         return list(listed)
 
     def find_by_place(

@@ -135,8 +135,6 @@ const importUi = mountImportUi({
     choicesDiscard: byId('choices-discard'),
     picker: byId('picker'),
     pickerRow: byId('picker-row'),
-    curate: byId('curate'),
-    curateRow: byId('curate-row'),
   },
 });
 

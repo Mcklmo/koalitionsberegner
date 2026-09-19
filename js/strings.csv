@@ -3,9 +3,6 @@ language.name,Dansk,English
 language.label,Sprog,Language
 picker.label,Valg,Election
 picker.forecast,{where} · prognose {label},{where} · forecast {label}
-picker.public,offentlig,public
-curate.title,"Vis valget for besøgende, der ikke er logget ind",Show this election to visitors who are not signed in
-curate.label,Offentlig,Public
 names.label,Partinavne,Party names
 names.local,Originalsprog,Original language
 names.english,Engelsk,English
@@ -136,9 +133,6 @@ saved.electionAlready,Valget var allerede gemt.,The election was already saved.
 saved.forecast,Prognosen er gemt.,The forecast is saved.
 saved.forecastAlready,Prognosen var allerede gemt.,The forecast was already saved.
 saved.failed,Kunne ikke gemme valget: {message},Couldn't save the election: {message}
-curate.nowPublic,"Valget er nu synligt for alle, også uden login.","The election is now visible to everyone, signed in or not."
-curate.nowPrivate,"Valget vises nu kun for brugere, der er logget ind.",The election is now only shown to signed-in users.
-curate.failed,Kunne ikke ændre synligheden: {message},Couldn't change the visibility: {message}
 select.failed,Kunne ikke hente valget: {message},Couldn't load the election: {message}
 privacy.link,Privatliv,Privacy
 privacy.summary,Privatliv og dine data,Privacy and your data

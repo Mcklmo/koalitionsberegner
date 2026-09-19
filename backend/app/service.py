@@ -376,7 +376,7 @@ class ImportService:
         return discarded
 
     async def get_stored(self, election_hash: str) -> StoredElection | None:
-        """The stored election and its curation flag; callers decide who may see it."""
+        """The stored election, whoever asks: every stored election is public."""
         return await self._in_thread(self._store.get_stored, election_hash)
 
     async def find_by_place(
@@ -387,13 +387,6 @@ class ImportService:
             lambda: self._store.find_by_place(year, nation, subnation)
         )
 
-    async def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]:
-        return await self._in_thread(
-            lambda: self._store.list_elections(selected_only=selected_only)
-        )
-
-    async def set_selected(self, election_hash: str, selected: bool) -> bool:
-        """Curate an election into, or out of, what signed-out visitors see."""
-        changed = await self._in_thread(self._store.set_selected, election_hash, selected)
-        log.info("selected hash=%s value=%s found=%s", election_hash[:12], selected, changed)
-        return changed
+    async def list_elections(self) -> list[StoredElection]:
+        """Every stored election. Everyone sees all of them."""
+        return await self._in_thread(self._store.list_elections)

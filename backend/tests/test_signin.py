@@ -154,18 +154,12 @@ def test_viewing_is_still_open_to_somebody_who_never_signed_in(client):
 
 # --- the rules, over HTTP ---------------------------------------------------
 
-def test_an_allowlisted_address_may_curate_and_an_ordinary_one_may_not(client):
+def test_an_allowlisted_address_may_administer_and_an_ordinary_one_may_not(client):
     ordinary = register(client)
     boss = register(client, email="boss@example.org")
 
-    for token, expected in ((ordinary["token"], 403), (boss["token"], 404)):
-        response = client.put(
-            "/api/elections/nosuchhash/selected",
-            json={"selected": True},
-            headers=auth(token),
-        )
-        # 404 is the admin getting through to a hash that does not exist; 403
-        # is being stopped at the door.
+    for token, expected in ((ordinary["token"], 403), (boss["token"], 200)):
+        response = client.get("/api/admin/usage", headers=auth(token))
         assert response.status_code == expected
 
 

@@ -149,7 +149,6 @@ function harness(overrides = {}) {
     'form', 'year', 'nation', 'subnation', 'submit', 'message', 'availability', 'preview',
     'previewTitle', 'previewMeta', 'previewSource', 'previewList', 'confirm', 'discard',
     'choices', 'choicesTitle', 'choicesList', 'choicesDiscard', 'picker', 'pickerRow',
-    'curate', 'curateRow',
   ].map((name) => [name, node()]));
   el.fieldErrors = { year: node(), nation: node() };
   el.year.value = '2027';

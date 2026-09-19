@@ -5,7 +5,7 @@ The access model in one table:
 ===================  ==========================  =========================
 Caller               Sees                        May import
 ===================  ==========================  =========================
-signed out           the curated selection       no
+signed out           everything stored           no
 free account         everything stored           no
 basic / premium      everything stored           within a monthly quota
 administrator        everything stored           without any quota
@@ -118,55 +118,33 @@ def used(accounts, uid):
 
 # --- viewing ----------------------------------------------------------------
 
-def test_a_visitor_sees_only_the_curated_selection(client, store, accounts):
-    uid = subscribe(accounts, SUBSCRIBER)
-    hidden = save(client, SUBSCRIBER)
-    shown = save(client, SUBSCRIBER, OTHER_BODY)
-    assert used(accounts, uid) <= BASIC_LIMIT
-    store.set_selected(shown["election_hash"], True)
+def test_a_visitor_sees_everything_stored(client, accounts):
+    """No header at all: the whole list, not a curated part of it."""
+    subscribe(accounts, SUBSCRIBER)
+    first = save(client, SUBSCRIBER)
+    second = save(client, SUBSCRIBER, OTHER_BODY)
 
     listed = client.get("/api/elections", headers=VISITOR).json()
 
-    assert [row["election_hash"] for row in listed] == [shown["election_hash"]]
-    assert hidden["election_hash"] not in [row["election_hash"] for row in listed]
+    assert {row["election_hash"] for row in listed} == {
+        first["election_hash"], second["election_hash"]
+    }
+    assert all("selected" not in row for row in listed), "curation is gone"
 
 
-def test_an_account_sees_everything_stored(client, store, accounts):
-    subscribe(accounts, SUBSCRIBER)
-    save(client, SUBSCRIBER)
-
-    assert client.get("/api/elections", headers=VISITOR).json() == []
-    assert len(client.get("/api/elections", headers=FREE).json()) == 1
-
-
-def test_a_visitor_may_open_a_selected_election_but_not_an_unselected_one(
-    client, store, accounts
-):
-    subscribe(accounts, SUBSCRIBER)
-    saved = save(client, SUBSCRIBER)
-    election_hash = saved["election_hash"]
-
-    refused = client.get(f"/api/elections/{election_hash}", headers=VISITOR)
-    assert refused.status_code == 401
-    assert "sign in" in refused.json()["detail"]
-
-    store.set_selected(election_hash, True)
-    assert client.get(f"/api/elections/{election_hash}", headers=VISITOR).status_code == 200
-
-
-def test_a_free_account_may_open_any_stored_election(client, accounts):
+def test_a_visitor_may_open_any_stored_election(client, accounts):
     subscribe(accounts, SUBSCRIBER)
     saved = save(client, SUBSCRIBER)
 
-    response = client.get(f"/api/elections/{saved['election_hash']}", headers=FREE)
+    response = client.get(f"/api/elections/{saved['election_hash']}", headers=VISITOR)
 
     assert response.status_code == 200
     assert response.json()["election"]["title"] == "Koalitionsberegner"
 
 
-def test_a_forged_credential_is_refused_rather_than_treated_as_a_visitor(client):
-    response = client.get("/api/elections", headers={"Authorization": "Bearer :nonsense"})
-    assert response.status_code == 401
+def test_an_unknown_election_is_404_to_anyone(client):
+    response = client.get("/api/elections/" + "0" * 64, headers=VISITOR)
+    assert response.status_code == 404
 
 
 # --- importing --------------------------------------------------------------
@@ -533,18 +511,6 @@ def test_an_unconfirmed_account_cannot_look_up_or_confirm_imports(client):
     assert (lookup.status_code, confirm.status_code) == (403, 403)
 
 
-def test_an_unconfirmed_account_sees_what_a_visitor_sees(client, store, accounts):
-    subscribe(accounts, SUBSCRIBER)
-    saved = save(client, SUBSCRIBER)
-    path = f"/api/elections/{saved['election_hash']}"
-
-    assert client.get("/api/elections", headers=UNVERIFIED).json() == []
-    assert client.get(path, headers=UNVERIFIED).status_code == 403
-
-    store.set_selected(saved["election_hash"], True)
-    assert client.get(path, headers=UNVERIFIED).status_code == 200
-
-
 def test_an_unconfirmed_account_cannot_pay(billing_client, fake_billing):
     response = billing_client.post(
         "/api/billing/checkout", json={"tier": "basic"}, headers=UNVERIFIED
@@ -552,40 +518,6 @@ def test_an_unconfirmed_account_cannot_pay(billing_client, fake_billing):
 
     assert response.status_code == 403
     assert fake_billing.checkouts == []
-
-
-# --- curation ---------------------------------------------------------------
-
-def test_only_an_administrator_may_curate_the_selection(client, accounts):
-    subscribe(accounts, SUBSCRIBER)
-    saved = save(client, SUBSCRIBER)
-    path = f"/api/elections/{saved['election_hash']}/selected"
-
-    assert client.put(path, json={"selected": True}, headers=VISITOR).status_code == 401
-    assert client.put(path, json={"selected": True}, headers=FREE).status_code == 403
-    assert client.put(path, json={"selected": True}, headers=SUBSCRIBER).status_code == 403
-
-    promoted = client.put(path, json={"selected": True}, headers=ADMIN)
-    assert promoted.status_code == 200
-    assert promoted.json()["selected"] is True
-
-
-def test_curation_can_be_undone(client, accounts, store):
-    subscribe(accounts, SUBSCRIBER)
-    saved = save(client, SUBSCRIBER)
-    path = f"/api/elections/{saved['election_hash']}/selected"
-
-    client.put(path, json={"selected": True}, headers=ADMIN)
-    client.put(path, json={"selected": False}, headers=ADMIN)
-
-    assert client.get("/api/elections", headers=VISITOR).json() == []
-
-
-def test_curating_an_unknown_election_is_404(client):
-    response = client.put(
-        "/api/elections/" + "0" * 64 + "/selected", json={"selected": True}, headers=ADMIN
-    )
-    assert response.status_code == 404
 
 
 # --- billing changes take effect on their own -------------------------------

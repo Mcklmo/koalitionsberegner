@@ -30,7 +30,7 @@ server fetch a page and run the extraction agent.
 
 | Caller | Sees | May import | May ask for an election |
 | --- | --- | --- | --- |
-| Signed out | the curated selection | no | yes |
+| Signed out | every stored election | no | yes |
 | Free account | every stored election | no | yes |
 | Basic subscriber | every stored election | a fixed number per month | — it imports |
 | Premium subscriber | every stored election | a larger number per month | — it imports |

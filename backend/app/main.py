@@ -1,9 +1,9 @@
 """FastAPI surface over the shared election store.
 
 Access follows one rule, applied in three places below: *viewing is open,
-importing is bought*. A signed-out visitor sees the curated selection, any
-account sees everything stored, and only a subscriber with quota left can make
-the server go and look for an election it does not already hold.
+importing is bought*. Anyone sees everything stored, and only a subscriber with
+quota left can make the server go and look for an election it does not already
+hold.
 
 The quota is charged for the one thing that costs money — going out to find and
 read an election — and nothing else. An election somebody already imported is
@@ -338,11 +338,6 @@ def require_verified(principal: Principal = Depends(require_principal)) -> Princ
     return principal
 
 
-def is_member(principal: Principal | None) -> bool:
-    """Whether a caller sees past the curated selection."""
-    return principal is not None and principal.email_verified
-
-
 def require_account(
     principal: Principal = Depends(require_verified),
     accounts: AccountStore = Depends(get_account_store),
@@ -462,7 +457,6 @@ class ElectionSummary(BaseModel):
     election_date: date
     title: str
     total_seats: int
-    selected: bool = False
     forecast: Forecast | None = None
 
     @classmethod
@@ -474,7 +468,6 @@ class ElectionSummary(BaseModel):
             election_date=stored.election.election_date,
             title=stored.election.title,
             total_seats=stored.election.total_seats,
-            selected=stored.selected,
             forecast=stored.election.forecast,
         )
 
@@ -549,12 +542,6 @@ class ElectionRequestResponse(BaseModel):
     number: int
     duplicate: bool = False
     """True when somebody had already asked for this election."""
-
-
-class SelectedBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    selected: bool
 
 
 def _account_response(
@@ -780,13 +767,9 @@ async def _answer(
 @app.get("/api/elections", response_model=list[ElectionSummary])
 async def list_elections(
     service: ImportService = Depends(get_service),
-    principal: Principal | None = Depends(current_principal),
 ) -> list[ElectionSummary]:
-    """Every stored election — or only the curated ones, to a signed-out visitor."""
-    return [
-        ElectionSummary.of(stored)
-        for stored in await service.list_elections(selected_only=not is_member(principal))
-    ]
+    """Every stored election, to anyone."""
+    return [ElectionSummary.of(stored) for stored in await service.list_elections()]
 
 
 @app.get("/api/elections/lookup", response_model=ImportResponse)
@@ -975,39 +958,17 @@ async def discard_preview(
     )
 
 
-@app.put("/api/elections/{election_hash}/selected", response_model=ElectionSummary)
-async def set_selected(
-    election_hash: str,
-    body: SelectedBody,
-    service: ImportService = Depends(get_service),
-    _admin: Principal = Depends(require_admin),
-) -> ElectionSummary:
-    """Curate an election into, or out of, what signed-out visitors can see."""
-    if not await service.set_selected(election_hash, body.selected):
-        raise HTTPException(status_code=404, detail="no stored election with that hash")
-    return ElectionSummary.of(await service.get_stored(election_hash))
-
-
 @app.get("/api/elections/{election_hash}", response_model=ImportResponse)
 async def get_election(
     election_hash: str,
     background: BackgroundTasks,
     service: ImportService = Depends(get_service),
-    principal: Principal | None = Depends(current_principal),
     usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
-    """Fetch a stored election by identity, for the picker."""
+    """Fetch a stored election by identity, for the picker. Open to anyone."""
     stored = await service.get_stored(election_hash)
     if stored is None:
         raise HTTPException(status_code=404, detail="no stored election with that hash")
-    if principal is None and not stored.selected:
-        raise HTTPException(
-            401,
-            detail="sign in to view this election",
-            headers=UNAUTHENTICATED,
-        )
-    if not stored.selected and not is_member(principal):
-        raise HTTPException(403, detail=EMAIL_NOT_VERIFIED)
     # Only the picker asks for one election by hash, so this is a pick.
     background.add_task(usage.record, UsageEvent.ELECTION_PICKED)
     return ImportResponse(

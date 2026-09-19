@@ -6,8 +6,8 @@
  * election crossing the boundary is validated before anything else touches it.
  *
  * Every request carries the caller's ID token when there is one, and none when
- * there is not — a signed-out visitor is a legitimate caller here, served the
- * curated selection. What that identity is *allowed* to do is decided by the
+ * there is not — a signed-out visitor is a legitimate caller here, served every
+ * stored election. What that identity is *allowed* to do is decided by the
  * backend alone; nothing in this file gates anything.
  */
 
@@ -85,7 +85,6 @@ function toSummary(row) {
     electionDate: row.election_date,
     title: row.title,
     totalSeats: row.total_seats,
-    selected: Boolean(row.selected),
     forecast: toForecast(row.forecast),
   };
 }
@@ -309,16 +308,6 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getToken } = {
       await request(`/api/elections/imports/${encodeURIComponent(requestKey)}/preview`, {
         method: 'DELETE',
       });
-    },
-
-    /** Curate an election into what signed-out visitors see. Administrators only. */
-    async setSelected(electionHash, selected) {
-      return toSummary(
-        await request(`/api/elections/${encodeURIComponent(electionHash)}/selected`, {
-          method: 'PUT',
-          body: JSON.stringify({ selected }),
-        })
-      );
     },
 
     /** A Stripe Checkout URL for one tier. Nothing changes until Stripe says so. */
