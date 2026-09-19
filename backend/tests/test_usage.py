@@ -194,6 +194,22 @@ def test_the_report_counts_every_section_and_says_how_it_changed():
     assert "Day by day" not in body, "a single day needs no table of days"
 
 
+def test_the_link_counter_is_labelled_by_what_it_actually_counts():
+    """It counts the Worker's card fetches to the origin (at most one per link
+    per hour, cached), not how many people opened a link — see
+    `backend/app/main.py`'s `get_card` and `worker/index.js`'s `fetchCard`."""
+    current = period_range(Period.DAILY, MONDAY)
+    previous = previous_range(Period.DAILY, current)
+
+    _, body = build_report(
+        Period.DAILY, current, figures({SUNDAY: {"link_opened": 3}}), previous, figures({}),
+    )
+
+    assert row(body, "Shared-link previews built") == ["3", "(+3)"]
+    assert "at most once per link per hour" in body
+    assert "links opened" not in body.lower()
+
+
 def test_a_weekly_report_adds_a_line_per_day():
     current = period_range(Period.WEEKLY, MONDAY)
     subject, body = build_report(

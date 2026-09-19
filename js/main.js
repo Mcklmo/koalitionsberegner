@@ -89,6 +89,9 @@ function syncUrl(indices, total) {
 function setShareTarget(electionHash) {
   currentId = electionHash ? shareId(electionHash) : null;
   shareButton.hidden = !currentId;
+  // Nothing to share means nothing to link to: an old `/e/<id>?...` left in
+  // the address bar would otherwise outlive the button that pointed at it.
+  if (!currentId) history.replaceState(null, '', buildPath({ id: null }));
 }
 
 /** Re-render the calculator for a different election. */

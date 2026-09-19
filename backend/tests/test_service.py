@@ -344,3 +344,48 @@ async def test_an_internal_failure_is_reported_without_its_internals():
 
     assert failed.state is ImportState.FAILED
     assert failed.error == IMPORT_FAILED
+
+
+# --- resolve_id: a prefix miss past a stale cache ----------------------------
+
+
+def _store_directly(inner, election):
+    """Confirms `election` straight on `inner`, as another instance would —
+    bypassing whatever cache sits between it and an `ImportService`."""
+    request_key_ = "key-" + election.election_date.isoformat()
+    inner.claim(request_key_, make_request())
+    inner.stage(request_key_, election)
+    election_hash = identity_of(election)
+    inner.confirm(request_key_, election_hash)
+    return election_hash
+
+
+async def test_a_prefix_miss_falls_back_past_a_stale_cached_list():
+    """A 16-char id always goes through `list_elections`'s cache; without a
+    fallback, an election confirmed on another instance right after this one
+    cached an empty (or merely older) listing would 404 here for as long as
+    that listing stays stale."""
+    from app.cached_store import CachedElectionStore
+
+    inner = InMemoryElectionStore()
+    cache = CachedElectionStore(inner)
+    service = ImportService(cache, CountingParser())
+
+    # Cache an empty listing, as a lookup just before the election below was
+    # confirmed elsewhere would.
+    assert await service.resolve_id("a" * 16) is None
+
+    election_hash = _store_directly(inner, make_election())
+
+    resolved = await service.resolve_id(election_hash[:16])
+
+    assert resolved is not None
+    assert resolved.election_hash == election_hash
+
+
+async def test_a_prefix_miss_with_no_cache_to_fall_back_past_stays_a_miss():
+    """A store with no `list_elections_uncached` (an uncached one, or any
+    store that is not `CachedElectionStore`) has nothing stale to fall back
+    past, so a genuine miss is still a miss."""
+    store, _, service = build()
+    assert await service.resolve_id("a" * 16) is None

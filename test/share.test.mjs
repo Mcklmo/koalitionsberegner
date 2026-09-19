@@ -105,6 +105,14 @@ test('buildPath carries the selection and the seat total', () => {
   );
 });
 
+test('buildPath names the root when there is nothing to share', () => {
+  // main.js falls back to this when setShareTarget(null) hides the share
+  // button, so an old `/e/<id>?...` never outlives the button that pointed
+  // at it.
+  assert.equal(buildPath({ id: null }), '/');
+  assert.equal(buildPath({ id: null, indices: [1, 2], total: 9 }), '/', 'id wins over anything else');
+});
+
 // --- parseLocation -------------------------------------------------------
 
 test('a path with no /e/ id is not a shared link', () => {
@@ -133,6 +141,16 @@ test('an unknown query parameter is ignored', () => {
   assert.deepEqual(
     parseLocation({ pathname: '/e/0123456789ab', search: '?utm_source=reddit&c=1' }),
     { id: '0123456789ab', indices: [1], seats: null },
+  );
+});
+
+test('a duplicated c or s reads as the first one', () => {
+  // URLSearchParams.get already returns the first value of a repeated
+  // parameter; backend/app/main.py's `_first_param` reads `?c=...&c=...` the
+  // same way, so a stray duplicate is not read differently on the two sides.
+  assert.deepEqual(
+    parseLocation({ pathname: '/e/0123456789ab', search: '?c=1&c=2&s=5&s=9' }),
+    { id: '0123456789ab', indices: [1], seats: 5 },
   );
 });
 

@@ -94,8 +94,14 @@ export function parseLocation(location) {
   };
 }
 
-/** The path a link to this selection carries; `/e/<id>` alone with nothing selected. */
+/**
+ * The path a link to this selection carries; `/e/<id>` alone with nothing
+ * selected. `id` is null when there is nothing to share (the bundled election
+ * with no stored twin) — the root, so an old `/e/<id>?...` never outlives the
+ * button that pointed at it.
+ */
 export function buildPath({ id, indices, total }) {
+  if (!id) return '/';
   const c = encodeSelection(indices);
   return c ? `/e/${id}?c=${c}&s=${total}` : `/e/${id}`;
 }

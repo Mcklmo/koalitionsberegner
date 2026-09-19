@@ -326,6 +326,21 @@ def test_the_card_of_an_unknown_election_is_404(client):
     assert client.get("/api/elections/" + "0" * 64 + "/card").status_code == 404
 
 
+def test_a_duplicated_c_or_s_reads_as_the_first_one(client):
+    """`?c=0&c=` — the first value wins, the same as `URLSearchParams.get`
+    (`js/share.js`) reads it, rather than FastAPI's own binding, which would
+    otherwise read the last."""
+    saved = save(client)
+
+    response = client.get(
+        f"/api/elections/{saved['election_hash']}/card?c=0&c=&s=6&s=99"
+    )
+
+    body = response.json()
+    assert body["total"] == 6, "c=0 (the first value) was read, not the empty second one"
+    assert body["stale"] is False, "s=6 (the first value) was read, not 99"
+
+
 def test_the_preview_image_is_a_png_with_cache_and_etag_headers(client):
     saved = save(client)
 
@@ -336,6 +351,17 @@ def test_the_preview_image_is_a_png_with_cache_and_etag_headers(client):
     assert response.headers["cache-control"] == "public, max-age=3600"
     assert response.headers["etag"]
     assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_preview_image_reads_a_duplicated_c_the_same_way_the_card_does(client):
+    saved = save(client)
+
+    with_first = client.get(f"/api/og/{saved['election_hash']}.png?c=0&c=")
+    without = client.get(f"/api/og/{saved['election_hash']}.png?c=")
+
+    assert with_first.headers["etag"] != without.headers["etag"], (
+        "c=0 (the first value) must be read, giving a different image than nothing selected"
+    )
 
 
 def test_the_preview_image_of_an_unknown_election_is_404(client):

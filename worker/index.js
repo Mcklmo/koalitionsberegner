@@ -24,8 +24,10 @@ export const REPORT_SECRET_HEADER = 'x-report-secret';
 export const USAGE_REPORTS_PATH = '/api/internal/usage-reports';
 
 //: A shared link's id: a prefix of an election hash, 12 to 64 hex characters
-//: (see `backend/app/share.py`, `MIN_ID_LENGTH`/`ID_LENGTH`).
-const SHARE_PATH = /^\/e\/([0-9a-f]{12,64})$/;
+//: (see `backend/app/share.py`, `MIN_ID_LENGTH`/`ID_LENGTH`), with an optional
+//: trailing slash — matching `js/share.js`'s `ID_IN_PATH` exactly, so a link
+//: either side accepts, the other does too.
+const SHARE_PATH = /^\/e\/([0-9a-f]{12,64})\/?$/;
 const OG_IMAGE_PATH = /^\/api\/og\/[0-9a-f]{12,64}\.png$/;
 
 //: What a link unfurls into when its card cannot be read — an unknown id, or
@@ -114,12 +116,20 @@ async function fetchCard(env, request, id) {
 }
 
 async function serveSharedLink(request, env, id) {
-  const card = (await fetchCard(env, request, id)) ?? GENERIC_CARD;
+  // `id` is null for an `/e/*` path the Worker cannot resolve to an id of its
+  // own (a bad length, uppercase letters, ...): the generic card still loads
+  // the page rather than a bare 404, and the frontend's own parsing decides
+  // what to say about it.
+  const card = (id ? await fetchCard(env, request, id) : null) ?? GENERIC_CARD;
   const pageUrl = request.url;
   return servePage(env, request, {
+    // A function, not a string, as the replacement: a string replacement is
+    // read for `$&`/`$``/`$'`/`$<name>` patterns, which an escaped title or
+    // party abbreviation can easily contain (e.g. a literal `$&` in a name).
+    // A function's return value is inserted verbatim.
     transform: (html) => html
-      .replace(/<title>.*?<\/title>/s, `<title>${escapeAttribute(card.title)}</title>`)
-      .replace('</head>', `${shareTags(card, pageUrl)}\n</head>`),
+      .replace(/<title>.*?<\/title>/s, () => `<title>${escapeAttribute(card.title)}</title>`)
+      .replace('</head>', () => `${shareTags(card, pageUrl)}\n</head>`),
     headers: { 'cache-control': 'public, max-age=300' },
   });
 }
@@ -159,8 +169,13 @@ export default {
     const url = new URL(request.url);
     const method = request.method;
 
-    const shared = (method === 'GET' || method === 'HEAD') && url.pathname.match(SHARE_PATH);
-    if (shared) return serveSharedLink(request, env, shared[1]);
+    // Every `/e/*` path is the shared-link page, whether or not its id is one
+    // the Worker recognises — an unresolved id still gets the page, with the
+    // generic card, rather than a bare 404 the frontend never runs against.
+    if ((method === 'GET' || method === 'HEAD') && url.pathname.startsWith('/e/')) {
+      const match = url.pathname.match(SHARE_PATH);
+      return serveSharedLink(request, env, match ? match[1] : null);
+    }
 
     if (!url.pathname.startsWith('/api/') || url.pathname.startsWith('/api/internal/')) {
       // A static file that does not exist, or an endpoint only the cron calls.

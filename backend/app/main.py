@@ -687,12 +687,24 @@ async def get_election(
 SHARE_CACHE_CONTROL = "public, max-age=3600"
 
 
+def _first_param(request: Request, name: str) -> str | None:
+    """The first value of a query parameter, ignoring any repeats.
+
+    ``js/share.js``'s ``parseLocation`` reads ``c``/``s`` with
+    ``URLSearchParams.get``, which returns the first value of a repeated
+    parameter (``?c=0&c=3``); FastAPI's own ``Query`` binding returns the
+    *last* one for a plain scalar. Reading the raw list here keeps the two
+    sides agreeing on which one a stray duplicate means.
+    """
+    values = request.query_params.getlist(name)
+    return values[0] if values else None
+
+
 @app.get("/api/elections/{election_hash}/card")
 async def get_card(
     election_hash: str,
+    request: Request,
     background: BackgroundTasks,
-    c: str | None = Query(None, description="Selected parties, as positions: 0,2,3"),
-    s: str | None = Query(None, description="The seat total the link was made with"),
     service: ImportService = Depends(get_service),
     usage: UsageRecorder = Depends(get_usage),
 ) -> Response:
@@ -701,10 +713,15 @@ async def get_card(
     The Worker calls this once per ``/e/*`` page view, crawlers included, to
     fill in the page's ``<meta>`` tags; :func:`get_og_image` renders the same
     :class:`~app.share.Card` as the picture, so the two never disagree.
+
+    ``c`` (selected parties, as positions: ``0,2,3``) and ``s`` (the seat
+    total the link was made with) are read straight off the request rather
+    than bound by FastAPI, so a duplicated parameter is not read differently
+    here than the frontend reads it (see :func:`_first_param`).
     """
     stored = await _resolve_shared_id(election_hash, service)
-    selection = parse_selection(c, stored.election)
-    seats_claimed = parse_seats(s)
+    selection = parse_selection(_first_param(request, "c"), stored.election)
+    seats_claimed = parse_seats(_first_param(request, "s"))
     result = build_card(stored.election, stored.election_hash, selection, seats_claimed)
     background.add_task(usage.record, UsageEvent.LINK_OPENED)
     return JSONResponse(
@@ -715,14 +732,17 @@ async def get_card(
 @app.get("/api/og/{election_hash}.png")
 async def get_og_image(
     election_hash: str,
-    c: str | None = Query(None, description="Selected parties, as positions: 0,2,3"),
-    s: str | None = Query(None, description="The seat total the link was made with"),
+    request: Request,
     service: ImportService = Depends(get_service),
 ) -> Response:
-    """The 1200x630 preview image a shared link unfurls into."""
+    """The 1200x630 preview image a shared link unfurls into.
+
+    ``c``/``s`` are read the same way :func:`get_card` reads them — see
+    :func:`_first_param`.
+    """
     stored = await _resolve_shared_id(election_hash, service)
-    selection = parse_selection(c, stored.election)
-    seats_claimed = parse_seats(s)
+    selection = parse_selection(_first_param(request, "c"), stored.election)
+    seats_claimed = parse_seats(_first_param(request, "s"))
     result = build_card(stored.election, stored.election_hash, selection, seats_claimed)
     etag = image_etag(stored.election_hash, selection, seats_claimed, stored.stored_at)
     image_bytes = await run_in_threadpool(render_og_image, result)

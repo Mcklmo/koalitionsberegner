@@ -52,6 +52,17 @@ class CachedElectionStore:
             entry = self._list
             if self._fresh(entry):
                 return list(entry[1])
+        return self.list_elections_uncached()
+
+    def list_elections_uncached(self) -> list[StoredElection]:
+        """One read straight from the inner store, refreshing the cache.
+
+        For a caller that already tried :meth:`list_elections` and needs to
+        know whether that was merely stale — a shared link's prefix search
+        (:meth:`~app.service.ImportService.resolve_id`) reads a fresh listing
+        once on a miss, so an election just confirmed on another instance
+        does not 404 here for up to :data:`TTL_SECONDS`.
+        """
         listed = self._inner.list_elections()
         with self._lock:
             self._list = (self._clock(), listed)
