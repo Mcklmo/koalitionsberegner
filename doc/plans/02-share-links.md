@@ -247,6 +247,19 @@ Files: `js/app.js`, new `js/share.js`, `js/main.js`, `js/import-ui.js`,
    escaped again in the Worker; crawler traffic hits the Worker cache before
    the origin.
 
+## Running this beside plan 4
+
+The owner runs this plan and [04-reddit-outreach.md](04-reddit-outreach.md) at
+the same time. That plan's section "Running this beside plan 2" holds the shared
+file table and the protocol; read it before touching `worker/index.js`,
+`backend/app/main.py`, `wrangler.jsonc`, `doc/threat-model.md` or the strings
+sheet.
+
+The one thing to do for the other plan rather than for this one: when WP2 adds
+the `/e/*` branch, factor the asset fetch and response rewrite into a helper such
+as `servePage(env, request, { transform, headers })`. Plan 4's approval page is
+the same shape and should call it instead of copying it.
+
 ## Acceptance
 
 - Open a shared link in a fresh browser: the same parties are ticked and the

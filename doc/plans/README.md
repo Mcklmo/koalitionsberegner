@@ -4,15 +4,16 @@ Four handover plans for turning koalitionsberegner from a paywalled Danish
 calculator into a free, account-free tool for elections anywhere, with shareable
 links, automatic imports and one honest marketing channel.
 
-**Execution order, decided by the owner: 1, 2, 4, 3.** Work one plan at a time
-on the shared files. A plan is done when both test suites are green and it is
-merged, before the next one starts.
+**Execution order, decided by the owner: 1 first, then 2 and 4 together, then
+3.** Plan 1 runs alone because it rewrites most of the shared files. Plans 2 and
+4 then run concurrently; their overlap is five files and the protocol for them
+is in plan 4's "Running this beside plan 2". Plan 3 comes last.
 
 | # | Plan | What it does | Needs |
 | --- | --- | --- | --- |
 | 1 | [01-open-access.md](01-open-access.md) | Removes accounts, sign-in, Stripe and curation. Opens the list and the requests to everyone. Puts the owner's imports behind `ADMIN_SECRET`. | nothing |
 | 2 | [02-share-links.md](02-share-links.md) | Puts the coalition in the URL. Renders a preview image of the seat distribution so a pasted link unfurls into it. | 1, Phase B |
-| 4 | [04-reddit-outreach.md](04-reddit-outreach.md) | The approval queue, the emailed one-time link and the posting for the `outreach` plugin. | 1 Phase C, 2 for `/e/<id>` links |
+| 4 | [04-reddit-outreach.md](04-reddit-outreach.md) | The approval queue, the emailed one-time link and the posting for the `outreach` plugin. | 1 Phase C. Runs beside 2, needing nothing from it |
 | 3 | [03-remaining-work.md](03-remaining-work.md) | Tracked elections and the YAML-configured refresh, the search front door, funding, housekeeping. | 1; Section B after 2 |
 
 ## What can run beside the plan in progress
@@ -24,7 +25,9 @@ Plan 1 Phase D is the worst: it deletes three frontend modules, rewrites
 `js/main.js` and removes dozens of rows from the strings sheet.
 
 So only **new-file work** parallelizes safely. These are complete and testable
-on their own, and a second session can build them while plan 1 runs:
+on their own, and a second session can build them while plan 1 runs. They are
+also where each of plans 2 and 4 should start, so their concurrent wave spends
+as long as possible out of each other's way:
 
 - Plan 2 WP1's `backend/app/share.py` and `backend/app/og_image.py`, with the
   fonts and their tests, and no route wiring.
@@ -32,8 +35,10 @@ on their own, and a second session can build them while plan 1 runs:
 - Plan 3 A5's `backend/app/calendar.py`.
 - Plan 4's `backend/app/reddit.py`.
 
-Wiring those modules into `main.py`, the Worker or the page is not parallel
-work. Do it in the plan's own turn.
+Wiring those modules into `main.py`, the Worker or the page is where plans 2
+and 4 meet. Keep those edits small and late, append routes as one contiguous
+block per plan, and let whichever branch lands first factor out the Worker's
+`servePage` helper so the second one calls it rather than copying it.
 
 ## Rules for every session
 
@@ -46,6 +51,12 @@ work. Do it in the plan's own turn.
 - **One session owns `backend/pyproject.toml` and `uv.lock` per wave.** Plan 1
   removes Stripe, plan 2 adds Pillow, plan 3 adds PyYAML. Three sessions
   regenerating the lock produce a conflict nobody wants to resolve by hand.
+- **Two assertions in `backend/tests/test_cloudflare.py` bite new pages.** It
+  asserts `_headers` flattens to exactly `main.SECURITY_HEADERS`, so a
+  path-specific header block fails it; set such a header on the Worker's
+  response instead. It also asserts the repo root publishes nothing but
+  `index.html`, `js` and `_headers`, so a new top-level page must be added to
+  that set in the same commit.
 - **`js/strings.csv` and `index.html` change together.** `test/i18n.test.mjs`
   fails on a key used in markup but missing from the sheet, and on Danish markup
   that differs from the sheet. Every new string needs both columns.

@@ -135,9 +135,25 @@ owner's browser.
 
 The approval page is served at `/approve/{token}` the same way plan 2 serves
 `/e/{id}`: the Worker fetches the asset copy of a small new `approve.html` and
-forwards the two API calls. Give that page **no** Open Graph tags and a
-`X-Robots-Tag: noindex` header — an approval link must never unfurl or be
-indexed. Add `/approve/*` to `run_worker_first` beside `/e/*`.
+forwards the two API calls. Add `/approve/*` to `run_worker_first`. The page
+gets **no** Open Graph tags and an `X-Robots-Tag: noindex` header, because an
+approval link must never unfurl or be indexed.
+
+Two things about that page trip over `backend/tests/test_cloudflare.py`, which
+is why they are spelled out rather than left to discover:
+
+- **Set `X-Robots-Tag` on the Worker's response, not in `_headers`.**
+  `test_cloudflare_sends_the_same_security_headers_as_the_backend` flattens
+  every indented `name: value` line in `_headers` into one dictionary and
+  asserts it equals `main.SECURITY_HEADERS`. A second path block would add a key
+  and fail. The Worker already builds this response, so add the header there and
+  leave `_headers` alone.
+- **`approve.html` is a new top-level file, so widen the published set.**
+  `test_nothing_but_the_page_is_published` asserts the repo root publishes
+  nothing but `index.html`, `js` and `_headers`. Add `approve.html` to that set
+  in the test, in the same commit that adds the file. Do not add it to
+  `.assetsignore`: the Worker fetches it through `env.ASSETS`, so it has to be
+  published.
 
 Guards on the send path, all of them:
 
@@ -221,7 +237,34 @@ it, not a silent no.
   why the reply is sanitised server-side even though the plugin already did it;
   why a token is single-use and short-lived.
 
-## 7. Order of work
+## 7. Running this beside plan 2
+
+The owner runs this plan and [02-share-links.md](02-share-links.md) at the same
+time. Nothing here needs anything plan 2 builds: `OUTREACH_LINK_STYLE` defaults
+to `root`, so replies link to the front page until `/e/<id>` exists, and
+flipping it to `share` afterwards is a one-variable change.
+
+What the two plans share is five files. Most of each plan does not touch them,
+so start with the work that does not, and keep the shared edits small and late.
+
+| File | Plan 2 does | This plan does | How to keep it cheap |
+| --- | --- | --- | --- |
+| `backend/app/main.py` | adds the card and PNG routes | adds five outreach routes | Append each plan's routes as one contiguous block near the end, above the static mount. Two blocks in different places merge cleanly; two interleaved edits do not. |
+| `worker/index.js` | adds the `/e/*` branch | adds the `/approve/*` branch | See below. |
+| `wrangler.jsonc` | `run_worker_first` gains `/e/*` | gains `/approve/*` | A one-line conflict. Whoever merges second re-adds their entry by hand. |
+| `doc/threat-model.md` | adds T13 | adds T14 | Whoever merges second renumbers their section and the "Where this is tested" row. |
+| `js/strings.csv`, `index.html` | a privacy paragraph about links | a privacy paragraph about outreach | Different keys are different rows, so the sheet merges. Keep the Danish markup edit in the same commit as the sheet edit, or `test/i18n.test.mjs` fails. |
+
+**The Worker is worth coordinating rather than merging.** Both branches do the
+same thing: match a dynamic path, fetch the asset page through `env.ASSETS`, and
+return it with changes. Let plan 2 land its branch first and factor out a
+helper, something like `servePage(env, request, { transform, headers })`. This
+plan then adds four lines that call it instead of a second copy of the same
+fetch. If this plan is ready first, write the helper here and say so, so plan 2
+uses it. Two hand-merged copies of the same twenty lines is the outcome to
+avoid.
+
+## 8. Order of work
 
 1. Store, `POST /api/admin/outreach/drafts`, and the email. Verify by running
    the plugin with `--submit server` against a local backend
