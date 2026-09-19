@@ -110,10 +110,9 @@ Extraction is single-flight per page (`store.claim`): concurrent imports of the
 same URL share one model call, and a page already imported is served from
 storage without fetching or extracting anything at all.
 
-Importing is bought, and bounded twice over (see T11): by the monthly
-allowance, and by a cap on how many refunded failures a month may add to it.
-There is no request-rate limit inside the app (see
-[Accepted risks](#accepted-risks)).
+Importing is the owner's alone (see T11), so nobody else can run this pipeline
+at all, repeatedly or otherwise. There is no request-rate limit inside the app
+(see [Accepted risks](#accepted-risks)).
 
 ### T3 — Prompt injection: instructions embedded in the page
 
@@ -231,12 +230,11 @@ everyone. Three things bound it:
   2026 election cannot rewrite one already held.
 - **Failures are not sticky.** A failed or discarded import leaves the page
   claimable again, so a transient attack cannot lock a URL.
-- **A preview is accepted or thrown away only by whoever paid for it.** A
-  request key follows from the year and the place alone, so any account can
-  know one. The job records the account that started the attempt, and only
-  that account or an administrator may confirm or discard its preview
-  (`main.require_importer`) — otherwise anyone could save numbers the importer
-  would have rejected, or make a subscriber pay twice for the same import.
+- **A preview is accepted or thrown away only by the owner.** A request key
+  follows from the year and the place alone, so anyone who can compute it could
+  otherwise confirm or discard someone else's preview. Confirming and
+  discarding sit behind the same `require_admin` that starting an import does,
+  so both halves of the decision are the owner's.
 
 ### T8 — Secrets and logs
 
@@ -259,10 +257,10 @@ described to a caller — what a failed filing shows is one fixed sentence. It i
 read from `GITHUB_ISSUES_TOKEN` rather than `GITHUB_TOKEN`, so a token another
 tool left in the environment is never picked up and used to open issues.
 
-The modes that let a caller be anyone, `AUTH_MODE=off` and `stub`, refuse to
-start on Cloud Run (`config.get_verifier`). `off` is also the default without a
-project id, so a deploy that loses that variable fails to boot rather than
-serving every caller as an unlimited administrator.
+Running with no `ADMIN_SECRET` makes every caller the owner, which is right for
+a local checkout and never for a deployment: `config.validate_configuration`
+refuses to boot on Cloud Run without one, so a deploy that loses that variable
+fails to start rather than serving every caller as the administrator.
 
 ### T9 — Every page is one the user did not name
 
@@ -337,58 +335,60 @@ page's numbers are *for* but none of the defences above:
 - **Labelled.** A computed forecast says so in the list, the preview and the
   calculator's footer, and the page it was read from is named.
 
-### T11 — Spending somebody else's money
+### T11 — Spending the owner's money
 
-The adversary here needs no page at all: a script, a free account, or the
-cheapest subscription, and the goal is our bill or another user's payment.
+Importing is what costs money — a fetch and a model call — and it is the
+owner's alone: `require_admin` gates every route that starts, follows, saves
+or discards an import, and, after
+[03-remaining-work.md](plans/03-remaining-work.md), the schedule that triggers
+automated imports is checked the same way. The adversary here has no page and
+no account to abuse; the goal is a leaked or guessed `ADMIN_SECRET`.
 
-- **Failed imports are refunded, but not without end.** Each failure ran the
-  resolver and a model over pages. `accounts.attempt_limit` lets a month *start*
-  its allowance plus as many again (at least 5) before it is spent, whether or
-  not the failures were refunded. An import served from the store gives its
-  attempt back, because it cost nothing.
+- **The secret is compared in constant time.** `require_admin` uses
+  `hmac.compare_digest`, so a wrong guess cannot be narrowed down byte by byte
+  from how long the comparison took.
+- **A placeholder is a boot failure.** `ADMIN_SECRET`, like `ORIGIN_SECRET`,
+  must be at least 32 characters, and Cloud Run refuses to start without one at
+  all (`app.config.validate_configuration`). A local run with none configured
+  is the owner's own, which is right on a laptop and nowhere else.
 - **Viewing costs a copy, not a read.** `cached_store.CachedElectionStore`
   keeps stored elections for 30 s in front of Firestore, so reloading the list
   in a loop is not one billed read per election per request. Jobs are never
   cached, and neither is a miss. Waiting on an import backs off to one look a
   second.
 - **Bodies are bounded before they are read.** `main.LimitRequestBody` refuses
-  anything over 64 KB (1 MB for the Stripe webhook) and any body that does not
-  declare its length, so the unauthenticated webhook cannot be used to fill the
-  container's memory.
-- **One subscription per account.** Checkout is refused to an account that is
-  already paying — a second checkout is a second charge — and tier changes go
-  through Stripe's portal. A webhook about a subscription the account no longer
-  pays through cannot drop it to free (`accounts._subscribed`), and a
-  subscription event is applied as Stripe reads it back *now*, because Stripe
-  does not deliver in order and a late `incomplete` would otherwise win.
+  anything over 64 KB and any body that does not declare its length.
 - **The proxy cannot be walked around.** With `ORIGIN_SECRET` set, only
   requests carrying it are answered, so rate limits and bot checks at the proxy
   are not bypassed through the platform's own `run.app` address.
 - **The page runs only our scripts.** Every response carries a
-  `Content-Security-Policy` allowing scripts from this origin alone and the two
-  Google sign-in endpoints, and refusing to be framed — a backstop behind T6.
+  `Content-Security-Policy` allowing scripts and connections to this origin
+  alone, and refusing to be framed — a backstop behind T6.
 
 ### T12 — Writing into the issue tracker
 
-An account with no subscription can ask for an election, and that ask becomes a
+Anyone can ask for an election, and that ask becomes a
 GitHub issue on this repository (`app.wishlist`). It is the app's only outbound
 *write*, and the only one where a user's own words end up somewhere other than
 the store, so it is worth its own section.
 
-- **It is not an open endpoint.** `POST /api/elections/requests` needs a
-  confirmed account, the same rule `/api/elections/lookup` follows — filing is
-  part of the import flow, not of viewing. Signing up is free, which is the
-  point, but it is what stands between the tracker and a script: an account
-  costs a deliverable address, and Firebase's own abuse controls are in front of
-  that. This is deliberately the *same* answer the rest of the app gives
-  (`Accepted risks`: request-rate limiting belongs at the proxy, and the
-  expensive paths are gated by accounts instead).
+- **It is an open endpoint, deliberately.** `POST /api/elections/requests`
+  needs no `x-admin-secret` — the one route in the import flow that does not.
+  The reasoning that gates the rest does not apply: nothing here searches,
+  fetches, extracts or spends, and the visitor most likely to find an election
+  missing is not the owner. The cost is that this is a public write on behalf
+  of a caller nobody authenticated, and the secret that gates every other path
+  is not available to bound this one. What is left is the bullets below, plus
+  the rate limiting in front of the app — which is where this app puts
+  per-client limits generally. The residual is accepted below.
+- **It names nobody.** The route reads no credential at all, and the issue
+  carries the election and nothing about who asked: the tracker is public.
 - **One election is one issue.** A request is keyed by `identity.request_key`,
   the same key an import is, and the key is written into the issue as an HTML
   comment. Asking again finds the open issue and points at it, so the tracker
   cannot be filled by resubmitting the same form. What is left is a caller
-  enumerating *distinct* elections, which the account requirement bounds.
+  enumerating *distinct* elections, which nothing in the app bounds — see the
+  accepted risk below.
 - **An election already stored is never filed.** The endpoint looks it up first
   and answers `409`, so the queue holds only elections that are actually
   missing.
@@ -418,25 +418,23 @@ These are known and deliberately not addressed here:
 - **CSS-hidden text still reaches the model.** Text hidden with `display: none`
   is text; stripping it reliably would need a full CSS cascade. It arrives
   inside the fence with no more authority than the rest of the page.
-- **No request-rate limiting in the app.** Importing needs a paid, confirmed
-  account and is capped per month (T11); asking for an election needs a
-  confirmed account and is one issue per election (T12); everything else is
-  cheap and cached.
-  Limiting requests per client belongs at the proxy in front, which sees real
-  client addresses — the app behind Cloud Run's front end cannot reliably.
+- **Anyone can put an issue in the tracker.** Asking for an election needs no
+  secret (T12), so a caller willing to invent distinct year-and-place pairs can
+  open an issue per pair. One election is one issue, an election already stored
+  is refused, and every field is length-bounded and escaped, so what this buys
+  an attacker is noise in a queue somebody reads by hand — not a write to the
+  store, not a fetch, not a model call, and nothing that costs money. The bound
+  on the rest of it is the proxy's, as below.
+- **No request-rate limiting in the app.** Importing needs the owner's secret
+  (T11); asking for an election is one issue per election (T12); everything
+  else is cheap and cached. Limiting requests per client belongs at the proxy
+  in front, which sees real client addresses — the app behind Cloud Run's front
+  end cannot reliably.
 - **A DNS answer can change between the check and the connection.**
   `assert_public_url` resolves the host, and the HTTP client resolves it again.
   A rebinding host could point the second answer inward; on Cloud Run there is
   no private network to reach, and the metadata server refuses requests
   without its `Metadata-Flavor` header, which the fetcher never sends.
-- **Two checkouts opened side by side both complete.** The refusal in T11
-  needs the first subscription to have been reported; a user who pays twice in
-  the same minute has two subscriptions, and the portal shows both.
-- **`AUTH_MODE=sqlite` does not slow guessing down.** Where this app holds the
-  passwords itself, nothing limits how fast sign-ins may be attempted; the
-  scrypt cost of one attempt is the whole of the defence, and there is no
-  lockout. A deployment reachable from the internet belongs behind something
-  that rate-limits, or on Firebase, which does it for you.
 - **The page can vary per request.** The page we fetched is the page we
   extracted; nothing guarantees a later visitor sees the same thing.
 - **A found page may be unofficial or out of date.** Every page is one a search
@@ -481,15 +479,13 @@ These are known and deliberately not addressed here:
 | A forecast cannot take a result's identity, block an import, or be saved unless offered | `backend/tests/test_forecast_schema.py`, `backend/tests/test_forecast_store.py`, `backend/tests/test_forecast_api.py` |
 | An offered list is validated whole; computed seats are labelled in the page | `test/forecast.test.mjs` |
 | An endless or dripping page is cut off; a PDF is refused before download | `backend/tests/test_fetcher.py` |
-| Failures are refunded only so often; only the importer confirms or discards a preview | `backend/tests/test_access.py`, `backend/tests/test_accounts.py`, `backend/tests/test_store.py` |
+| Only the owner's secret starts, follows, confirms or discards an import | `backend/tests/test_api.py` |
 | Stored elections are read once per 30 s, never stale after a local write | `backend/tests/test_cached_store.py` |
-| No second checkout; a replaced or out-of-order subscription cannot demote | `backend/tests/test_access.py`, `backend/tests/test_accounts.py`, `backend/tests/test_billing.py` |
 | Security headers, body caps, the origin secret, nothing served beside the page | `backend/tests/test_edge.py` |
-| Ungated auth modes refuse to start on Cloud Run | `backend/tests/test_config.py` |
+| Cloud Run refuses to start without `ADMIN_SECRET` | `backend/tests/test_config.py` |
 | An internal failure reaches the user as one fixed sentence | `backend/tests/test_service.py` |
-| A request needs a confirmed account, files one issue per election, and never repeats GitHub's words | `backend/tests/test_wishlist.py` |
+| A request needs no secret, files one issue per election, and never repeats GitHub's words | `backend/tests/test_wishlist.py` |
 | A place name cannot restructure the issue it is written into | `backend/tests/test_wishlist.py` |
-| Checkout stays closed while payments are paused, and the portal does not | `backend/tests/test_wishlist.py` |
 
 The adversarial fixtures themselves are `test/adversarial/`:
 `injected-instructions.html` argues with the agent through five different

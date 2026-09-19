@@ -11,7 +11,6 @@ dependencies = [
     "anyio>=4.4",
     "httpx>=0.27",
     "anthropic>=0.40",
-    "stripe>=15.0",   # the v1 client namespace billing.py builds on
     "beautifulsoup4>=4.12",   # reading a Wikipedia article down to its results tables
 ]
 

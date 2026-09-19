@@ -150,21 +150,18 @@ class ImportService:
         self,
         request: ImportRequest,
         *,
-        owner: str | None = None,
         on_parse_failed: Callable[[], None] | None = None,
     ) -> ImportResult:
         """Claim the request and import only if nobody else already has.
 
-        ``on_parse_failed`` runs if this call's own import fails. It exists so a
-        caller that paid for the attempt can be refunded: a request whose
-        election could not be found produced nothing, and charging for it would
-        make a misremembered year cost the same as a stored election.
+        ``on_parse_failed`` runs if this call's own import fails, so the caller
+        can count a failed import.
 
-        ``owner`` is the account starting the import, recorded on the job if this
-        call is the one that starts it.
+        Only the owner imports, so no importer is recorded on the job: its owner
+        field stays ``None``, kept in storage for the rows that already have one.
         """
         key = self.request_key_for(request)
-        claim = await self._in_thread(self._store.claim, key, request, owner)
+        claim = await self._in_thread(self._store.claim, key, request, None)
         # One line per state transition, so the decision is visible whichever
         # store backend is in use (Firestore logs its own wire-level spans).
         log.info(
@@ -364,11 +361,6 @@ class ImportService:
             duplicate=confirmation.duplicate,
         )
 
-    async def owner_of(self, key: str) -> str | None:
-        """The account that started the current attempt at this request, if known."""
-        job = await self._in_thread(self._store.get_job, key)
-        return job.owner if job else None
-
     async def discard(self, key: str) -> bool:
         """Reject a previewed election, freeing the request for another attempt."""
         discarded = await self._in_thread(self._store.discard, key)
@@ -376,7 +368,7 @@ class ImportService:
         return discarded
 
     async def get_stored(self, election_hash: str) -> StoredElection | None:
-        """The stored election and its curation flag; callers decide who may see it."""
+        """The stored election, whoever asks: every stored election is public."""
         return await self._in_thread(self._store.get_stored, election_hash)
 
     async def find_by_place(
@@ -387,13 +379,6 @@ class ImportService:
             lambda: self._store.find_by_place(year, nation, subnation)
         )
 
-    async def list_elections(self, *, selected_only: bool = False) -> list[StoredElection]:
-        return await self._in_thread(
-            lambda: self._store.list_elections(selected_only=selected_only)
-        )
-
-    async def set_selected(self, election_hash: str, selected: bool) -> bool:
-        """Curate an election into, or out of, what signed-out visitors see."""
-        changed = await self._in_thread(self._store.set_selected, election_hash, selected)
-        log.info("selected hash=%s value=%s found=%s", election_hash[:12], selected, changed)
-        return changed
+    async def list_elections(self) -> list[StoredElection]:
+        """Every stored election. Everyone sees all of them."""
+        return await self._in_thread(self._store.list_elections)

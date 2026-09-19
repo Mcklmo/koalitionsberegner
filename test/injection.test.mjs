@@ -183,8 +183,6 @@ test('the import preview shows an adversarial extraction as text', async () => {
     choicesDiscard: node('button'),
     picker: node('select'),
     pickerRow: node(),
-    curate: node('input'),
-    curateRow: node(),
   };
   globalThis.document = { createElement: node };
   const api = {
@@ -197,7 +195,7 @@ test('the import preview shows an adversarial extraction as text', async () => {
     async discardPreview() {},
     async getElection() { return { status: 'ready', election: markupElection }; },
   };
-  mountImportUi({ api, elements: el, bundled: markupElection, onSelect() {} });
+  mountImportUi({ api, elements: el, bundled: markupElection, config: { importsOpen: true }, onSelect() {} });
 
   el.year.value = '2026';
   el.nation.value = 'Markupland';
@@ -230,8 +228,6 @@ test('an error message from the backend is shown as text, never as markup', asyn
     choicesDiscard: node('button'),
     picker: node('select'),
     pickerRow: node(),
-    curate: node('input'),
-    curateRow: node(),
   };
   globalThis.document = { createElement: node };
   const failure = "the extracted results are not valid: title: <img src=x onerror='alert(1)'>";
@@ -243,7 +239,7 @@ test('an error message from the backend is shown as text, never as markup', asyn
     async discardPreview() {},
     async getElection() { throw new Error('not reached'); },
   };
-  mountImportUi({ api, elements: el, bundled: markupElection, onSelect() {} });
+  mountImportUi({ api, elements: el, bundled: markupElection, config: { importsOpen: true }, onSelect() {} });
 
   el.year.value = '2026';
   el.nation.value = 'Markupland';

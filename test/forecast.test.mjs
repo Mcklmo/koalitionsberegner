@@ -149,14 +149,13 @@ function harness(overrides = {}) {
     'form', 'year', 'nation', 'subnation', 'submit', 'message', 'availability', 'preview',
     'previewTitle', 'previewMeta', 'previewSource', 'previewList', 'confirm', 'discard',
     'choices', 'choicesTitle', 'choicesList', 'choicesDiscard', 'picker', 'pickerRow',
-    'curate', 'curateRow',
   ].map((name) => [name, node()]));
   el.fieldErrors = { year: node(), nation: node() };
   el.year.value = '2027';
   el.nation.value = 'Danmark';
   const selected = [];
-  const ui = mountImportUi({ api, elements: el, bundled: stated, onSelect: (e) => selected.push(e) });
-  ui.setAccount({ tier: 'basic', limit: 10, remaining: 5, unlimited: false, mayImport: true });
+  const ui = mountImportUi({ api, elements: el, bundled: stated, config: { importsEnabled: true }, onSelect: (e) => selected.push(e) });
+  ui.setAdmin(true);
   return { el, calls, selected };
 }
 

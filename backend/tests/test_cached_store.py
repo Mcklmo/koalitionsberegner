@@ -13,9 +13,9 @@ class CountingStore(InMemoryElectionStore):
         super().__init__()
         self.reads = 0
 
-    def list_elections(self, *, selected_only=False):
+    def list_elections(self):
         self.reads += 1
-        return super().list_elections(selected_only=selected_only)
+        return super().list_elections()
 
     def get_stored(self, election_hash):
         self.reads += 1
@@ -71,16 +71,6 @@ def test_a_confirmation_here_shows_in_the_list_at_once():
     assert cache.list_elections() == []
     stored(cache)
     assert len(cache.list_elections()) == 1
-
-
-def test_curating_here_shows_at_once():
-    inner = CountingStore()
-    cache = CachedElectionStore(inner, clock=Clock())
-    election_hash = stored(inner)
-    assert cache.list_elections(selected_only=True) == []
-    cache.set_selected(election_hash, True)
-    assert [s.election_hash for s in cache.list_elections(selected_only=True)] == [election_hash]
-    assert cache.get_stored(election_hash).selected is True
 
 
 def test_a_replaced_election_shows_at_once():

@@ -26,7 +26,7 @@ def test_responses_carry_a_policy_that_allows_only_our_own_scripts(client):
     policy = headers["content-security-policy"]
     assert "script-src 'self'" in policy
     assert "frame-ancestors 'none'" in policy
-    assert "https://identitytoolkit.googleapis.com" in policy, "sign-in must still work"
+    assert "connect-src 'self'" in policy
     assert headers["x-content-type-options"] == "nosniff"
     assert headers["x-frame-options"] == "DENY"
 
@@ -88,13 +88,6 @@ def test_an_oversized_body_is_refused_before_it_is_read(client):
     assert response.status_code == 413
 
 
-def test_the_webhook_may_be_larger_but_not_unbounded(client):
-    small = client.post("/api/billing/webhook", content=b"{" + b" " * 100_000 + b"}")
-    assert small.status_code != 413, "a real Stripe event must get through"
-    huge = client.post("/api/billing/webhook", content=b" " * (main.MAX_WEBHOOK_BYTES + 1))
-    assert huge.status_code == 413
-
-
 def test_a_body_that_does_not_declare_its_length_is_refused(client):
-    response = client.post("/api/billing/webhook", content=iter([b"{}"]))
+    response = client.post("/api/elections/import", content=iter([b"{}"]))
     assert response.status_code == 411

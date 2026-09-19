@@ -233,6 +233,49 @@ def test_listing_returns_saved_elections(client, store):
     assert {row["state"] for row in listed} == {None, "Sachsen-Anhalt"}
 
 
+def test_a_caller_with_no_header_sees_every_stored_election(client, store):
+    """No curated part of the list: everything stored is everyone's."""
+    danish = make_election(nation="Danmark", election_date="2026-03-25")
+    german = make_election(nation="Deutschland", state="Sachsen-Anhalt", election_date="2021-06-06")
+    main.app.dependency_overrides[main.get_service] = lambda: ImportService(
+        store, CountingParser(by_year={2026: danish, 2021: german})
+    )
+    first = save(client)
+    second = save(client, OTHER_BODY)
+
+    listed = client.get("/api/elections", headers={}).json()
+
+    assert {row["election_hash"] for row in listed} == {
+        first["election_hash"], second["election_hash"]
+    }
+    assert all("selected" not in row for row in listed), "curation is gone"
+
+
+def test_a_caller_with_no_header_may_open_any_stored_election(client):
+    saved = save(client)
+
+    response = client.get(f"/api/elections/{saved['election_hash']}", headers={})
+
+    assert response.status_code == 200
+    assert response.json()["election"]["title"] == "Koalitionsberegner"
+
+
+def test_an_unknown_election_is_404_to_anyone(client):
+    response = client.get("/api/elections/" + "0" * 64, headers={})
+    assert response.status_code == 404
+
+
+def test_the_account_routes_are_gone(client):
+    """Nobody signs in, pays or curates any more; those routes answer 404/405."""
+    assert client.get("/api/me").status_code == 404
+    for path in ("/api/auth/register", "/api/auth/login", "/api/auth/logout",
+                 "/api/billing/checkout", "/api/billing/portal", "/api/billing/webhook",
+                 "/api/internal/inactive-accounts"):
+        assert client.post(path, json={}).status_code == 404, path
+    assert client.put("/api/elections/" + "0" * 64 + "/selected",
+                      json={"selected": True}).status_code == 404, "curation is gone too"
+
+
 def test_a_failed_import_is_reported_and_can_be_retried(store):
     failing = CountingParser(fail_times=1)
     main.app.dependency_overrides[main.get_service] = lambda: ImportService(store, failing)
@@ -254,3 +297,75 @@ def test_the_page_is_served_from_the_same_origin_as_the_api(client):
 
     assert client.get("/js/app.js").status_code == 200
     assert client.get("/api/elections").status_code == 200, "the mount must not shadow the API"
+
+
+# --- the owner's secret -----------------------------------------------------
+
+SECRET = "an-administrator-secret-of-forty-chars!!"
+OWNER = {"x-admin-secret": SECRET}
+
+
+@pytest.fixture
+def secret(monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", SECRET)
+
+
+def test_with_a_secret_configured_an_import_without_it_is_refused(client, parser, secret):
+    for headers in ({}, {"x-admin-secret": "not-the-secret"}):
+        refused = client.post("/api/elections/import", json=BODY, headers=headers)
+
+        assert refused.status_code == 403
+        assert "administrator's secret" in refused.json()["detail"]
+    assert parser.call_count == 0, "nothing is looked up for a caller who is not the owner"
+
+
+def test_the_right_secret_imports_and_saves(client, parser, secret):
+    parser.hold()
+    started = client.post("/api/elections/import", json=BODY, headers=OWNER)
+    assert started.status_code == 202
+    parser.release()
+
+    key = started.json()["request_key"]
+    previewed = client.get(f"/api/elections/imports/{key}?wait_seconds=2", headers=OWNER)
+    assert previewed.status_code == 200
+    assert previewed.json()["state"] == "preview"
+
+    saved = client.post(f"/api/elections/imports/{key}/confirm", headers=OWNER)
+    assert saved.status_code == 200
+    assert len(client.get("/api/elections").json()) == 1
+
+
+def test_with_no_secret_configured_a_local_run_is_the_owners_own(client, monkeypatch):
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+
+    assert client.post("/api/elections/import?wait_seconds=2", json=BODY).status_code == 200
+
+
+def test_every_step_past_the_import_needs_the_secret_too(client, secret):
+    key = "0" * 64
+    refused = [
+        client.get(f"/api/elections/imports/{key}"),
+        client.post(f"/api/elections/imports/{key}/confirm"),
+        client.delete(f"/api/elections/imports/{key}/preview"),
+        client.get("/api/admin/usage"),
+    ]
+
+    assert [response.status_code for response in refused] == [403] * 4
+
+
+def test_reading_and_looking_up_need_no_secret(client, secret):
+    assert client.get("/api/elections").status_code == 200
+    assert client.get("/api/elections/lookup?year=2026&nation=Danmark").status_code == 200
+
+
+def test_the_page_is_told_whether_it_may_import(client, monkeypatch):
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+    local = client.get("/api/config").json()
+    assert local == {"requests_enabled": False, "imports_enabled": True, "imports_open": True}
+
+    monkeypatch.setenv("ADMIN_SECRET", SECRET)
+    deployed = client.get("/api/config").json()
+    assert (deployed["imports_enabled"], deployed["imports_open"]) == (True, False)
+
+    monkeypatch.setenv("LLM_MODE", "off")
+    assert client.get("/api/config").json()["imports_enabled"] is False

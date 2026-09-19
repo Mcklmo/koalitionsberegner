@@ -1,9 +1,9 @@
 """SQLite-backed :class:`~app.usage.UsageStore`.
 
-Shares the database file with the elections and the accounts. Every write is a
-single statement, so SQLite's own atomicity is all the locking this needs:
-an upsert adds one to a counter, ``INSERT OR IGNORE`` makes both the
-active-account marker and the report claim idempotent.
+Shares the database file with the elections. Every write is a single
+statement, so SQLite's own atomicity is all the locking this needs: an upsert
+adds one to a counter, and ``INSERT OR IGNORE`` makes the report claim
+idempotent.
 """
 
 from __future__ import annotations
@@ -26,11 +26,9 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, key)
 );
-CREATE TABLE IF NOT EXISTS usage_active (
-    day    TEXT NOT NULL,
-    marker TEXT NOT NULL,
-    PRIMARY KEY (day, marker)
-);
+-- Per-day active-account markers, from when there were accounts. Nothing
+-- reads or writes them any more, so a database that still has them drops them.
+DROP TABLE IF EXISTS usage_active;
 CREATE TABLE IF NOT EXISTS usage_reports (
     key     TEXT PRIMARY KEY,
     sent_at REAL NOT NULL
@@ -73,13 +71,6 @@ class SqliteUsageStore:
                 (day.isoformat(), key),
             )
 
-    def mark_active(self, day: date, marker: str) -> None:
-        with io_span(log, "sqlite", "usage_active"):
-            self._connect().execute(
-                "INSERT OR IGNORE INTO usage_active (day, marker) VALUES (?, ?)",
-                (day.isoformat(), marker),
-            )
-
     def daily(self, start: date, end: date) -> dict[date, dict[str, int]]:
         with io_span(log, "sqlite", "usage_daily", start=start, end=end):
             rows = self._connect().execute(
@@ -90,21 +81,6 @@ class SqliteUsageStore:
         for row in rows:
             counts.setdefault(date.fromisoformat(row["day"]), {})[row["key"]] = int(row["count"])
         return counts
-
-    def active_accounts(self, start: date, end: date) -> int:
-        with io_span(log, "sqlite", "usage_active_accounts", start=start, end=end):
-            row = self._connect().execute(
-                "SELECT COUNT(DISTINCT marker) AS n FROM usage_active WHERE day >= ? AND day < ?",
-                (start.isoformat(), end.isoformat()),
-            ).fetchone()
-        return int(row["n"])
-
-    def forget_active_before(self, day: date) -> None:
-        with io_span(log, "sqlite", "usage_forget_active", before=day) as span:
-            cursor = self._connect().execute(
-                "DELETE FROM usage_active WHERE day < ?", (day.isoformat(),)
-            )
-            span["deleted"] = cursor.rowcount
 
     def claim_report(self, key: str) -> bool:
         with io_span(log, "sqlite", "usage_claim_report", key=key) as span:

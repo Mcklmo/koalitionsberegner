@@ -266,22 +266,6 @@
       color: #888
     }
 
-    .picker-row .curate {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      white-space: nowrap
-    }
-
-    .picker-row .curate[hidden] {
-      display: none
-    }
-
-    .picker-row .curate input {
-      width: auto;
-      margin: 0
-    }
-
     select,
     input {
       font: inherit;
@@ -498,39 +482,10 @@
       user-select: none
     }
 
-    .account-line {
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-      margin-top: 10px
-    }
-
-    .account-email {
-      font-size: 13px;
-      flex: 1;
-      overflow-wrap: anywhere
-    }
-
-    .tier-badge {
-      font-size: 11px;
-      font-weight: 500;
-      padding: 2px 8px;
-      border-radius: 20px;
-      background: #E6F1FB;
-      color: #185FA5
-    }
-
     .quota {
       font-size: 12px;
       color: #888;
       margin-top: 4px
-    }
-
-    .upgrades {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 10px
     }
 
     .link-btn {
@@ -565,10 +520,6 @@
   <div class="picker-row" id="picker-row" hidden>
     <label for="picker" data-i18n="picker.label">Valg</label>
     <select id="picker"></select>
-    <label class="curate" id="curate-row" title="Vis valget for besøgende, der ikke er logget ind"
-      data-i18n-title="curate.title" hidden>
-      <input type="checkbox" id="curate"> <span data-i18n="curate.label">Offentlig</span>
-    </label>
   </div>
 
   <h2 id="title"></h2>
@@ -602,67 +553,20 @@
     </div>
   </div>
 
-  <details class="account" id="account" hidden>
-    <summary data-i18n="account.summary">Konto og abonnement</summary>
-
-    <div id="account-signed-out" hidden>
-      <!-- One form, submitted in either mode: a password manager offers to save
-           on a submission, and reads autocomplete to tell a new password from
-           the current one. account-ui.js switches the mode. -->
-      <form id="auth-form" novalidate>
-        <div class="field">
-          <label for="f-email" data-i18n="email.label">E-mail</label>
-          <input id="f-email" name="email" type="email" autocomplete="username"
-            autocapitalize="off" spellcheck="false">
-          <div class="field-error" id="e-email"></div>
-        </div>
-        <div class="field">
-          <label for="f-password" data-i18n="password.label">Adgangskode</label>
-          <input id="f-password" name="password" type="password" autocomplete="current-password">
-          <div class="field-error" id="e-password"></div>
-        </div>
-        <div class="preview-actions">
-          <button class="primary" id="auth-submit" type="submit">Log ind</button>
-        </div>
-      </form>
-      <div class="account-line">
-        <span class="quota" id="auth-switch-text">Ny her?</span>
-        <button class="link-btn" id="auth-switch" type="button">Opret en konto</button>
-        <button class="link-btn" id="auth-forgot" type="button" data-i18n="password.forgot" hidden>Glemt adgangskode?</button>
-      </div>
-      <p class="footer-note" data-i18n="account.freeNote">Det er gratis at oprette en konto. Abonnement kræves kun for at
-        importere nye valg.</p>
-    </div>
-
-    <div id="account-signed-in" hidden>
-      <div class="account-line">
-        <span class="account-email" id="account-email"></span>
-        <span class="tier-badge" id="account-tier"></span>
-      </div>
-      <div id="verify-row" hidden>
-        <p class="quota" data-i18n="verify.note">Bekræft din e-mailadresse med linket, vi har sendt dig, før du bruger
-          kontoen. Kan du ikke finde mailen, så kig i spam.</p>
-        <div class="account-line">
-          <button class="secondary" id="verify-done" type="button" data-i18n="verify.done">Jeg har bekræftet</button>
-          <button class="link-btn" id="verify-resend" type="button" data-i18n="verify.resend">Send linket igen</button>
-        </div>
-      </div>
-      <p class="quota" id="account-quota"></p>
-      <div id="upgrade-row" hidden>
-        <div class="upgrades" id="upgrades"></div>
-        <p class="quota" id="upgrade-note"></p>
-      </div>
-      <div class="account-line">
-        <button class="link-btn" id="account-manage" type="button" data-i18n="account.manage" hidden>Administrér abonnement</button>
-        <button class="link-btn" id="account-signout" type="button" data-i18n="account.signOut">Log ud</button>
-      </div>
-    </div>
-
-    <p class="msg" id="account-message"></p>
-  </details>
-
-  <details class="import">
+  <details class="import" id="import">
     <summary data-i18n="import.summary">Importér et valg</summary>
+
+    <!-- Only at #admin: where the owner pastes the secret that lets this page import. -->
+    <form id="admin-form" hidden>
+      <div class="field">
+        <label for="f-admin-secret" data-i18n="admin.label">Administratorens nøgle</label>
+        <input id="f-admin-secret" type="password" autocomplete="current-password">
+      </div>
+      <button class="secondary" id="admin-save" type="submit" data-i18n="admin.save">Gem nøglen</button>
+      <p class="msg" id="admin-message"></p>
+    </form>
+    <!-- Outside the form, so the saved secret can be dropped from anywhere on the page. -->
+    <button class="link-btn" id="admin-forget" type="button" data-i18n="admin.forget" hidden>Glem nøglen</button>
 
     <form id="import-form" novalidate>
       <div class="row-2">
@@ -722,16 +626,14 @@
     <summary data-i18n="privacy.summary">Privatliv og dine data</summary>
     <p><span data-i18n="privacy.controller">Koalitionsberegner drives af Moritz Marcus Hönscheidt. Skriv hertil, hvis du vil se, rette eller slette dine oplysninger:</span>
       <a href="mailto:info@moritzmarcus.com">info@moritzmarcus.com</a></p>
-    <p data-i18n="privacy.account">Opretter du en konto, gemmer vi din e-mailadresse og dit abonnement, fordi vi skal bruge dem for at levere tjenesten (GDPR art. 6, stk. 1, litra b). Uden en e-mailadresse kan der ikke oprettes en konto. Login håndteres af Google Firebase. Kontoen gemmes, indtil du beder os slette den. En konto, der ikke har været brugt i 2 år, sletter vi automatisk sammen med login, e-mailadresse og adgangskode, medmindre der stadig løber et abonnement på den.</p>
-    <p data-i18n="privacy.payments">Betaling håndteres af Stripe, som får din e-mailadresse. Vi ser aldrig dine kortoplysninger. Bogføringsloven kræver, at betalingsoplysninger gemmes i 5 år fra udgangen af regnskabsåret (art. 6, stk. 1, litra c), så de slettes ikke før, heller ikke hvis du sletter din konto.</p>
-    <p data-i18n="privacy.logs">For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f). Vores egne logs nævner højst en forkortet konto-id.</p>
-    <p data-i18n="privacy.statistics">Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). For at tælle forskellige aktive konti gemmer vi pr. dag et pseudonymiseret konto-id: et forkortet hash, som ikke viser, hvem du er, men som kan føres tilbage til din konto. Det slettes automatisk efter omkring 62 dage. Der bruges ingen cookies eller sporing i browseren til dette.</p>
-    <p data-i18n="privacy.browser">Dit login og dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.</p>
+    <p data-i18n="privacy.logs">For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f).</p>
+    <p data-i18n="privacy.statistics">Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). Der bruges ingen cookies eller sporing i browseren til dette.</p>
+    <p data-i18n="privacy.browser">Dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.</p>
     <p data-i18n="privacy.requests">Beder du om et valg, oprettes det som et offentligt issue på GitHub. Det nævner kun valget og ikke dig.</p>
-    <p data-i18n="privacy.imports">Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig. En import, du starter, er knyttet til din konto, mens den kører eller venter på, at du gemmer eller forkaster den, og ikke længere.</p>
-    <p data-i18n="privacy.transfers">Din konto og tjenestens øvrige data opbevares hos Google Cloud i Finland. Google, Stripe og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.</p>
+    <p data-i18n="privacy.imports">Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig.</p>
+    <p data-i18n="privacy.transfers">Tjenestens data opbevares hos Google Cloud i Finland. Google og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.</p>
     <p data-i18n="privacy.rights">Du har ret til indsigt, berigtigelse, sletning, begrænsning, dataportabilitet og til at gøre indsigelse. Vi træffer ingen automatiske afgørelser om dig. Du kan klage til Datatilsynet (datatilsynet.dk).</p>
-    <p class="privacy-updated" data-i18n="privacy.updated">Senest opdateret 13. september 2026</p>
+    <p class="privacy-updated" data-i18n="privacy.updated">Senest opdateret 19. september 2026</p>
   </details>
 
   <script type="module" src="./js/main.js"></script>

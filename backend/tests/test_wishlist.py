@@ -1,15 +1,11 @@
-"""The other end of the paywall: asking for an election instead of importing it.
+"""Asking for an election instead of importing it.
 
-An account with no subscription cannot make the server go and read pages, which
-is the part that costs money. What it can do is say which election it wanted,
-and that is written down in the issue tracker to be imported by hand. These
-cases pin down three things: that the issue says enough to act on, that asking
-twice for the same election does not open a second one, and that neither
-GitHub's words nor its token can reach the caller when it goes wrong.
-
-Payments are closed while the card form is being fixed (``PAYMENTS_PAUSED``),
-which is the reason the request path exists to point people at — so the pause
-is asserted here too, next to the thing it redirects to.
+Importing makes the server go and read pages, which costs money and is the
+owner's alone (see :mod:`app.main`); writing down *which* election was wanted
+costs nothing and is open to anyone who can see the page. These cases pin down
+three things: that the issue says enough to act on, that asking twice for the
+same election does not open a second one, and that neither GitHub's words nor
+its token can reach the caller when it goes wrong.
 """
 
 from __future__ import annotations
@@ -19,9 +15,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.accounts import InMemoryAccountStore, QuotaPolicy, Tier, billing_period
-from app.auth import StoreBackedVerifier, StubCredentials
-from app.billing import CheckoutSession, DisabledBilling
 from app.service import ImportService
 from app.store import ImportRequest, InMemoryElectionStore
 from app.wishlist import (
@@ -42,11 +35,6 @@ pytestmark = pytest.mark.anyio
 def anyio_backend():
     return "asyncio"
 
-
-VISITOR: dict[str, str] = {}
-FREE = {"Authorization": "Bearer free-1:free@example.org"}
-SUBSCRIBER = {"Authorization": "Bearer paid-1:paid@example.org"}
-UNVERIFIED = {"Authorization": "Bearer new-1:new@example.org:unverified"}
 
 BODY = {"year": 2022, "nation": "Danmark"}
 REGIONAL = {"year": 2021, "nation": "Deutschland", "subnation": "Sachsen-Anhalt"}
@@ -235,11 +223,6 @@ class FakeWishlist:
 
 
 @pytest.fixture
-def accounts():
-    return InMemoryAccountStore()
-
-
-@pytest.fixture
 def store():
     return InMemoryElectionStore()
 
@@ -250,35 +233,31 @@ def wishlist():
 
 
 @pytest.fixture
-def client(store, accounts, wishlist, monkeypatch):
+def client(store, wishlist):
     parser = CountingParser(
         by_year={2022: make_election(nation="Danmark", election_date="2022-11-01")}
     )
     overrides = main.app.dependency_overrides
     overrides[main.get_service] = lambda: ImportService(store, parser)
-    overrides[main.get_token_verifier] = lambda: StoreBackedVerifier(StubCredentials())
-    overrides[main.get_account_store] = lambda: accounts
-    overrides[main.get_policy] = lambda: QuotaPolicy({Tier.FREE: 0, Tier.BASIC: 5})
-    overrides[main.get_billing_provider] = lambda: DisabledBilling()
     overrides[main.get_wishlist_provider] = lambda: wishlist
     with TestClient(main.app) as test_client:
         yield test_client
     overrides.clear()
 
 
-def test_an_account_with_no_subscription_may_ask_for_an_election(client, wishlist, accounts):
-    filed = client.post("/api/elections/requests", json=BODY, headers=FREE)
+def test_a_signed_out_visitor_can_ask(client, wishlist):
+    """Asking needs no account, header or credential at all."""
+    filed = client.post("/api/elections/requests", json=BODY)
 
     assert filed.status_code == 201
     assert filed.json() == {
         "url": "https://github.test/issues/1", "number": 1, "duplicate": False
     }
     assert wishlist.filed == [ImportRequest(year=2022, nation="Danmark")]
-    assert accounts.get("free-1").used_in(billing_period()) == 0, "asking costs no quota"
 
 
 def test_a_region_is_carried_through_as_asked(client, wishlist):
-    client.post("/api/elections/requests", json=REGIONAL, headers=FREE)
+    client.post("/api/elections/requests", json=REGIONAL)
 
     assert wishlist.filed == [
         ImportRequest(year=2021, nation="Deutschland", subnation="Sachsen-Anhalt")
@@ -288,43 +267,27 @@ def test_a_region_is_carried_through_as_asked(client, wishlist):
 def test_a_second_request_for_the_same_election_is_not_a_creation(client, wishlist):
     wishlist.answer = FiledRequest(url="https://github.test/issues/5", number=5, duplicate=True)
 
-    filed = client.post("/api/elections/requests", json=BODY, headers=FREE)
+    filed = client.post("/api/elections/requests", json=BODY)
 
     assert filed.status_code == 200, "nothing was created, so this is not a 201"
     assert filed.json()["duplicate"] is True
 
 
-def test_asking_for_an_election_already_imported_points_at_it_instead(
-    client, wishlist, accounts, store
-):
+def test_asking_for_an_election_already_imported_points_at_it_instead(client, wishlist, store):
     """Nothing is filed: what they wanted is already there to pick."""
-    from app.accounts import Tier as _Tier
+    previewed = client.post("/api/elections/import?wait_seconds=2", json=BODY).json()
+    client.post(f"/api/elections/imports/{previewed['request_key']}/confirm")
 
-    accounts.ensure("paid-1", "paid@example.org")
-    accounts.set_subscription("paid-1", _Tier.BASIC, customer_id="cus_1", status="active")
-    previewed = client.post(
-        "/api/elections/import?wait_seconds=2", json=BODY, headers=SUBSCRIBER
-    ).json()
-    client.post(
-        f"/api/elections/imports/{previewed['request_key']}/confirm", headers=SUBSCRIBER
-    )
-
-    refused = client.post("/api/elections/requests", json=BODY, headers=FREE)
+    refused = client.post("/api/elections/requests", json=BODY)
 
     assert refused.status_code == 409
     assert "already imported" in refused.json()["detail"]
     assert wishlist.filed == []
 
 
-def test_asking_needs_an_account_and_a_confirmed_address(client, wishlist):
-    assert client.post("/api/elections/requests", json=BODY, headers=VISITOR).status_code == 401
-    assert client.post("/api/elections/requests", json=BODY, headers=UNVERIFIED).status_code == 403
-    assert wishlist.filed == []
-
-
 def test_a_year_that_is_not_a_year_never_reaches_the_tracker(client, wishlist):
     refused = client.post(
-        "/api/elections/requests", json={"year": "sometime", "nation": "Danmark"}, headers=FREE
+        "/api/elections/requests", json={"year": "sometime", "nation": "Danmark"}
     )
 
     assert refused.status_code == 422
@@ -334,7 +297,7 @@ def test_a_year_that_is_not_a_year_never_reaches_the_tracker(client, wishlist):
 def test_when_the_tracker_cannot_be_reached_the_caller_is_told_only_that(client, wishlist):
     wishlist.answer = WishlistUnavailable("could not file the request")
 
-    refused = client.post("/api/elections/requests", json=BODY, headers=FREE)
+    refused = client.post("/api/elections/requests", json=BODY)
 
     assert refused.status_code == 503
     assert refused.json()["detail"] == "could not file the request"
@@ -344,77 +307,8 @@ def test_with_the_tracker_switched_off_the_page_is_told_not_to_offer_it(client):
     main.app.dependency_overrides[main.get_wishlist_provider] = DisabledWishlist
 
     assert client.get("/api/config").json()["requests_enabled"] is False
-    assert client.post("/api/elections/requests", json=BODY, headers=FREE).status_code == 503
+    assert client.post("/api/elections/requests", json=BODY).status_code == 503
 
 
 def test_the_page_is_told_the_tracker_is_there(client):
     assert client.get("/api/config").json()["requests_enabled"] is True
-
-
-# --- payments, while they are down ------------------------------------------
-
-class SellingBilling:
-    enabled = True
-
-    def __init__(self):
-        self.checkouts = []
-
-    def tiers(self):
-        return (Tier.BASIC,)
-
-    def checkout(self, **kwargs):
-        self.checkouts.append(kwargs)
-        return CheckoutSession(url="https://checkout.test/basic")
-
-    def portal(self, *, customer_id, return_url):
-        return f"https://portal.test/{customer_id}"
-
-    def event_from_webhook(self, payload, signature):
-        return None
-
-
-@pytest.fixture
-def selling(client):
-    billing = SellingBilling()
-    main.app.dependency_overrides[main.get_billing_provider] = lambda: billing
-    return billing
-
-
-def test_checkout_is_closed_and_says_when_to_come_back(client, selling, monkeypatch):
-    """The default while the card form is broken: PAYMENTS_PAUSED is unset here."""
-    refused = client.post("/api/billing/checkout", json={"tier": "basic"}, headers=FREE)
-
-    assert refused.status_code == 503
-    detail = refused.json()["detail"]
-    assert "try again tomorrow" in detail
-    assert "issue tracker" in detail, "and where to go meanwhile"
-    assert selling.checkouts == [], "Stripe was never asked"
-
-
-def test_nothing_is_purchasable_while_checkout_is_closed(client, selling):
-    """Said in the config too, so a page cannot offer a button that 503s."""
-    config = client.get("/api/config").json()
-
-    assert config["payments_paused"] is True
-    assert [row["purchasable"] for row in config["tiers"]] == [False, False, False]
-
-
-def test_an_existing_subscriber_can_still_reach_the_portal(client, selling, accounts):
-    """Paying is closed; leaving is not. Trapping a subscriber would be worse."""
-    accounts.ensure("paid-1", "paid@example.org")
-    accounts.set_subscription("paid-1", Tier.BASIC, customer_id="cus_1", status="active")
-
-    opened = client.post("/api/billing/portal", headers=SUBSCRIBER)
-
-    assert opened.status_code == 200
-    assert opened.json()["url"] == "https://portal.test/cus_1"
-
-
-def test_one_variable_opens_checkout_again(client, selling, monkeypatch):
-    monkeypatch.setenv("PAYMENTS_PAUSED", "false")
-
-    started = client.post("/api/billing/checkout", json={"tier": "basic"}, headers=FREE)
-
-    assert started.status_code == 200
-    assert started.json()["url"] == "https://checkout.test/basic"
-    assert client.get("/api/config").json()["payments_paused"] is False
