@@ -20,14 +20,26 @@ from .schema import Election
 from .store import ElectionStore, StoredElection, select_by_place
 
 TTL_SECONDS = 30.0
+#: The least age a listing must reach before a miss may read the store again.
+#: A shared link to an unknown id asks for a fresh listing, and anyone can
+#: send those; this caps what they cost at one store read per few seconds.
+REFRESH_FLOOR_SECONDS = 5.0
 
 
 class CachedElectionStore:
     """Wraps any :class:`~app.store.ElectionStore`; everything uncached passes through."""
 
-    def __init__(self, inner: ElectionStore, *, ttl: float = TTL_SECONDS, clock=time.monotonic):
+    def __init__(
+        self,
+        inner: ElectionStore,
+        *,
+        ttl: float = TTL_SECONDS,
+        refresh_floor: float = REFRESH_FLOOR_SECONDS,
+        clock=time.monotonic,
+    ):
         self._inner = inner
         self._ttl = ttl
+        self._refresh_floor = refresh_floor
         self._clock = clock
         self._lock = Lock()
         self._list: tuple[float, list[StoredElection]] | None = None
@@ -52,7 +64,7 @@ class CachedElectionStore:
             entry = self._list
             if self._fresh(entry):
                 return list(entry[1])
-        return self.list_elections_uncached()
+        return self._read_list()
 
     def list_elections_uncached(self) -> list[StoredElection]:
         """One read straight from the inner store, refreshing the cache.
@@ -61,8 +73,17 @@ class CachedElectionStore:
         know whether that was merely stale — a shared link's prefix search
         (:meth:`~app.service.ImportService.resolve_id`) reads a fresh listing
         once on a miss, so an election just confirmed on another instance
-        does not 404 here for up to :data:`TTL_SECONDS`.
+        does not 404 here for up to :data:`TTL_SECONDS`. A listing younger
+        than :data:`REFRESH_FLOOR_SECONDS` is returned as it is, so unknown ids
+        cannot turn every request into a store read.
         """
+        with self._lock:
+            entry = self._list
+            if entry is not None and self._clock() - entry[0] < self._refresh_floor:
+                return list(entry[1])
+        return self._read_list()
+
+    def _read_list(self) -> list[StoredElection]:
         listed = self._inner.list_elections()
         with self._lock:
             self._list = (self._clock(), listed)

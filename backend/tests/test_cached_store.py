@@ -78,11 +78,27 @@ def test_list_elections_uncached_bypasses_and_refreshes_the_cache():
     assert cache.list_elections() == [], "still within the TTL of the empty listing"
     assert inner.reads == 1, "served from the (stale) cache, not asked again"
 
-    assert len(cache.list_elections_uncached()) == 1, "an uncached read sees it at once"
+    clock.now = 6  # past the refresh floor, well within the TTL
+    assert len(cache.list_elections_uncached()) == 1, "an uncached read sees it"
     assert inner.reads == 2
 
     assert len(cache.list_elections()) == 1, "and the cache now holds the fresh listing too"
     assert inner.reads == 2, "served from what list_elections_uncached just refreshed"
+
+
+def test_uncached_reads_cost_at_most_one_store_read_per_refresh_floor():
+    """Anyone can send links to unknown ids; each asks for a fresh listing."""
+    inner, clock = CountingStore(), Clock()
+    cache = CachedElectionStore(inner, ttl=30, refresh_floor=5, clock=clock)
+    cache.list_elections()
+    for _ in range(100):
+        cache.list_elections_uncached()
+    assert inner.reads == 1, "a listing younger than the floor is reused"
+
+    clock.now = 5
+    cache.list_elections_uncached()
+    cache.list_elections_uncached()
+    assert inner.reads == 2
 
 
 def test_a_confirmation_here_shows_in_the_list_at_once():

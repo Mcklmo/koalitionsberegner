@@ -367,8 +367,9 @@ async def test_a_prefix_miss_falls_back_past_a_stale_cached_list():
     that listing stays stale."""
     from app.cached_store import CachedElectionStore
 
+    now = [0.0]
     inner = InMemoryElectionStore()
-    cache = CachedElectionStore(inner)
+    cache = CachedElectionStore(inner, clock=lambda: now[0])
     service = ImportService(cache, CountingParser())
 
     # Cache an empty listing, as a lookup just before the election below was
@@ -376,6 +377,7 @@ async def test_a_prefix_miss_falls_back_past_a_stale_cached_list():
     assert await service.resolve_id("a" * 16) is None
 
     election_hash = _store_directly(inner, make_election())
+    now[0] = 10.0  # past the refresh floor, still within the listing's TTL
 
     resolved = await service.resolve_id(election_hash[:16])
 
