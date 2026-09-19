@@ -154,7 +154,7 @@ function harness(overrides = {}) {
   el.year.value = '2027';
   el.nation.value = 'Danmark';
   const selected = [];
-  const ui = mountImportUi({ api, elements: el, bundled: stated, onSelect: (e) => selected.push(e) });
+  const ui = mountImportUi({ api, elements: el, bundled: stated, config: { importsEnabled: true }, onSelect: (e) => selected.push(e) });
   ui.setAdmin(true);
   return { el, calls, selected };
 }

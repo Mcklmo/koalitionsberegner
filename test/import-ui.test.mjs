@@ -48,7 +48,9 @@ function node(tag = 'div') {
   };
 }
 
-function harness({ api, selected = [], admin = true, config = {} } = {}) {
+function harness({ api, selected = [], admin = true, config: overrides = {} } = {}) {
+  // The backend has a parser unless a test says otherwise.
+  const config = { importsEnabled: true, ...overrides };
   globalThis.document = { createElement: node };
   const el = {
     form: node('form'),
@@ -412,6 +414,14 @@ test('the owner imports, and the button says so', async () => {
   assert.equal(el.submit.disabled, false);
   assert.equal(el.submit.textContent, 'Hent valgresultat');
   assert.equal(el.availability.textContent, '');
+});
+
+test('the owner is not offered imports the backend cannot run, and may ask instead', async () => {
+  const { api } = fakeApi();
+  const { el } = harness({ api, config: { importsEnabled: false, requestsEnabled: true } });
+
+  assert.equal(el.submit.disabled, false);
+  assert.notEqual(el.submit.textContent, 'Hent valgresultat');
 });
 
 test('a local run with no secret configured imports without admin mode', async () => {

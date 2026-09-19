@@ -563,9 +563,10 @@
         <input id="f-admin-secret" type="password" autocomplete="current-password">
       </div>
       <button class="secondary" id="admin-save" type="submit" data-i18n="admin.save">Gem nøglen</button>
-      <button class="link-btn" id="admin-forget" type="button" data-i18n="admin.forget" hidden>Glem nøglen</button>
       <p class="msg" id="admin-message"></p>
     </form>
+    <!-- Outside the form, so the saved secret can be dropped from anywhere on the page. -->
+    <button class="link-btn" id="admin-forget" type="button" data-i18n="admin.forget" hidden>Glem nøglen</button>
 
     <form id="import-form" novalidate>
       <div class="row-2">

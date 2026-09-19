@@ -104,9 +104,12 @@ export function mountImportUi({
     if (isBusy) el.submit.textContent = label;
   }
 
-  /** Whether this page imports: the owner, or a local run with no secret. */
+  /**
+   * Whether this page imports: the owner, or a local run with no secret. Never
+   * when the backend has no parser, where every import would fail.
+   */
   function allowed() {
-    return admin || Boolean(config.importsOpen);
+    return (admin && Boolean(config.importsEnabled)) || Boolean(config.importsOpen);
   }
 
   /**
