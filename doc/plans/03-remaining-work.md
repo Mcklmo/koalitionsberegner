@@ -180,7 +180,7 @@ parser, config, clock)`. One `run(tracked) -> Outcome` per election:
    yet stored via a new `ElectionStore.put_election(election_hash, election,
    provenance="auto")` that bypasses staging (the job table is for humans).
    Idempotent by construction.
-5. **From election day** (`now >= day0`): `want="results"`. Then the gates,
+4. **From election day** (`now >= day0`): `want="results"`. Then the gates,
    because nobody confirms this preview:
    - `parser.is_wanted(election, resolved, request)` (identity matches);
    - `sum(seats) == total_seats` (the schema checks this already; keep it
@@ -196,10 +196,10 @@ parser, config, clock)`. One `run(tracked) -> Outcome` per election:
    completes; the hash does not change because the identity does not),
    `unchanged_reads=1`. Stored and identical: `unchanged_reads += 1`; at
    `results.stable_after`, `status=final` and `next_refresh_at=None`.
-6. **Failures.** Any exception: `consecutive_failures += 1`, `last_error`
+5. **Failures.** Any exception: `consecutive_failures += 1`, `last_error`
    from `service._user_message`, backoff as in A2, `parked` at
    `failures.park_after`. Success resets the counter.
-7. **Release the lease** in a `finally`.
+6. **Release the lease** in a `finally`.
 
 `RefreshService` reuses `io_span` for logging; sizes and hashes only, never
 page text. Tests in `test_refresh.py` use `StubWikipedia`, the mock parser
