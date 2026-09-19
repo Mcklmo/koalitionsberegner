@@ -31,12 +31,11 @@ from contextlib import contextmanager
 MAX_VALUE_CHARS = 200
 
 #: Systems whose every call earns a line of its own: a model call, a search, a
-#: page fetch, a payment, a certificate refresh, a report email, and the import all of them
-#: serve. What is missing from this set is the store and the inbound request —
+#: page fetch, a report email, and the import all of them serve. What is missing from this set is the store and the inbound request —
 #: called several times per import, and saying nothing the import's own lines
 #: do not already say. They are still there at ``LOG_LEVEL=DEBUG``.
 NOTABLE_SYSTEMS = frozenset(
-    {"anthropic", "google", "wikipedia", "page", "import", "stripe", "firebase", "smtp"}
+    {"anthropic", "google", "wikipedia", "page", "import", "smtp"}
 )
 
 

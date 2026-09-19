@@ -1,41 +1,34 @@
 """Usage counting, and the reports built from it.
 
 What has to hold: every interaction the owner asked about is counted where it
-happens and only there; nothing that points at a person outlives its retention;
-a report goes out once however often the schedule fires; and counting can never
-break the request it counts.
+happens and only there; nothing points at a person; a report goes out once
+however often the schedule fires; and counting can never break the request it
+counts.
 """
 
 from __future__ import annotations
 
 import smtplib
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.accounts import InMemoryAccountStore, QuotaPolicy, Tier, billing_period
-from app.auth import StoreBackedVerifier, StubCredentials
-from app.billing import BillingEvent, DisabledBilling
 from app.config import SMTP_VARIABLES, ConfigError, get_mailer
-from app.firestore_usage import FirestoreUsageStore
 from app.mailer import MailUnavailable, SmtpMailer
 from app.service import ImportService
 from app.sqlite_usage import SqliteUsageStore
 from app.store import InMemoryElectionStore
 from app.usage import (
-    ACTIVE_RETENTION_DAYS,
     DateRange,
     InMemoryUsageStore,
     Period,
     UsageEvent,
     UsageFigures,
     UsageRecorder,
-    account_marker,
     build_report,
     due_periods,
-    marker_expiry,
     language_bucket,
     period_range,
     previous_range,
@@ -86,14 +79,6 @@ def test_week_and_month_ends_add_their_reports_to_the_daily_one():
     assert due_periods(date(2026, 6, 1)) == [Period.DAILY, Period.WEEKLY, Period.MONTHLY]
 
 
-@pytest.mark.parametrize("today", [date(2026, 9, 1), date(2027, 1, 1), date(2028, 3, 1)])
-def test_retention_keeps_every_day_a_monthly_report_compares(today):
-    """September 1st is the worst case: July and August are 62 days together."""
-    current = period_range(Period.MONTHLY, today)
-    previous = previous_range(Period.MONTHLY, current)
-    assert previous.start >= today - timedelta(days=ACTIVE_RETENTION_DAYS)
-
-
 # --- what is kept ----------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -110,14 +95,6 @@ def test_retention_keeps_every_day_a_monthly_report_compares(today):
 )
 def test_a_browser_language_lands_in_one_of_three_counters(header, bucket):
     assert language_bucket(header) == bucket
-
-
-def test_an_account_marker_is_stable_and_is_not_the_account_id():
-    marker = account_marker("firebase-uid-123")
-    assert marker == account_marker("firebase-uid-123")
-    assert marker != account_marker("firebase-uid-124")
-    assert "firebase-uid-123" not in marker
-    assert len(marker) == 16
 
 
 @pytest.fixture(params=["memory", "sqlite"])
@@ -146,69 +123,6 @@ def test_counters_add_up_per_day(usage_store):
     }
 
 
-def test_an_account_active_on_several_days_is_one_account(usage_store):
-    for day in (date(2026, 9, 1), date(2026, 9, 2)):
-        usage_store.mark_active(day, "aaaa")
-        usage_store.mark_active(day, "aaaa")
-    usage_store.mark_active(date(2026, 9, 2), "bbbb")
-
-    assert usage_store.active_accounts(date(2026, 9, 1), date(2026, 9, 3)) == 2
-    assert usage_store.active_accounts(date(2026, 9, 1), date(2026, 9, 2)) == 1
-
-
-def test_retention_forgets_old_markers_and_nothing_else(usage_store):
-    old, kept = date(2026, 7, 1), date(2026, 7, 2)
-    usage_store.mark_active(old, "aaaa")
-    usage_store.mark_active(kept, "bbbb")
-    usage_store.increment(old, "election_picked")
-
-    usage_store.forget_active_before(kept)
-
-    assert usage_store.active_accounts(old, kept) == 0
-    assert usage_store.active_accounts(kept, kept + timedelta(days=1)) == 1
-    assert usage_store.daily(old, kept) == {old: {"election_picked": 1}}, "counters are kept"
-
-
-def test_a_marker_expires_on_the_day_retention_would_first_forget_it():
-    day = date(2026, 7, 1)
-    expires = marker_expiry(day)
-    assert expires.tzinfo is UTC and expires.time() == time()
-
-    store = InMemoryUsageStore()
-    store.mark_active(day, "aaaa")
-    run = lambda today: store.forget_active_before(today - timedelta(days=ACTIVE_RETENTION_DAYS))
-
-    run(expires.date() - timedelta(days=1))
-    assert store.active_accounts(day, day + timedelta(days=1)) == 1, "the run the day before keeps it"
-    run(expires.date())
-    assert store.active_accounts(day, day + timedelta(days=1)) == 0
-
-
-class FakeFirestoreRef:
-    """Just enough of a Firestore client to see what a document is written with."""
-
-    def __init__(self, writes, path=()):
-        self._writes, self._path = writes, path
-
-    def collection(self, name):
-        return FakeFirestoreRef(self._writes, (*self._path, name))
-
-    document = collection
-
-    def set(self, data, merge=False):
-        self._writes["/".join(self._path)] = data
-
-
-def test_a_firestore_marker_carries_the_expiry_its_ttl_policy_deletes_on():
-    """Retention must not hang on the daily schedule running."""
-    writes = {}
-    FirestoreUsageStore(FakeFirestoreRef(writes)).mark_active(date(2026, 7, 1), "aaaa")
-
-    assert writes == {
-        "usage_daily/2026-07-01/active/aaaa": {"expire_at": marker_expiry(date(2026, 7, 1))}
-    }
-
-
 def test_a_report_is_claimed_once_and_can_be_given_back(usage_store):
     assert usage_store.claim_report("daily:2026-09-13") is True
     assert usage_store.claim_report("daily:2026-09-13") is False
@@ -220,48 +134,38 @@ class BrokenStore(InMemoryUsageStore):
     def increment(self, day, key):
         raise RuntimeError("database down")
 
-    def mark_active(self, day, marker):
-        raise RuntimeError("database down")
-
 
 def test_counting_never_raises(caplog):
     recorder = UsageRecorder(BrokenStore())
 
     recorder.record(UsageEvent.ELECTION_PICKED)
-    recorder.active("user-1")
 
     assert "not recorded" in caplog.text
 
 
-class MarkCountingStore(InMemoryUsageStore):
-    def __init__(self):
-        super().__init__()
-        self.marks = 0
+def test_a_database_from_when_there_were_accounts_loses_its_markers(tmp_path):
+    """The per-day account markers are dropped, not left behind unread."""
+    import sqlite3
 
-    def mark_active(self, day, marker):
-        self.marks += 1
-        super().mark_active(day, marker)
+    path = tmp_path / "usage.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE usage_active (day TEXT, marker TEXT)")
+    old.execute("INSERT INTO usage_active VALUES ('2026-09-01', 'aaaa')")
+    old.commit()
+    old.close()
 
+    SqliteUsageStore(path).close()
 
-def test_an_account_is_written_down_once_a_day_per_process():
-    store = MarkCountingStore()
-    now = [datetime(2026, 9, 13, 23, 59, tzinfo=UTC)]
-    recorder = UsageRecorder(store, clock=lambda: now[0])
-
-    recorder.active("user-1")
-    recorder.active("user-1")
-    assert store.marks == 1
-
-    now[0] += timedelta(minutes=2)
-    recorder.active("user-1")
-    assert store.marks == 2, "a new day is a new mark"
-    assert store.active_accounts(date(2026, 9, 13), date(2026, 9, 15)) == 1
+    tables = {row[0] for row in sqlite3.connect(path).execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    )}
+    assert "usage_active" not in tables
 
 
 # --- the report --------------------------------------------------------------------
 
-def figures(daily=None, *, active=0, new=0) -> UsageFigures:
-    return UsageFigures(daily=daily or {}, active_accounts=active, new_accounts=new)
+def figures(daily=None) -> UsageFigures:
+    return UsageFigures(daily=daily or {})
 
 
 def row(body: str, label: str) -> list[str]:
@@ -277,21 +181,16 @@ def test_the_report_counts_every_section_and_says_how_it_changed():
     subject, body = build_report(
         Period.DAILY,
         current,
-        figures(
-            {SUNDAY: {"election_picked": 5, "request_filed": 2, "page_load_da": 9}},
-            active=3,
-            new=1,
-        ),
+        figures({SUNDAY: {"election_picked": 5, "request_filed": 2, "page_load_da": 9}}),
         previous,
-        figures({previous.start: {"election_picked": 7, "page_load_da": 9}}, active=3),
+        figures({previous.start: {"election_picked": 7, "page_load_da": 9}}),
     )
 
     assert subject == "Koalitionsberegner daily usage: 2026-09-13"
     assert row(body, "Picked from the list") == ["5", "(-2)"]
     assert row(body, "Filed as a new issue") == ["2", "(+2)"]
     assert row(body, "Page loads, Danish") == ["9", "(±0)"]
-    assert row(body, "New") == ["1", "(+1)"]
-    assert row(body, "Active (distinct)") == ["3", "(±0)"]
+    assert "Accounts" not in body and "Paywall" not in body, "there are none of either"
     assert "Day by day" not in body, "a single day needs no table of days"
 
 
@@ -439,8 +338,6 @@ def test_complete_settings_send_from_the_login_unless_told_otherwise(monkeypatch
 
 BODY = {"year": 2026, "nation": "Danmark"}
 OTHER_BODY = {"year": 2021, "nation": "Deutschland", "subnation": "Sachsen-Anhalt"}
-FREE = {"Authorization": "Bearer free-1:free@example.org"}
-SUBSCRIBER = {"Authorization": "Bearer paid-1:paid@example.org"}
 ADMIN_SECRET = "a" * 40
 ADMIN = {"x-admin-secret": ADMIN_SECRET}
 REPORT_SECRET = "r" * 40
@@ -471,27 +368,9 @@ class FakeWishlist:
         return FiledRequest(url="https://github.test/issues/1", number=1, duplicate=self.duplicate)
 
 
-class FakeBilling(DisabledBilling):
-    """Hands the webhook whatever event the test puts here."""
-
-    def __init__(self):
-        self.event: BillingEvent | None = None
-
-    def event_from_webhook(self, payload, signature):
-        return self.event
-
-
 @pytest.fixture
 def usage():
     return UsageRecorder(InMemoryUsageStore(), clock=lambda: NOW)
-
-
-@pytest.fixture
-def accounts():
-    store = InMemoryAccountStore()
-    store.ensure("paid-1", "paid@example.org")
-    store.set_subscription("paid-1", Tier.BASIC, status="active")
-    return store
 
 
 @pytest.fixture
@@ -510,19 +389,10 @@ def wishlist():
 
 
 @pytest.fixture
-def billing():
-    return FakeBilling()
-
-
-@pytest.fixture
-def client(usage, accounts, parser, mailer, wishlist, billing):
+def client(usage, parser, mailer, wishlist):
     store = InMemoryElectionStore()
     overrides = main.app.dependency_overrides
     overrides[main.get_service] = lambda: ImportService(store, parser)
-    overrides[main.get_token_verifier] = lambda: StoreBackedVerifier(StubCredentials())
-    overrides[main.get_account_store] = lambda: accounts
-    overrides[main.get_policy] = lambda: QuotaPolicy({Tier.FREE: 0, Tier.BASIC: 5})
-    overrides[main.get_billing_provider] = lambda: billing
     overrides[main.get_wishlist_provider] = lambda: wishlist
     overrides[main.get_usage] = lambda: usage
     overrides[main.get_mailer_provider] = lambda: mailer
@@ -537,15 +407,14 @@ def counted(usage) -> dict[str, int]:
 
 
 def preview(client, body=BODY):
-    response = client.post("/api/elections/import?wait_seconds=2", json=body, headers=SUBSCRIBER)
+    response = client.post("/api/elections/import?wait_seconds=2", json=body)
     assert response.json()["state"] == "preview", response.text
     return response.json()
 
 
 def save(client, body=BODY):
     saved = client.post(
-        f"/api/elections/imports/{preview(client, body)['request_key']}/confirm",
-        headers=SUBSCRIBER,
+        f"/api/elections/imports/{preview(client, body)['request_key']}/confirm"
     )
     assert saved.status_code == 200, saved.text
     return saved.json()
@@ -560,9 +429,9 @@ def test_a_page_load_is_counted_by_the_language_the_browser_asks_for(client, usa
 
 def test_an_import_is_counted_from_its_start_to_it_being_saved_and_picked(client, usage):
     saved = save(client)
-    again = client.post("/api/elections/import?wait_seconds=2", json=BODY, headers=SUBSCRIBER)
+    again = client.post("/api/elections/import?wait_seconds=2", json=BODY)
     assert again.json()["state"] == "ready"
-    client.get(f"/api/elections/{saved['election_hash']}", headers=FREE)
+    client.get(f"/api/elections/{saved['election_hash']}")
 
     assert counted(usage) == {
         "import_started": 1,
@@ -573,56 +442,31 @@ def test_an_import_is_counted_from_its_start_to_it_being_saved_and_picked(client
 
 def test_a_discarded_preview_is_counted(client, usage):
     key = preview(client, OTHER_BODY)["request_key"]
-    assert client.delete(f"/api/elections/imports/{key}/preview", headers=SUBSCRIBER).status_code == 204
+    assert client.delete(f"/api/elections/imports/{key}/preview").status_code == 204
 
     assert counted(usage)["preview_discarded"] == 1
 
 
 def test_a_failed_import_is_counted(client, usage, parser):
     parser.fail_times = 1
-    failed = client.post("/api/elections/import?wait_seconds=2", json=BODY, headers=SUBSCRIBER)
+    failed = client.post("/api/elections/import?wait_seconds=2", json=BODY)
     assert failed.json()["state"] == "failed"
 
     assert counted(usage) == {"import_started": 1, "import_failed": 1}
 
 
-def test_what_a_free_account_asks_for_is_counted_by_what_came_of_it(client, usage, wishlist):
-    assert client.post("/api/elections/requests", json=OTHER_BODY, headers=FREE).status_code == 201
+def test_what_a_visitor_asks_for_is_counted_by_what_came_of_it(client, usage, wishlist):
+    assert client.post("/api/elections/requests", json=OTHER_BODY).status_code == 201
     wishlist.duplicate = True
-    assert client.post("/api/elections/requests", json=OTHER_BODY, headers=FREE).status_code == 200
+    assert client.post("/api/elections/requests", json=OTHER_BODY).status_code == 200
     save(client)
-    assert client.post("/api/elections/requests", json=BODY, headers=FREE).status_code == 409
+    assert client.post("/api/elections/requests", json=BODY).status_code == 409
 
     assert {k: v for k, v in counted(usage).items() if k.startswith("request")} == {
         "request_filed": 1,
         "request_duplicate": 1,
         "request_already_imported": 1,
     }
-
-
-def test_an_account_is_active_once_a_day_however_often_it_loads_the_page(client, usage):
-    for headers in (SUBSCRIBER, SUBSCRIBER, FREE):
-        assert client.get("/api/me", headers=headers).status_code == 200
-
-    assert usage.store.active_accounts(MONDAY, MONDAY + timedelta(days=1)) == 2
-
-
-def test_a_subscription_counts_when_it_starts_and_when_it_ends_not_on_every_update(
-    client, usage, accounts, billing
-):
-    accounts.ensure("free-1", "free@example.org")
-
-    def webhook(tier, status):
-        billing.event = BillingEvent(
-            uid="free-1", tier=tier, status=status, customer_id="cus_1", subscription_id="sub_1"
-        )
-        assert client.post("/api/billing/webhook", content=b"{}").status_code == 200
-
-    webhook(Tier.BASIC, "active")
-    webhook(Tier.BASIC, "active")
-    webhook(Tier.FREE, "canceled")
-
-    assert counted(usage) == {"subscription_started": 1, "subscription_ended": 1}
 
 
 def test_without_a_report_secret_there_is_no_report_endpoint(client, monkeypatch):
@@ -665,20 +509,6 @@ def test_a_report_that_could_not_be_emailed_is_sent_by_the_next_run(client, mail
     assert retried.json() == {"sent": ["daily:2026-09-13"], "skipped": []}
 
 
-def test_every_run_forgets_active_accounts_older_than_retention(client, usage, mailer, monkeypatch):
-    monkeypatch.setenv("USAGE_REPORT_SECRET", REPORT_SECRET)
-    mailer.fail = True  # retention does not wait for the email to work
-    expired = MONDAY - timedelta(days=ACTIVE_RETENTION_DAYS + 1)
-    kept = MONDAY - timedelta(days=ACTIVE_RETENTION_DAYS)
-    usage.store.mark_active(expired, "aaaa")
-    usage.store.mark_active(kept, "bbbb")
-
-    client.post(f"{REPORTS_URL}?period=daily", headers=REPORT)
-
-    assert usage.store.active_accounts(expired, kept) == 0
-    assert usage.store.active_accounts(kept, kept + timedelta(days=1)) == 1
-
-
 def test_an_administrator_can_read_a_report_without_it_being_sent(
     client, usage, mailer, monkeypatch
 ):
@@ -691,4 +521,4 @@ def test_an_administrator_can_read_a_report_without_it_being_sent(
     assert response.json()["subject"] == "Koalitionsberegner weekly usage: 2026-09-07 to 2026-09-13"
     assert row(response.json()["body"], "Filed as a new issue") == ["1", "(+1)"]
     assert mailer.sent == []
-    assert client.get("/api/admin/usage", headers=FREE).status_code == 403
+    assert client.get("/api/admin/usage").status_code == 403

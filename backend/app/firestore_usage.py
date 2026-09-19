@@ -4,14 +4,7 @@ One document per UTC day in ``usage_daily``, one field per counter, each bumped
 with a server-side increment — so two instances counting at once never lose a
 count, and a day costs one document however much happened in it.
 
-Active-account markers are documents in that day's ``active`` subcollection,
-named by the marker, so writing one twice is the same as writing it once. Each
-carries ``expire_at`` (:func:`~app.usage.marker_expiry`), and a TTL policy on
-that field of the ``active`` collection group deletes it without waiting for
-the schedule — ``doc/contribute.md`` has the one command that creates it.
-:meth:`FirestoreUsageStore.forget_active_before` stays as the sweep for markers
-written before the field, and for a database the policy was never set up on. The
-report claim is ``create()``, which Firestore refuses for a document that
+The report claim is ``create()``, which Firestore refuses for a document that
 exists: that is the whole of its atomicity.
 """
 
@@ -25,23 +18,11 @@ from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 
 from .observability import io_span
-from .usage import marker_expiry
 
 log = logging.getLogger(__name__)
 
 DAILY_COLLECTION = "usage_daily"
-ACTIVE_SUBCOLLECTION = "active"
 REPORTS_COLLECTION = "usage_reports"
-
-#: The timestamp field the ``active`` collection group's TTL policy deletes on.
-EXPIRE_FIELD = "expire_at"
-
-#: How many days before the cut-off a retention run looks at. The cron runs
-#: daily, so one day would do; the rest catches up after runs that were missed.
-FORGET_WINDOW_DAYS = 14
-
-#: Firestore takes at most 500 writes in one batch.
-BATCH_SIZE = 400
 
 
 def _days(start: date, end: date) -> list[date]:
@@ -60,12 +41,6 @@ class FirestoreUsageStore:
         with io_span(log, "firestore", "usage_increment", key=key):
             self._day(day).set({key: firestore.Increment(1)}, merge=True)
 
-    def mark_active(self, day: date, marker: str) -> None:
-        with io_span(log, "firestore", "usage_active"):
-            self._day(day).collection(ACTIVE_SUBCOLLECTION).document(marker).set(
-                {EXPIRE_FIELD: marker_expiry(day)}
-            )
-
     def daily(self, start: date, end: date) -> dict[date, dict[str, int]]:
         refs = [self._day(day) for day in _days(start, end)]
         counts: dict[date, dict[str, int]] = {}
@@ -79,34 +54,6 @@ class FirestoreUsageStore:
                     if isinstance(value, (int, float))
                 }
         return counts
-
-    def _markers(self, day: date):
-        return self._day(day).collection(ACTIVE_SUBCOLLECTION)
-
-    def active_accounts(self, start: date, end: date) -> int:
-        markers: set[str] = set()
-        with io_span(log, "firestore", "usage_active_accounts", start=start, end=end) as span:
-            for day in _days(start, end):
-                markers.update(doc.id for doc in self._markers(day).select([]).stream())
-            span["accounts"] = len(markers)
-        return len(markers)
-
-    def forget_active_before(self, day: date) -> None:
-        deleted = 0
-        with io_span(log, "firestore", "usage_forget_active", before=day) as span:
-            for old in _days(day - timedelta(days=FORGET_WINDOW_DAYS), day):
-                batch, pending = self._db.batch(), 0
-                for doc in self._markers(old).select([]).stream():
-                    batch.delete(doc.reference)
-                    pending += 1
-                    if pending == BATCH_SIZE:
-                        batch.commit()
-                        deleted += pending
-                        batch, pending = self._db.batch(), 0
-                if pending:
-                    batch.commit()
-                    deleted += pending
-            span["deleted"] = deleted
 
     def claim_report(self, key: str) -> bool:
         with io_span(log, "firestore", "usage_claim_report", key=key) as span:

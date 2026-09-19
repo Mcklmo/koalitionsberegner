@@ -14,7 +14,7 @@ import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 from fastapi import (
@@ -35,57 +35,26 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .accounts import (
-    ENTITLING_STATUSES,
-    AccountStore,
-    QuotaPolicy,
-    Tier,
-    UserAccount,
-    billing_period,
-)
-from .auth import (
-    BadCredentials,
-    EmailTaken,
-    IdentityRemover,
-    InvalidToken,
-    PasswordCredentialStore,
-    Principal,
-    Session,
-    SignUpRefused,
-    TokenVerifier,
-    bearer_token,
-)
-from .billing import Billing, BillingUnavailable
 from .config import (
     admin_secret,
-    get_accounts,
-    get_billing,
-    get_identity_remover,
     get_mailer,
     get_parser,
-    get_password_store,
-    get_quota_policy,
     get_store,
     get_usage_recorder,
-    get_verifier,
     get_wishlist,
     imports_enabled,
     max_wait_seconds,
     origin_secret,
-    payments_paused,
-    public_base_url,
     usage_report_secret,
     validate_configuration,
 )
 from .identity import normalize_year
 from .mailer import Mailer, MailUnavailable
 from .observability import configure_logging, io_span, scrub
-from .retention import sweep_inactive_accounts
 from .schema import Election, Forecast, clean_text
 from .service import ImportRequest, ImportResult, ImportService, ImportState
 from .store import StoredElection
 from .usage import (
-    ACTIVE_RETENTION_DAYS,
     Period,
     UsageEvent,
     UsageRecorder,
@@ -135,19 +104,19 @@ if _origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_origins,
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
-        # The ID token rides in Authorization and the owner's secret in its own
-        # header, so a cross-origin page needs both allowed through.
-        allow_headers=["content-type", "authorization", "x-admin-secret"],
+        allow_methods=["GET", "POST", "DELETE"],
+        # The owner's secret rides in its own header, so a cross-origin page
+        # needs it allowed through.
+        allow_headers=["content-type", "x-admin-secret"],
     )
 
 
 # --- the edge of the app ----------------------------------------------------
 # Declared last, so they wrap everything above: a request refused here costs
-# no store read, no token check and no log line of its own.
+# no store read, no secret check and no log line of its own.
 
-#: The page loads its scripts from here and signs in against these two Google
-#: endpoints; nothing else is fetched, framed or submitted anywhere. Styles stay
+#: The page loads its scripts from here and talks to nothing but this origin;
+#: nothing else is fetched, framed or submitted anywhere. Styles stay
 #: inline-capable because the page carries its stylesheet and a few style
 #: attributes in index.html — scripts do not, and that is what the policy is for.
 CONTENT_SECURITY_POLICY = "; ".join(
@@ -156,8 +125,7 @@ CONTENT_SECURITY_POLICY = "; ".join(
         "script-src 'self'",
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data:",
-        "connect-src 'self' https://identitytoolkit.googleapis.com"
-        " https://securetoken.googleapis.com",
+        "connect-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",
         "form-action 'self'",
@@ -208,11 +176,8 @@ async def require_origin_secret(request: Request, call_next):
     return await call_next(request)
 
 
-#: Every body this API reads is a few hundred bytes of JSON. Stripe's events are
-#: larger, and still far below their own cap.
+#: Every body this API reads is a few hundred bytes of JSON.
 MAX_BODY_BYTES = 64 * 1024
-MAX_WEBHOOK_BYTES = 1024 * 1024
-WEBHOOK_PATH = "/api/billing/webhook"
 
 
 class LimitRequestBody:
@@ -220,9 +185,9 @@ class LimitRequestBody:
 
     Starlette reads a body into memory whole, and nothing upstream caps it far
     below Cloud Run's 32 MB — so without this, a few dozen concurrent large
-    POSTs to the unauthenticated webhook are enough to run the container out of
+    POSTs to the open request endpoint are enough to run the container out of
     memory. A body with no declared length is refused rather than counted:
-    browsers and Stripe always declare one.
+    browsers always declare one.
     """
 
     def __init__(self, app):
@@ -231,7 +196,7 @@ class LimitRequestBody:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             headers = dict(scope["headers"])
-            limit = MAX_WEBHOOK_BYTES if scope["path"] == WEBHOOK_PATH else MAX_BODY_BYTES
+            limit = MAX_BODY_BYTES
             declared = headers.get(b"content-length")
             if b"chunked" in headers.get(b"transfer-encoding", b"").lower():
                 response = JSONResponse({"detail": "a body must declare its length"}, 411)
@@ -253,27 +218,6 @@ def get_service() -> ImportService:
     return ImportService(get_store(), get_parser())
 
 
-def get_account_store() -> AccountStore:
-    return get_accounts()
-
-
-def get_token_verifier() -> TokenVerifier:
-    return get_verifier()
-
-
-def get_password_credentials() -> PasswordCredentialStore | None:
-    """The store that owns passwords, in the modes where this app owns them."""
-    return get_password_store()
-
-
-def get_billing_provider() -> Billing:
-    return get_billing()
-
-
-def get_policy() -> QuotaPolicy:
-    return get_quota_policy()
-
-
 def get_wishlist_provider() -> Wishlist:
     return get_wishlist()
 
@@ -286,63 +230,7 @@ def get_mailer_provider() -> Mailer:
     return get_mailer()
 
 
-def get_identity_remover_provider() -> IdentityRemover:
-    return get_identity_remover()
-
-
-# --- identity ---------------------------------------------------------------
-
-UNAUTHENTICATED = {"WWW-Authenticate": "Bearer"}
-
-
-def current_principal(
-    authorization: str | None = Header(default=None),
-    verifier: TokenVerifier = Depends(get_token_verifier),
-) -> Principal | None:
-    """Who is calling. ``None`` is a signed-out visitor, which is allowed here.
-
-    A *bad* credential is not the same as no credential: presenting an expired
-    or forged token is refused outright rather than quietly downgraded to
-    anonymous, which would hide a broken client behind a thinner page.
-    """
-    token = bearer_token(authorization)
-    if token is None:
-        return verifier.anonymous()
-    try:
-        return verifier.verify(token)
-    except InvalidToken as exc:
-        raise HTTPException(401, detail=str(exc), headers=UNAUTHENTICATED) from None
-
-
-def require_principal(principal: Principal | None = Depends(current_principal)) -> Principal:
-    if principal is None:
-        raise HTTPException(401, detail="sign in to use this", headers=UNAUTHENTICATED)
-    return principal
-
-
-#: Why an unconfirmed caller is stopped, worded so the page can show it as is.
-EMAIL_NOT_VERIFIED = "confirm your email address before using your account"
-
-
-def require_verified(principal: Principal = Depends(require_principal)) -> Principal:
-    """A signed-in caller whose address is known to be theirs.
-
-    Signing up proves only that somebody typed an address. Until it is confirmed
-    the account may say who it is (``/api/me``) and nothing more: it cannot
-    spend, pay, curate, or see past the curated selection.
-    """
-    if not principal.email_verified:
-        raise HTTPException(403, detail=EMAIL_NOT_VERIFIED)
-    return principal
-
-
-def require_account(
-    principal: Principal = Depends(require_verified),
-    accounts: AccountStore = Depends(get_account_store),
-) -> UserAccount:
-    """The caller's account, created free on first sight. Accounts cost nothing."""
-    return accounts.ensure(principal.uid, principal.email)
-
+# --- the owner --------------------------------------------------------------
 
 #: The header the owner proves themselves with, from the page's admin mode.
 ADMIN_SECRET_HEADER = "x-admin-secret"
@@ -473,47 +361,6 @@ class PublicConfig(BaseModel):
     """Whether importing needs no secret here: a local run with none configured."""
 
 
-class AccountResponse(BaseModel):
-    uid: str
-    email: str | None
-    email_verified: bool
-    tier: Tier
-    admin: bool
-    period: str
-    used: int
-    limit: int
-    remaining: int
-    may_import: bool
-    subscription_status: str | None = None
-    billing_enabled: bool = False
-
-
-class CredentialsBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=1, max_length=1024)
-
-
-class SessionResponse(BaseModel):
-    """A session token, returned once. The server keeps only its hash."""
-
-    token: str
-    uid: str
-    email: str
-    expires_at: float
-
-
-class CheckoutBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    tier: Tier
-
-
-class CheckoutResponse(BaseModel):
-    url: str
-
-
 class ElectionRequestResponse(BaseModel):
     """Where an election request was written down, so the page can link to it."""
 
@@ -521,30 +368,6 @@ class ElectionRequestResponse(BaseModel):
     number: int
     duplicate: bool = False
     """True when somebody had already asked for this election."""
-
-
-def _account_response(
-    account: UserAccount, principal: Principal, policy: QuotaPolicy, billing: Billing
-) -> AccountResponse:
-    period = billing_period()
-    limit = policy.limit(account.tier)
-    return AccountResponse(
-        uid=account.uid,
-        email=account.email,
-        email_verified=principal.email_verified,
-        tier=account.tier,
-        admin=principal.admin,
-        period=period,
-        used=account.used_in(period),
-        # A local run with gating off, or an administrator, is not held to any
-        # tier; say so as no limit rather than reporting the free tier's zero.
-        limit=-1 if principal.unmetered else limit,
-        remaining=-1 if principal.unmetered else account.remaining(policy, period),
-        may_import=principal.email_verified
-        and (principal.unmetered or account.may_import(policy, period)),
-        subscription_status=account.subscription_status,
-        billing_enabled=billing.enabled,
-    )
 
 
 # --- endpoints --------------------------------------------------------------
@@ -574,27 +397,6 @@ def public_config(
         imports_enabled=enabled,
         imports_open=enabled and not admin_secret(),
     )
-
-
-@app.get("/api/me", response_model=AccountResponse)
-def me(
-    background: BackgroundTasks,
-    principal: Principal = Depends(require_principal),
-    accounts: AccountStore = Depends(get_account_store),
-    policy: QuotaPolicy = Depends(get_policy),
-    billing: Billing = Depends(get_billing_provider),
-    usage: UsageRecorder = Depends(get_usage),
-) -> AccountResponse:
-    """The caller's tier and what is left of this month's allowance.
-
-    Open to an unconfirmed address too: this is how the page learns that it has
-    to ask for the confirmation, which ``email_verified`` tells it.
-    """
-    account = accounts.ensure(principal.uid, principal.email)
-    # The page asks this on every load while signed in, so it is where an
-    # account counts as active that day.
-    background.add_task(usage.active, principal.uid)
-    return _account_response(account, principal, policy, billing)
 
 
 @app.post("/api/elections/import", response_model=ImportResponse)
@@ -856,233 +658,6 @@ async def get_election(
     )
 
 
-# --- sign-in, where this app is the one holding the passwords ---------------
-#
-# Only ``AUTH_MODE=sqlite`` reaches past the guard below. With Firebase the
-# browser signs in against Google's endpoints and these three answer 404, which
-# is the honest response: there is no account here to create.
-
-def _session_response(session: Session) -> SessionResponse:
-    return SessionResponse(
-        token=session.token,
-        uid=session.uid,
-        email=session.email,
-        expires_at=session.expires_at,
-    )
-
-
-def require_password_store(
-    store: PasswordCredentialStore | None = Depends(get_password_credentials),
-) -> PasswordCredentialStore:
-    if store is None:
-        raise HTTPException(404, detail="this server does not manage sign-in itself")
-    return store
-
-
-@app.post(
-    "/api/auth/register",
-    response_model=SessionResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def register(
-    body: CredentialsBody,
-    store: PasswordCredentialStore = Depends(require_password_store),
-) -> SessionResponse:
-    """Create an account and sign it in.
-
-    The account this opens is a free one, exactly as a Firebase sign-up is:
-    registering buys nothing, and the tier still only moves when Stripe says so.
-    """
-    try:
-        session = await run_in_threadpool(store.register, body.email, body.password)
-    except EmailTaken as exc:
-        raise HTTPException(409, detail=str(exc)) from None
-    except SignUpRefused as exc:
-        raise HTTPException(422, detail=str(exc)) from None
-    log.info("registered uid=%s", session.uid[:12])
-    return _session_response(session)
-
-
-@app.post("/api/auth/login", response_model=SessionResponse)
-async def login(
-    body: CredentialsBody,
-    store: PasswordCredentialStore = Depends(require_password_store),
-) -> SessionResponse:
-    try:
-        session = await run_in_threadpool(store.sign_in, body.email, body.password)
-    except BadCredentials as exc:
-        # One message for a wrong address and a wrong password alike: which of
-        # the two was wrong is not something a caller is entitled to learn.
-        raise HTTPException(401, detail=str(exc), headers=UNAUTHENTICATED) from None
-    return _session_response(session)
-
-
-@app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(
-    authorization: str | None = Header(default=None),
-    store: PasswordCredentialStore = Depends(require_password_store),
-) -> Response:
-    """End the session this request carries. Unauthenticated on purpose — a
-    token that is already worthless still deserves to be deleted."""
-    token = bearer_token(authorization)
-    if token:
-        await run_in_threadpool(store.sign_out, token)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-# --- billing ----------------------------------------------------------------
-
-@app.post("/api/billing/checkout", response_model=CheckoutResponse)
-async def start_checkout(
-    body: CheckoutBody,
-    background: BackgroundTasks,
-    principal: Principal = Depends(require_principal),
-    account: UserAccount = Depends(require_account),
-    billing: Billing = Depends(get_billing_provider),
-    usage: UsageRecorder = Depends(get_usage),
-) -> CheckoutResponse:
-    """A Stripe Checkout link for one tier.
-
-    Nothing about the account changes here. The tier is granted only when
-    Stripe reports a paid subscription over the webhook below, so abandoning
-    the checkout page leaves the user exactly as they were.
-
-    Closed entirely while ``PAYMENTS_PAUSED`` is on — see
-    :func:`app.config.payments_paused`. Only new checkouts stop: the portal
-    below stays open, so anyone already subscribed can still change or cancel.
-    """
-    if payments_paused():
-        # Ahead of every other check: while the card form does not work, the
-        # honest answer is the same whichever tier was asked for. 503 rather
-        # than 500 — this is a service that is down, and it is coming back.
-        raise HTTPException(
-            503,
-            detail=(
-                "payments are temporarily unavailable — please try again tomorrow. "
-                "In the meantime you can ask for an election and it will be added "
-                "to the issue tracker"
-            ),
-        )
-    if body.tier not in billing.tiers():
-        raise HTTPException(400, detail=f"the {body.tier.value} tier is not for sale")
-    if account.tier is not Tier.FREE and account.subscription_status in ENTITLING_STATUSES:
-        # A second checkout is a second subscription, charged alongside the
-        # first. Changing tier is the portal's job, which prorates instead.
-        raise HTTPException(
-            409, detail="this account already has a subscription — change it under manage subscription"
-        )
-    base = public_base_url()
-    try:
-        session = await run_in_threadpool(
-            lambda: billing.checkout(
-                uid=principal.uid,
-                tier=body.tier,
-                email=account.email or principal.email,
-                customer_id=account.stripe_customer_id,
-                success_url=f"{base}/?checkout=success",
-                cancel_url=f"{base}/?checkout=cancelled",
-            )
-        )
-    except BillingUnavailable as exc:
-        raise HTTPException(503, detail=str(exc)) from None
-    log.info("checkout started uid=%s tier=%s", principal.uid[:12], body.tier.value)
-    background.add_task(usage.record, UsageEvent.CHECKOUT_STARTED)
-    return CheckoutResponse(url=session.url)
-
-
-@app.post("/api/billing/portal", response_model=CheckoutResponse)
-async def open_portal(
-    account: UserAccount = Depends(require_account),
-    billing: Billing = Depends(get_billing_provider),
-) -> CheckoutResponse:
-    """Stripe's own page for changing or cancelling the subscription."""
-    if not account.stripe_customer_id:
-        raise HTTPException(409, detail="this account has never had a subscription")
-    try:
-        url = await run_in_threadpool(
-            lambda: billing.portal(
-                customer_id=account.stripe_customer_id, return_url=f"{public_base_url()}/"
-            )
-        )
-    except BillingUnavailable as exc:
-        raise HTTPException(503, detail=str(exc)) from None
-    return CheckoutResponse(url=url)
-
-
-def _paying(account: UserAccount | None) -> bool:
-    return (
-        account is not None
-        and account.tier is not Tier.FREE
-        and account.subscription_status in ENTITLING_STATUSES
-    )
-
-
-@app.post("/api/billing/webhook")
-async def stripe_webhook(
-    request: Request,
-    background: BackgroundTasks,
-    billing: Billing = Depends(get_billing_provider),
-    accounts: AccountStore = Depends(get_account_store),
-    usage: UsageRecorder = Depends(get_usage),
-) -> dict[str, bool]:
-    """Apply what Stripe says about a subscription.
-
-    Unauthenticated by design — the signature *is* the authentication, and it
-    is checked before a single field of the body is read. This is the only path
-    by which a tier ever changes.
-    """
-    payload = await request.body()
-    try:
-        event = await run_in_threadpool(
-            billing.event_from_webhook, payload, request.headers.get("stripe-signature")
-        )
-    except BillingUnavailable as exc:
-        raise HTTPException(503, detail=str(exc)) from None
-    except Exception as exc:  # noqa: BLE001 - an unverifiable body is a 400, never a 500
-        log.warning("rejected a Stripe webhook: %s", scrub(exc))
-        raise HTTPException(400, detail="could not verify the webhook signature") from None
-
-    if event is None:
-        return {"handled": False}
-
-    uid = event.uid
-    if uid is None and event.customer_id:
-        # Older subscriptions predate the uid we now attach to their metadata.
-        found = await run_in_threadpool(accounts.find_by_customer, event.customer_id)
-        uid = found.uid if found else None
-    if uid is None:
-        log.warning("Stripe webhook names no account we know; ignoring it")
-        return {"handled": False}
-
-    if event.tier is None:
-        if event.customer_id:
-            await run_in_threadpool(accounts.link_customer, uid, event.customer_id)
-        return {"handled": True}
-
-    # Read first, so the report can tell a subscription that started or ended
-    # from one of Stripe's many updates that change neither.
-    before = await run_in_threadpool(accounts.get, uid)
-    updated = await run_in_threadpool(
-        lambda: accounts.set_subscription(
-            uid,
-            event.tier,
-            customer_id=event.customer_id,
-            subscription_id=event.subscription_id,
-            status=event.status,
-        )
-    )
-    log.info(
-        "billing uid=%s tier=%s status=%s applied=%s",
-        uid[:12], event.tier.value, scrub(event.status), updated is not None,
-    )
-    if updated is not None and _paying(updated) != _paying(before):
-        background.add_task(
-            usage.record,
-            UsageEvent.SUBSCRIPTION_STARTED if _paying(updated) else UsageEvent.SUBSCRIPTION_ENDED,
-        )
-    return {"handled": updated is not None}
-
-
 # --- usage reports ----------------------------------------------------------
 
 #: The header the scheduled caller (the Worker's cron) proves itself with.
@@ -1100,18 +675,16 @@ class ReportRun(BaseModel):
     """Reports a previous run already sent."""
 
 
-def _usage_report(
-    period: Period, today: date, usage: UsageRecorder, accounts: AccountStore
-) -> tuple[str, UsageReport]:
+def _usage_report(period: Period, today: date, usage: UsageRecorder) -> tuple[str, UsageReport]:
     """The report for the last complete ``period`` before ``today``, and its key."""
     current = period_range(period, today)
     previous = previous_range(period, current)
     subject, body = build_report(
         period,
         current,
-        gather(usage.store, accounts, current),
+        gather(usage.store, current),
         previous,
-        gather(usage.store, accounts, previous),
+        gather(usage.store, previous),
     )
     return report_key(period, current), UsageReport(subject=subject, body=body)
 
@@ -1119,8 +692,8 @@ def _usage_report(
 def require_schedule(x_report_secret: str | None = Header(default=None)) -> None:
     """The caller is the daily schedule, proven by ``USAGE_REPORT_SECRET``.
 
-    The endpoints behind this belong to no account; the Worker's cron calls
-    them. Without a secret configured they do not exist, which is the honest
+    The endpoint behind this belongs to nobody who visits; the Worker's cron
+    calls it. Without a secret configured they do not exist, which is the honest
     answer on a deployment that runs no schedule.
     """
     expected = usage_report_secret()
@@ -1135,7 +708,6 @@ async def send_usage_reports(
     period: Period | None = Query(None, description="Send this report now instead of the due ones."),
     _schedule: None = Depends(require_schedule),
     usage: UsageRecorder = Depends(get_usage),
-    accounts: AccountStore = Depends(get_account_store),
     mailer: Mailer = Depends(get_mailer_provider),
 ) -> ReportRun:
     """Email the usage reports that are due. Called once a day by the Worker's cron.
@@ -1143,19 +715,13 @@ async def send_usage_reports(
     Each report is claimed before it is sent, so a run that is retried — or a
     cron that fires twice — sends nothing twice; a report whose email failed
     gives its claim back for the next run.
-
-    Retention runs first, whatever happens to the email: deleting old
-    active-account markers is an obligation, not a side effect of a report.
     """
     today = usage.today()
-    await run_in_threadpool(
-        usage.store.forget_active_before, today - timedelta(days=ACTIVE_RETENTION_DAYS)
-    )
 
     sent: list[str] = []
     skipped: list[str] = []
     for due in [period] if period else due_periods(today):
-        key, report = await run_in_threadpool(_usage_report, due, today, usage, accounts)
+        key, report = await run_in_threadpool(_usage_report, due, today, usage)
         if not await run_in_threadpool(usage.store.claim_report, key):
             skipped.append(key)
             continue
@@ -1169,44 +735,6 @@ async def send_usage_reports(
     return ReportRun(sent=sent, skipped=skipped)
 
 
-class InactiveAccountRun(BaseModel):
-    """What the daily deletion did, as counts. It never says whose accounts."""
-
-    dated: int
-    deleted: int
-    kept: int
-    failed: int
-
-
-@app.post("/api/internal/inactive-accounts", response_model=InactiveAccountRun)
-async def delete_inactive_accounts(
-    _schedule: None = Depends(require_schedule),
-    accounts: AccountStore = Depends(get_account_store),
-    identities: IdentityRemover = Depends(get_identity_remover_provider),
-) -> InactiveAccountRun:
-    """Delete accounts nobody has used for two years. Called once a day by the Worker's cron.
-
-    Separate from the reports on purpose, so each can fail without the other.
-    A sign-in that could not be deleted (in practice, a service account missing
-    the Firebase role) answers ``502`` once the rest of the run is done, so the
-    cron run shows as failed instead of looking fine while nothing is deleted.
-    Its account is kept and tried again on the next run. See
-    :mod:`app.retention`.
-    """
-    swept = await run_in_threadpool(sweep_inactive_accounts, accounts, identities)
-    if swept.failed:
-        raise HTTPException(
-            502,
-            detail=(
-                f"{swept.failed} sign-ins could not be deleted and their accounts wait for "
-                f"the next run (deleted {swept.deleted}, kept {swept.kept}, dated {swept.dated})"
-            ),
-        )
-    return InactiveAccountRun(
-        dated=swept.dated, deleted=swept.deleted, kept=swept.kept, failed=swept.failed
-    )
-
-
 @app.get("/api/admin/usage", response_model=UsageReport)
 async def preview_usage_report(
     period: Period = Query(Period.DAILY),
@@ -1215,12 +743,9 @@ async def preview_usage_report(
     ),
     _admin: None = Depends(require_admin),
     usage: UsageRecorder = Depends(get_usage),
-    accounts: AccountStore = Depends(get_account_store),
 ) -> UsageReport:
     """A usage report as it would be emailed, sent nowhere."""
-    _, report = await run_in_threadpool(
-        _usage_report, period, before or usage.today(), usage, accounts
-    )
+    _, report = await run_in_threadpool(_usage_report, period, before or usage.today(), usage)
     return report
 
 

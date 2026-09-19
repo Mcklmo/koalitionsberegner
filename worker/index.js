@@ -8,10 +8,9 @@
  * 403 — so the `run.app` address serves nothing to anyone who goes around us.
  *
  * Once a day the cron in wrangler.jsonc runs `scheduled`, which asks the origin
- * for two things: to email the usage reports that are due, and to delete the
- * accounts nobody has used for two years. Both endpoints live under
+ * to email the usage reports that are due. That endpoint lives under
  * `/api/internal/`, which is never forwarded from the public side: the report
- * secret already guards them, and this keeps them off the internet altogether.
+ * secret already guards it, and this keeps it off the internet altogether.
  *
  * `ORIGIN_URL` is a plain var in wrangler.jsonc; `ORIGIN_SECRET` and
  * `USAGE_REPORT_SECRET` are set with `wrangler secret put` and must equal the
@@ -21,7 +20,6 @@
 export const ORIGIN_SECRET_HEADER = 'x-origin-secret';
 export const REPORT_SECRET_HEADER = 'x-report-secret';
 export const USAGE_REPORTS_PATH = '/api/internal/usage-reports';
-export const INACTIVE_ACCOUNTS_PATH = '/api/internal/inactive-accounts';
 
 async function callOrigin(env, path) {
   const response = await fetch(new URL(path, env.ORIGIN_URL), {
@@ -57,8 +55,7 @@ export default {
     return fetch(new URL(url.pathname + url.search, env.ORIGIN_URL), {
       method: request.method,
       headers,
-      // Streamed, not buffered: the Stripe webhook's signature covers the exact
-      // bytes, and the origin enforces the size limit.
+      // Streamed, not buffered: the origin enforces the size limit itself.
       body: hasBody ? request.body : undefined,
       duplex: hasBody ? 'half' : undefined,
       redirect: 'manual',
@@ -67,14 +64,11 @@ export default {
 
   async scheduled(controller, env, ctx) {
     if (!env.ORIGIN_URL || !env.ORIGIN_SECRET || !env.USAGE_REPORT_SECRET) {
-      // A deployment without the secret has no daily jobs to run.
-      console.warn('the daily jobs are not configured; skipping');
+      // A deployment without the secret has no daily job to run.
+      console.warn('the daily job is not configured; skipping');
       return;
     }
-    // Both requests start together, so one that fails does not stop the other.
-    // If either fails, the run is marked failed.
-    ctx.waitUntil(
-      Promise.all([callOrigin(env, USAGE_REPORTS_PATH), callOrigin(env, INACTIVE_ACCOUNTS_PATH)])
-    );
+    // If it fails, the run is marked failed.
+    ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
   },
 };

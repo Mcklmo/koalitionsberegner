@@ -2,7 +2,6 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import worker, {
-  INACTIVE_ACCOUNTS_PATH,
   ORIGIN_SECRET_HEADER,
   REPORT_SECRET_HEADER,
   USAGE_REPORTS_PATH,
@@ -46,32 +45,31 @@ test('an API request is forwarded to the origin with the secret', async () => {
   );
   const headers = calls[0].init.headers;
   assert.equal(headers.get(ORIGIN_SECRET_HEADER), ENV.ORIGIN_SECRET);
-  assert.equal(headers.get('authorization'), 'Bearer token', 'the Firebase token still rides along');
+  assert.equal(headers.get('authorization'), 'Bearer token', 'an authorization header still rides along');
   assert.equal(headers.get('host'), null, 'the origin routes by its own hostname');
   assert.equal(calls[0].init.redirect, 'manual');
   assert.equal(calls[0].init.body, undefined);
 });
 
-test('a webhook body is passed on byte for byte', async () => {
+test('a POST body is passed on byte for byte', async () => {
   const calls = recordFetches();
-  const payload = '{"id":"evt_1","type":"customer.subscription.updated"}';
-  const request = new Request('https://koalitionsberegner.moritzmarcus.com/api/billing/webhook', {
+  const payload = '{"url":"https://example.org/results"}';
+  const request = new Request('https://koalitionsberegner.moritzmarcus.com/api/elections/import', {
     method: 'POST',
-    headers: { 'stripe-signature': 't=1,v1=abc', 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: payload,
   });
 
   await worker.fetch(request, ENV);
 
   assert.equal(calls[0].init.method, 'POST');
-  assert.equal(calls[0].init.headers.get('stripe-signature'), 't=1,v1=abc');
   const forwarded = await new Response(calls[0].init.body).text();
-  assert.equal(forwarded, payload, 'the signature covers these exact bytes');
+  assert.equal(forwarded, payload, 'nothing rewrites the body in transit');
 });
 
 test('a client cannot supply its own secret header to learn anything', async () => {
   const calls = recordFetches();
-  const request = new Request('https://koalitionsberegner.moritzmarcus.com/api/me', {
+  const request = new Request('https://koalitionsberegner.moritzmarcus.com/api/elections', {
     headers: { [ORIGIN_SECRET_HEADER]: 'guess' },
   });
 
@@ -111,17 +109,14 @@ function scheduledContext() {
   return { pending, waitUntil: (promise) => pending.push(promise) };
 }
 
-test('the cron asks the origin for the reports and the account deletion, carrying both secrets', async () => {
+test('the cron asks the origin for the reports, carrying both secrets', async () => {
   const calls = recordFetches();
   const ctx = scheduledContext();
 
   await worker.scheduled({}, REPORT_ENV, ctx);
   await Promise.all(ctx.pending);
 
-  assert.deepEqual(
-    calls.map((call) => call.url).sort(),
-    [`${ENV.ORIGIN_URL}${INACTIVE_ACCOUNTS_PATH}`, `${ENV.ORIGIN_URL}${USAGE_REPORTS_PATH}`]
-  );
+  assert.deepEqual(calls.map((call) => call.url), [`${ENV.ORIGIN_URL}${USAGE_REPORTS_PATH}`]);
   for (const call of calls) {
     assert.equal(call.init.method, 'POST');
     assert.equal(call.init.headers[ORIGIN_SECRET_HEADER], ENV.ORIGIN_SECRET);
@@ -138,16 +133,6 @@ test('a report run the origin refused shows as a failed cron', async () => {
   await assert.rejects(Promise.all(ctx.pending), /HTTP 502/);
 });
 
-test('an email that fails does not stop the account deletion, and still fails the cron', async () => {
-  const calls = recordFetches((url) => (url.endsWith(USAGE_REPORTS_PATH) ? 502 : 200));
-  const ctx = scheduledContext();
-
-  await worker.scheduled({}, REPORT_ENV, ctx);
-
-  await assert.rejects(Promise.all(ctx.pending), new RegExp(`${USAGE_REPORTS_PATH}: HTTP 502`));
-  assert.ok(calls.some((call) => call.url.endsWith(INACTIVE_ACCOUNTS_PATH)));
-});
-
 test('without a report secret the cron sends nothing', async (t) => {
   const calls = recordFetches();
   t.mock.method(console, 'warn', () => {});
@@ -159,17 +144,15 @@ test('without a report secret the cron sends nothing', async (t) => {
   assert.equal(calls.length, 0);
 });
 
-test('the endpoints only the cron calls are never forwarded from the public side', async () => {
+test('the endpoint only the cron calls is never forwarded from the public side', async () => {
   const calls = recordFetches();
-  for (const path of [USAGE_REPORTS_PATH, INACTIVE_ACCOUNTS_PATH]) {
-    const response = await worker.fetch(
-      new Request(`https://koalitionsberegner.moritzmarcus.com${path}`, {
-        method: 'POST',
-        headers: { [REPORT_SECRET_HEADER]: REPORT_ENV.USAGE_REPORT_SECRET },
-      }),
-      REPORT_ENV
-    );
-    assert.equal(response.status, 404, path);
-  }
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com${USAGE_REPORTS_PATH}`, {
+      method: 'POST',
+      headers: { [REPORT_SECRET_HEADER]: REPORT_ENV.USAGE_REPORT_SECRET },
+    }),
+    REPORT_ENV
+  );
+  assert.equal(response.status, 404);
   assert.equal(calls.length, 0);
 });

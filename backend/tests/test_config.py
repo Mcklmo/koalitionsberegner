@@ -8,11 +8,7 @@ import pytest
 
 @pytest.fixture
 def clean_config():
-    """Config getters are cached; clear them around each check.
-
-    All of them, not just the ones a given case touches: a verifier cached here
-    under a different AUTH_MODE would otherwise leak into whatever runs next.
-    """
+    """Config getters are cached; clear them around each check."""
     from app import config
 
     cached = (
@@ -20,12 +16,6 @@ def clean_config():
         config.get_parser,
         config.get_search,
         config.get_wikipedia,
-        config.get_accounts,
-        config.get_password_store,
-        config.get_identity_remover,
-        config.get_verifier,
-        config.get_quota_policy,
-        config.get_billing,
         config.get_wishlist,
         config.get_usage,
         config.get_usage_recorder,
@@ -65,22 +55,9 @@ def clean_config():
         ({"WIKIPEDIA_LANGUAGE": "DE"}, None),
         # And auto asks for nothing: a local checkout with no keys still boots.
         ({"SEARCH_MODE": "auto"}, None),
-        # A placeholder is a boot failure, like the other two secrets.
+        # A placeholder is a boot failure, like the other secrets.
         ({"ADMIN_SECRET": "changeme"}, "ADMIN_SECRET must be at least 32"),
         ({"ADMIN_SECRET": "a" * 32}, None),
-        ({"AUTH_MODE": "firebase", "FIREBASE_PROJECT_ID": "", "GOOGLE_CLOUD_PROJECT": ""},
-         "requires FIREBASE_PROJECT_ID"),
-        ({"AUTH_MODE": "on"}, "AUTH_MODE must be one of"),
-        ({"AUTH_MODE": "firebase", "FIREBASE_PROJECT_ID": "demo"}, None),
-        ({"BASIC_MONTHLY_IMPORTS": "lots"}, "must be a whole number"),
-        ({"PREMIUM_MONTHLY_IMPORTS": "-1"}, "must not be negative"),
-        # Half-configured billing is a mistake, not a reason to sell nothing.
-        ({"STRIPE_PRICE_BASIC": "price_1"}, "STRIPE_API_KEY is not"),
-        ({"STRIPE_API_KEY": "sk_test"}, "no STRIPE_PRICE_BASIC/PREMIUM"),
-        ({"STRIPE_API_KEY": "sk_test", "STRIPE_PRICE_BASIC": "price_1"},
-         "requires PUBLIC_BASE_URL"),
-        ({"STRIPE_API_KEY": "sk_test", "STRIPE_PRICE_BASIC": "price_1",
-          "PUBLIC_BASE_URL": "https://app.test"}, "requires STRIPE_WEBHOOK_SECRET"),
     ],
 )
 def test_unrecognised_configuration_is_rejected(env, expected, monkeypatch, clean_config):
@@ -88,7 +65,6 @@ def test_unrecognised_configuration_is_rejected(env, expected, monkeypatch, clea
 
     monkeypatch.setenv("ELECTION_STORE", "memory")
     monkeypatch.setenv("LLM_MODE", "mock")
-    monkeypatch.setenv("AUTH_MODE", "off")
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 
@@ -273,136 +249,10 @@ def test_a_good_configuration_starts_and_logs_what_it_chose(monkeypatch, clean_c
         assert client.get("/healthz").status_code == 200
 
     assert any(
-        "configuration ok store=memory llm_mode=mock auth_mode=off billing=off "
+        "configuration ok store=memory llm_mode=mock admin=open "
         "requests=off reports=off search=off wikipedia=off" in r.getMessage()
         for r in caplog.records
     )
-
-
-def test_auth_is_on_by_default_once_there_is_a_project(monkeypatch, clean_config):
-    """The dangerous default: a deployment that silently serves everything ungated."""
-    from app.config import auth_mode
-
-    monkeypatch.delenv("AUTH_MODE", raising=False)
-    monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
-
-    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "some-project")
-    assert auth_mode() == "firebase"
-
-    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "")
-    assert auth_mode() == "off", "a bare local checkout still runs without Firebase"
-
-
-def test_a_stub_verifier_is_never_reached_by_accident(monkeypatch, clean_config, caplog):
-    """It trusts whatever the caller types, so choosing it must be deliberate and loud."""
-    from app.config import get_verifier
-    from app.auth import StubCredentials
-
-    caplog.set_level(logging.WARNING, logger="app")
-    monkeypatch.setenv("AUTH_MODE", "stub")
-
-    assert isinstance(get_verifier().store, StubCredentials)
-    assert any("local use only" in r.getMessage() for r in caplog.records)
-
-
-def test_sqlite_auth_wires_a_credential_store_and_the_shared_rules(
-    monkeypatch, clean_config, tmp_path
-):
-    """The point of the mode: gating with no Firebase project behind it."""
-    from app.config import get_password_store, get_verifier
-    from app.sqlite_auth import SqliteCredentialStore
-
-    monkeypatch.setenv("ELECTION_STORE", "sqlite")
-    monkeypatch.setenv("AUTH_MODE", "sqlite")
-    monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "elections.db"))
-    monkeypatch.setenv("ADMIN_EMAILS", "boss@example.org")
-
-    verifier = get_verifier()
-
-    assert isinstance(verifier.store, SqliteCredentialStore)
-    assert verifier.store is get_password_store(), "one store, not one per caller"
-    assert verifier.anonymous() is None, "sqlite gates like Firebase does"
-    assert verifier.provider == "password"
-
-    # The admin allowlist is the same rule the Firebase mode applies, applied
-    # to an identity that never went near Google.
-    session = verifier.store.register("boss@example.org", "a-good-password")
-    assert verifier.verify(session.token).admin is True
-
-
-def test_sqlite_auth_warns_when_the_accounts_it_signs_in_are_not_persisted(
-    monkeypatch, clean_config, tmp_path, caplog
-):
-    from app.config import get_verifier
-
-    caplog.set_level(logging.WARNING, logger="app")
-    monkeypatch.setenv("ELECTION_STORE", "memory")
-    monkeypatch.setenv("AUTH_MODE", "sqlite")
-    monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "elections.db"))
-
-    get_verifier()
-
-    assert any("accounts do not" in r.getMessage() for r in caplog.records)
-
-
-def test_quota_limits_come_from_the_environment(monkeypatch, clean_config):
-    from app.accounts import Tier
-    from app.config import get_quota_policy
-
-    monkeypatch.setenv("BASIC_MONTHLY_IMPORTS", "3")
-    monkeypatch.setenv("PREMIUM_MONTHLY_IMPORTS", "300")
-
-    policy = get_quota_policy()
-
-    assert policy.limit(Tier.FREE) == 0, "free is not configurable; it is the free tier"
-    assert policy.limit(Tier.BASIC) == 3
-    assert policy.limit(Tier.PREMIUM) == 300
-
-
-def test_without_stripe_the_app_still_starts_and_sells_nothing(monkeypatch, clean_config):
-    from app.config import get_billing
-
-    for name in ("STRIPE_API_KEY", "STRIPE_PRICE_BASIC", "STRIPE_PRICE_PREMIUM"):
-        monkeypatch.delenv(name, raising=False)
-
-    billing = get_billing()
-
-    assert billing.enabled is False
-    assert billing.tiers() == ()
-
-
-@pytest.mark.parametrize("mode", ["off", "stub"])
-def test_an_ungated_auth_mode_refuses_to_run_on_cloud_run(monkeypatch, clean_config, mode):
-    """Both let a caller be anyone; neither belongs anywhere reachable."""
-    from app.config import ConfigError, get_verifier
-
-    monkeypatch.setenv("K_SERVICE", "koalitionsberegner")
-    monkeypatch.setenv("AUTH_MODE", mode)
-
-    with pytest.raises(ConfigError, match="Cloud Run"):
-        get_verifier()
-
-
-def test_a_lost_project_id_on_cloud_run_stops_the_boot(monkeypatch, clean_config):
-    """Without a project the default is off — on Cloud Run that must fail, not open up."""
-    from app.config import ConfigError, get_verifier
-
-    monkeypatch.setenv("K_SERVICE", "koalitionsberegner")
-    for name in ("AUTH_MODE", "FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"):
-        monkeypatch.delenv(name, raising=False)
-
-    with pytest.raises(ConfigError, match="Cloud Run"):
-        get_verifier()
-
-
-def test_firebase_runs_on_cloud_run(monkeypatch, clean_config):
-    from app.config import get_verifier
-
-    monkeypatch.setenv("K_SERVICE", "koalitionsberegner")
-    monkeypatch.setenv("AUTH_MODE", "firebase")
-    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo")
-
-    assert get_verifier().provider == "firebase"
 
 
 def test_cloud_run_refuses_to_boot_without_an_admin_secret(monkeypatch, clean_config):
@@ -410,8 +260,8 @@ def test_cloud_run_refuses_to_boot_without_an_admin_secret(monkeypatch, clean_co
     from app.config import ConfigError, validate_configuration
 
     monkeypatch.setenv("K_SERVICE", "koalitionsberegner")
-    monkeypatch.setenv("AUTH_MODE", "firebase")
-    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo")
+    monkeypatch.setenv("ELECTION_STORE", "memory")
+    monkeypatch.setenv("LLM_MODE", "mock")
     monkeypatch.delenv("ADMIN_SECRET", raising=False)
 
     with pytest.raises(ConfigError, match="ADMIN_SECRET is required on Cloud Run"):

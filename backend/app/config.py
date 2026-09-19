@@ -19,20 +19,6 @@ import re
 from functools import lru_cache
 
 from . import ENV_FILE_LOADED, ENV_NAMES_LOADED
-from .accounts import DEFAULT_MONTHLY_IMPORTS, AccountStore, InMemoryAccountStore, QuotaPolicy, Tier
-from .auth import (
-    DisabledVerifier,
-    FirebaseCredentials,
-    FirebaseIdentities,
-    IdentityRemover,
-    NoIdentities,
-    PasswordCredentialStore,
-    PrincipalRules,
-    StoreBackedVerifier,
-    StubCredentials,
-    TokenVerifier,
-)
-from .billing import Billing, DisabledBilling, StripeBilling
 from .mailer import DisabledMailer, Mailer, SmtpMailer
 from .parser import DEFAULT_PAGE_LIMIT, ElectionParser, UnavailableParser
 from .search import DEFAULT_SEARCH_LIMIT
@@ -46,7 +32,6 @@ log = logging.getLogger(__name__)
 #: Every recognised value, so an unknown one can name the alternatives.
 STORE_BACKENDS = ("firestore", "sqlite", "memory")
 LLM_MODES = ("mock", "live", "off")
-AUTH_MODES = ("firebase", "sqlite", "stub", "off")
 SEARCH_MODES = ("auto", "google", "anthropic", "off")
 WIKIPEDIA_MODES = ("on", "off")
 
@@ -95,34 +80,10 @@ def _env_str(name: str, default: str = "") -> str:
 
 
 def _store_backend() -> str:
-    """Which backend both the elections and the accounts live in."""
+    """Which backend the elections and the usage counters live in."""
     return _env_choice(
         "ELECTION_STORE", STORE_BACKENDS,
         "firestore" if os.environ.get("GOOGLE_CLOUD_PROJECT") else "memory",
-    )
-
-
-def firebase_project_id() -> str:
-    """The Firebase project whose ID tokens this API accepts.
-
-    Defaults to the GCP project, because a Firebase project *is* a GCP project
-    and running both in one is the ordinary setup.
-    """
-    return _env_str("FIREBASE_PROJECT_ID") or _env_str("GOOGLE_CLOUD_PROJECT")
-
-
-def auth_mode() -> str:
-    """``firebase`` once a project exists; ``off`` on a bare local checkout.
-
-    ``off`` is not "anonymous everywhere" — it is "no gating at all", so the app
-    behaves exactly as it did before accounts existed. It must never be the
-    mode in a deployment, which is why the default follows the project id.
-
-    ``sqlite`` is the third real option: the same gating, with the passwords and
-    sessions in the local database instead of a Firebase project.
-    """
-    return _env_choice(
-        "AUTH_MODE", AUTH_MODES, "firebase" if firebase_project_id() else "off"
     )
 
 
@@ -327,31 +288,8 @@ def get_parser() -> ElectionParser:
 
 
 @lru_cache(maxsize=1)
-def get_accounts() -> AccountStore:
-    """Accounts live wherever the elections do — one database, one deployment."""
-    backend = _store_backend()
-    if backend == "memory":
-        return InMemoryAccountStore()
-
-    if backend == "sqlite":
-        from .sqlite_accounts import SqliteAccountStore
-
-        return SqliteAccountStore(os.environ.get("SQLITE_PATH", DEFAULT_SQLITE_PATH))
-
-    from google.cloud import firestore
-
-    from .firestore_accounts import FirestoreAccountStore
-
-    client = firestore.Client(
-        project=os.environ["GOOGLE_CLOUD_PROJECT"],
-        database=os.environ.get("FIRESTORE_DATABASE", "(default)"),
-    )
-    return FirestoreAccountStore(client)
-
-
-@lru_cache(maxsize=1)
 def get_usage() -> UsageStore:
-    """The usage counters live wherever the accounts do."""
+    """The usage counters live wherever the elections do."""
     backend = _store_backend()
     if backend == "memory":
         return InMemoryUsageStore()
@@ -374,7 +312,7 @@ def get_usage() -> UsageStore:
 
 @lru_cache(maxsize=1)
 def get_usage_recorder() -> UsageRecorder:
-    """One recorder per process, so its record of today's active accounts is shared."""
+    """One recorder per process, shared by every request."""
     return UsageRecorder(get_usage())
 
 
@@ -389,9 +327,9 @@ DEFAULT_SMTP_PORT = 587
 def get_mailer() -> Mailer:
     """Where the usage reports are emailed, when anywhere.
 
-    Optional in the way billing and requests are: with none of
-    :data:`SMTP_VARIABLES` set, the counting still happens and an administrator
-    can read a report at ``/api/admin/usage``. Some of them without the rest is
+    Optional in the way requests are: with none of :data:`SMTP_VARIABLES` set,
+    the counting still happens and the owner can read a report at
+    ``/api/admin/usage``. Some of them without the rest is
     a configuration error, because a report that silently goes nowhere is what
     this switch exists to prevent.
     """
@@ -419,151 +357,9 @@ def usage_report_secret() -> str:
     return _env_str("USAGE_REPORT_SECRET")
 
 
-@lru_cache(maxsize=1)
-def get_password_store() -> PasswordCredentialStore | None:
-    """The store that owns passwords itself, when one is configured.
-
-    Only ``AUTH_MODE=sqlite`` has one. Firebase keeps the passwords and the
-    sign-in endpoints are Google's, so there is nothing here to register
-    against — which is what makes ``/api/auth/*`` answer 404 in that mode.
-    """
-    if auth_mode() != "sqlite":
-        return None
-
-    from .sqlite_auth import SqliteCredentialStore
-
-    return SqliteCredentialStore(os.environ.get("SQLITE_PATH", DEFAULT_SQLITE_PATH))
-
-
-@lru_cache(maxsize=1)
-def get_identity_remover() -> IdentityRemover:
-    """What deletes the sign-in when retention deletes an unused account.
-
-    It follows ``AUTH_MODE``, because that is where the sign-ins are. Firebase
-    users are deleted through Identity Toolkit as the service account, which
-    therefore needs a role that may delete them (see doc/contribute.md). SQLite
-    users are deleted from the same file. ``off`` and ``stub`` store no sign-in,
-    so only the account record is deleted.
-    """
-    mode = auth_mode()
-    if mode == "sqlite":
-        store = get_password_store()
-        if store is None:  # unreachable: this mode is what builds it
-            raise ConfigError("AUTH_MODE=sqlite could not open its credential store")
-        return store
-    if mode == "firebase":
-        project = firebase_project_id()
-        if not project:
-            raise ConfigError("AUTH_MODE=firebase requires FIREBASE_PROJECT_ID")
-        return FirebaseIdentities(project)
-    return NoIdentities()
-
-
-@lru_cache(maxsize=1)
-def get_verifier() -> TokenVerifier:
-    """Wire token verification: a credential store, plus the rules.
-
-    ``AUTH_MODE`` selects the store — ``firebase`` verifies real ID tokens
-    against Google's certificates, ``sqlite`` resolves sessions this app issued
-    itself, ``stub`` trusts the token's text and exists only so the gated
-    behaviour can be exercised without either. ``off`` disables gating entirely
-    for local runs and so has no store at all.
-
-    The rules that turn a resolved credential into a principal — a subject is
-    mandatory, ``ADMIN_EMAILS`` grants curation rights — are the same object in
-    every mode, so they cannot drift apart per backend.
-    """
-    mode = auth_mode()
-    if mode in ("off", "stub") and on_cloud_run():
-        # ``off`` is also the default once no project id is set, so this is
-        # what turns a lost environment variable into a failed boot instead of
-        # a deployment where every caller is an unlimited administrator.
-        raise ConfigError(
-            f"AUTH_MODE={mode} cannot run on Cloud Run: it lets any caller in as anyone. "
-            "Set AUTH_MODE=firebase with FIREBASE_PROJECT_ID (or GOOGLE_CLOUD_PROJECT)"
-        )
-    if mode == "off":
-        return DisabledVerifier()
-
-    rules = PrincipalRules.of(admin_emails())
-
-    if mode == "stub":
-        # Loud, because a deployment reaching this line is trusting whatever a
-        # caller types into the Authorization header.
-        log.warning("AUTH_MODE=stub: identities are unverified — local use only")
-        return StoreBackedVerifier(StubCredentials(), rules)
-
-    if mode == "sqlite":
-        store = get_password_store()
-        if store is None:  # unreachable: this mode is what builds it
-            raise ConfigError("AUTH_MODE=sqlite could not open its credential store")
-        if _store_backend() != "sqlite":
-            # Sessions would survive a restart while the accounts they belong
-            # to did not, so a signed-in user would keep landing on a new
-            # free account. Legal, but never what anybody wants.
-            log.warning(
-                "AUTH_MODE=sqlite with ELECTION_STORE=%s: sign-ins persist but accounts do not",
-                _store_backend(),
-            )
-        return StoreBackedVerifier(store, rules)
-
-    project = firebase_project_id()
-    if not project:
-        raise ConfigError("AUTH_MODE=firebase requires FIREBASE_PROJECT_ID")
-    return StoreBackedVerifier(FirebaseCredentials(project), rules)
-
-
 def on_cloud_run() -> bool:
     """Whether this process is a Cloud Run service or job, which set these themselves."""
     return bool(_env_str("K_SERVICE") or _env_str("CLOUD_RUN_JOB"))
-
-
-def admin_emails() -> frozenset[str]:
-    """Accounts allowed to curate which elections signed-out visitors see."""
-    raw = _env_str("ADMIN_EMAILS")
-    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
-
-
-@lru_cache(maxsize=1)
-def get_quota_policy() -> QuotaPolicy:
-    """How many imports a month each paid tier gets."""
-    return QuotaPolicy(
-        {
-            Tier.FREE: 0,
-            Tier.BASIC: _env_int("BASIC_MONTHLY_IMPORTS", DEFAULT_MONTHLY_IMPORTS[Tier.BASIC]),
-            Tier.PREMIUM: _env_int(
-                "PREMIUM_MONTHLY_IMPORTS", DEFAULT_MONTHLY_IMPORTS[Tier.PREMIUM]
-            ),
-        }
-    )
-
-
-@lru_cache(maxsize=1)
-def get_billing() -> Billing:
-    """Stripe when it is configured, otherwise nothing is for sale.
-
-    Billing is optional on purpose: the app is useful without it, and a
-    deployment that has not set up Stripe should serve free accounts rather
-    than fail to start.
-    """
-    api_key = _env_str("STRIPE_API_KEY")
-    prices = {
-        Tier.BASIC: _env_str("STRIPE_PRICE_BASIC"),
-        Tier.PREMIUM: _env_str("STRIPE_PRICE_PREMIUM"),
-    }
-    if not api_key:
-        if any(prices.values()):
-            raise ConfigError("STRIPE_PRICE_* is set but STRIPE_API_KEY is not")
-        return DisabledBilling()
-    if not any(prices.values()):
-        raise ConfigError("STRIPE_API_KEY is set but no STRIPE_PRICE_BASIC/PREMIUM is")
-    if not public_base_url():
-        raise ConfigError("Stripe checkout requires PUBLIC_BASE_URL to return the user to")
-    webhook_secret = _env_str("STRIPE_WEBHOOK_SECRET")
-    if not webhook_secret:
-        # Without it every webhook is refused, so the tier would never change.
-        raise ConfigError("Stripe billing requires STRIPE_WEBHOOK_SECRET")
-    return StripeBilling(api_key, prices=prices, webhook_secret=webhook_secret)
 
 
 #: Repository that election requests are filed against, as ``owner/name``.
@@ -572,13 +368,13 @@ _REPO_PATTERN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 @lru_cache(maxsize=1)
 def get_wishlist() -> Wishlist:
-    """Where an account without a subscription can ask for an election.
+    """Where anyone can ask for an election to be imported.
 
-    Optional in the same way billing is: with no ``GITHUB_ISSUES_TOKEN`` there
-    is nowhere to file a request, and the page is told so by ``/api/config``
-    and stops offering it. A token with no repository to file against is a
-    configuration error rather than a default, because guessing which
-    repository to open issues on is not something to get wrong quietly.
+    Optional: with no ``GITHUB_ISSUES_TOKEN`` there is nowhere to file a
+    request, and the page is told so by ``/api/config`` and stops offering it.
+    A token with no repository to file against is a configuration error rather
+    than a default, because guessing which repository to open issues on is not
+    something to get wrong quietly.
 
     Named ``GITHUB_ISSUES_*`` rather than ``GITHUB_TOKEN``: that name is
     already taken — GitHub Actions sets it in every workflow run, and so do
@@ -599,20 +395,13 @@ def get_wishlist() -> Wishlist:
     return GithubWishlist(token, owner=owner, repo=name)
 
 
-def payments_paused() -> bool:
-    """Whether checkout is closed while payments are being fixed.
-
-    Defaults to *paused*, which is the state this was added in: the deploy that
-    carries this code is the one saying the card form does not work. Set
-    ``PAYMENTS_PAUSED=false`` to open it again — one variable, no code change.
-    Only new checkouts stop; an existing subscriber keeps their tier and can
-    still reach Stripe's portal to change or cancel it.
-    """
-    return _env_str("PAYMENTS_PAUSED", "true").lower() not in {"false", "0", "no", "off"}
-
-
 def public_base_url() -> str:
-    """Where Stripe sends the user back to. No trailing slash."""
+    """Where this site is reachable, as an absolute URL. No trailing slash.
+
+    A plain variable, not a secret. Nothing in the app needs it today; it is
+    kept for what does need an absolute link to the site, such as the approval
+    email in doc/plans/04-reddit-outreach.md.
+    """
     return _env_str("PUBLIC_BASE_URL").rstrip("/")
 
 
@@ -646,18 +435,6 @@ def imports_enabled() -> bool:
     return _env_choice("LLM_MODE", LLM_MODES, "mock") != "off"
 
 
-def firebase_web_config() -> dict[str, str]:
-    """The public Firebase settings the browser needs to sign users in.
-
-    An API key here is an identifier, not a secret — it names the project for
-    the identity endpoints. Everything that grants access is checked server-side.
-    """
-    return {
-        "apiKey": _env_str("FIREBASE_API_KEY"),
-        "projectId": firebase_project_id(),
-    }
-
-
 def max_wait_seconds() -> float:
     return _env_float("IMPORT_MAX_WAIT_SECONDS", 25.0)
 
@@ -667,12 +444,7 @@ def describe_configuration() -> dict[str, str]:
     return {
         "store": _store_backend(),
         "llm_mode": _env_choice("LLM_MODE", LLM_MODES, "mock"),
-        "auth_mode": auth_mode(),
-        "billing": (
-            "paused"
-            if _env_str("STRIPE_API_KEY") and payments_paused()
-            else ("stripe" if _env_str("STRIPE_API_KEY") else "off")
-        ),
+        "admin": "secret" if admin_secret() else "open",
         "requests": "github" if _env_str("GITHUB_ISSUES_TOKEN") else "off",
         "reports": "email" if _env_str("SMTP_HOST") else "off",
         "search": search_mode(),
@@ -692,8 +464,8 @@ def validate_configuration() -> dict[str, str]:
     chosen = describe_configuration()
     if ENV_FILE_LOADED is not None:
         # Names only, never values: this file is where the API keys are. Worth a
-        # line even so — "why is billing on?" is answered by seeing which file
-        # was picked up, especially one found by walking up from the cwd.
+        # line even so — "why are live imports on?" is answered by seeing which
+        # file was picked up, especially one found by walking up from the cwd.
         log.info(
             "loaded %s from %s", ", ".join(ENV_NAMES_LOADED) or "nothing", ENV_FILE_LOADED
         )
@@ -705,12 +477,6 @@ def validate_configuration() -> dict[str, str]:
     # SEARCH_MODE or WIKIPEDIA_LANGUAGE must still stop the boot.
     get_search()
     get_wikipedia()
-    get_accounts()
-    get_password_store()
-    get_verifier()
-    get_identity_remover()
-    get_quota_policy()
-    get_billing()
     get_wishlist()
     get_usage()
     get_mailer()
@@ -724,18 +490,15 @@ def validate_configuration() -> dict[str, str]:
     if on_cloud_run() and not admin_secret():
         # Without a secret every caller is the owner, which is what a local run
         # wants. On Cloud Run it would be a deployment where anyone can spend
-        # the owner's money on imports, so it must not boot.
+        # the owner's money on imports — the failure a lost environment
+        # variable must turn into, rather than a deployment that is wide open.
         raise ConfigError(
             "ADMIN_SECRET is required on Cloud Run: without it every caller may import"
         )
-    if chosen["auth_mode"] == "firebase" and not _env_str("FIREBASE_API_KEY"):
-        # Not fatal: the API still verifies tokens. But nothing in the browser
-        # can obtain one, so sign-in is dead until this is set.
-        log.warning("AUTH_MODE=firebase without FIREBASE_API_KEY: the page cannot sign anyone in")
     log.info(
-        "configuration ok store=%s llm_mode=%s auth_mode=%s billing=%s requests=%s "
+        "configuration ok store=%s llm_mode=%s admin=%s requests=%s "
         "reports=%s search=%s wikipedia=%s",
-        chosen["store"], chosen["llm_mode"], chosen["auth_mode"], chosen["billing"],
+        chosen["store"], chosen["llm_mode"], chosen["admin"],
         chosen["requests"], chosen["reports"], chosen["search"], chosen["wikipedia"],
     )
     return chosen

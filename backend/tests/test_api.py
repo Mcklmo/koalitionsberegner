@@ -233,6 +233,49 @@ def test_listing_returns_saved_elections(client, store):
     assert {row["state"] for row in listed} == {None, "Sachsen-Anhalt"}
 
 
+def test_a_caller_with_no_header_sees_every_stored_election(client, store):
+    """No curated part of the list: everything stored is everyone's."""
+    danish = make_election(nation="Danmark", election_date="2026-03-25")
+    german = make_election(nation="Deutschland", state="Sachsen-Anhalt", election_date="2021-06-06")
+    main.app.dependency_overrides[main.get_service] = lambda: ImportService(
+        store, CountingParser(by_year={2026: danish, 2021: german})
+    )
+    first = save(client)
+    second = save(client, OTHER_BODY)
+
+    listed = client.get("/api/elections", headers={}).json()
+
+    assert {row["election_hash"] for row in listed} == {
+        first["election_hash"], second["election_hash"]
+    }
+    assert all("selected" not in row for row in listed), "curation is gone"
+
+
+def test_a_caller_with_no_header_may_open_any_stored_election(client):
+    saved = save(client)
+
+    response = client.get(f"/api/elections/{saved['election_hash']}", headers={})
+
+    assert response.status_code == 200
+    assert response.json()["election"]["title"] == "Koalitionsberegner"
+
+
+def test_an_unknown_election_is_404_to_anyone(client):
+    response = client.get("/api/elections/" + "0" * 64, headers={})
+    assert response.status_code == 404
+
+
+def test_the_account_routes_are_gone(client):
+    """Nobody signs in, pays or curates any more; those routes answer 404/405."""
+    assert client.get("/api/me").status_code == 404
+    for path in ("/api/auth/register", "/api/auth/login", "/api/auth/logout",
+                 "/api/billing/checkout", "/api/billing/portal", "/api/billing/webhook",
+                 "/api/internal/inactive-accounts"):
+        assert client.post(path, json={}).status_code == 404, path
+    assert client.put("/api/elections/" + "0" * 64 + "/selected",
+                      json={"selected": True}).status_code == 404, "curation is gone too"
+
+
 def test_a_failed_import_is_reported_and_can_be_retried(store):
     failing = CountingParser(fail_times=1)
     main.app.dependency_overrides[main.get_service] = lambda: ImportService(store, failing)
