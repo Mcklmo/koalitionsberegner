@@ -22,3 +22,5 @@ venv/
 *.local.sh
 # outreach plugin: local credentials
 plugins/outreach/.env
+
+*.obsidian
