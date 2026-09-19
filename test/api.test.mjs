@@ -196,7 +196,7 @@ test('the secret is read per request, so forgetting it takes effect at once', as
   assert.deepEqual(calls.map((c) => c.headers['x-admin-secret']), ['first', undefined]);
 });
 
-// --- the account and config endpoints --------------------------------------
+// --- the config endpoint ----------------------------------------------------
 
 test('the public config is mapped to camelCase', async () => {
   const { fetchImpl } = fakeFetch([
@@ -206,53 +206,6 @@ test('the public config is mapped to camelCase', async () => {
   const config = await createApiClient({ fetch: fetchImpl }).getConfig();
 
   assert.deepEqual(config, { requestsEnabled: true, importsEnabled: true, importsOpen: false });
-});
-
-test('the account reports the tier and what is left', async () => {
-  const { fetchImpl, calls } = fakeFetch([
-    {
-      status: 200,
-      body: {
-        uid: 'u1', email: 'a@example.org', tier: 'basic', admin: false, period: '2026-09',
-        used: 3, limit: 10, remaining: 7, may_import: true,
-        subscription_status: 'active', billing_enabled: true,
-      },
-    },
-  ]);
-
-  const account = await createApiClient({ fetch: fetchImpl }).getAccount();
-
-  assert.equal(calls[0].url, '/api/me');
-  assert.equal(account.tier, 'basic');
-  assert.equal(account.remaining, 7);
-  assert.equal(account.mayImport, true);
-  assert.equal(account.unlimited, false);
-  assert.equal(account.subscriptionStatus, 'active');
-});
-
-test('a negative limit reads as no tier at all', async () => {
-  const { fetchImpl } = fakeFetch([
-    {
-      status: 200,
-      body: { uid: 'local', email: null, tier: 'free', admin: true, period: '2026-09', used: 0, limit: -1, remaining: -1, may_import: true },
-    },
-  ]);
-
-  const account = await createApiClient({ fetch: fetchImpl }).getAccount();
-
-  assert.equal(account.unlimited, true);
-  assert.equal(account.mayImport, true);
-});
-
-test('starting a checkout returns the URL to send the user to', async () => {
-  const { fetchImpl, calls } = fakeFetch([{ status: 200, body: { url: 'https://checkout.test/x' } }]);
-
-  const url = await createApiClient({ fetch: fetchImpl }).startCheckout('premium');
-
-  assert.equal(calls[0].method, 'POST');
-  assert.equal(calls[0].url, '/api/billing/checkout');
-  assert.deepEqual(JSON.parse(calls[0].body), { tier: 'premium' });
-  assert.equal(url, 'https://checkout.test/x');
 });
 
 test('a refused import surfaces the status the page needs to explain it', async () => {

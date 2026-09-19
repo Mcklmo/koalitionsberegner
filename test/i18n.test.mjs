@@ -46,10 +46,10 @@ test('every text the scripts ask for by name exists', () => {
     for (const [, key] of source.matchAll(/\bt\(\s*'([^']+)'/g)) asked.add(key);
     for (const [, key] of source.matchAll(/:\s*\[?'((?:import|request|auth|email|password|admin)\.[A-Za-z.]+)'/g)) asked.add(key);
   }
-  assert.ok(asked.size > 50, 'the scripts are translated at all');
+  assert.ok(asked.size > 40, 'the scripts are translated at all');
   for (const key of asked) assert.ok(everywhere(key), key);
   // The keys built from a template.
-  for (const key of ['tier.free', 'tier.basic', 'tier.premium', 'saved.election', 'saved.electionAlready',
+  for (const key of ['saved.election', 'saved.electionAlready',
     'saved.forecast', 'saved.forecastAlready', 'date', ...Array.from({ length: 12 }, (_, i) => `month.${i + 1}`)]) {
     assert.ok(everywhere(key), key);
   }

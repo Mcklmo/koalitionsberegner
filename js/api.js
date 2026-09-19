@@ -89,29 +89,6 @@ function toSummary(row) {
   };
 }
 
-/** The caller's tier and what is left of this month's import allowance. */
-function toAccount(body) {
-  return {
-    uid: body.uid,
-    email: body.email ?? null,
-    // Only an explicit false: a server that predates confirmation never asked
-    // for one, and its accounts are not waiting on anything.
-    emailVerified: body.email_verified !== false,
-    tier: body.tier,
-    admin: Boolean(body.admin),
-    period: body.period,
-    used: body.used,
-    limit: body.limit,
-    remaining: body.remaining,
-    // A negative limit means "not on a tier at all", which is what a local run
-    // with gating switched off reports.
-    unlimited: body.limit < 0,
-    mayImport: Boolean(body.may_import),
-    subscriptionStatus: body.subscription_status ?? null,
-    billingEnabled: Boolean(body.billing_enabled),
-  };
-}
-
 function toConfig(body) {
   return {
     // Whether anyone may ask for an election to be imported later.
@@ -120,16 +97,6 @@ function toConfig(body) {
     importsEnabled: Boolean(body.imports_enabled),
     // Whether importing needs no secret here: a local run with none configured.
     importsOpen: Boolean(body.imports_open),
-  };
-}
-
-/** A session issued by this backend, when it is the one holding the passwords. */
-function toSession(body) {
-  return {
-    token: body.token,
-    uid: body.uid,
-    email: body.email ?? null,
-    expiresAt: body.expires_at,
   };
 }
 
@@ -207,35 +174,6 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getAdminSecret
       return toConfig(await request('/api/config'));
     },
 
-    /** Create an account here and sign it in. Only the password provider has these. */
-    async register({ email, password }) {
-      return toSession(
-        await request('/api/auth/register', {
-          method: 'POST',
-          body: JSON.stringify({ email, password }),
-        })
-      );
-    },
-
-    async login({ email, password }) {
-      return toSession(
-        await request('/api/auth/login', {
-          method: 'POST',
-          body: JSON.stringify({ email, password }),
-        })
-      );
-    },
-
-    /** End the session this client is carrying, server-side as well as here. */
-    async logout() {
-      await request('/api/auth/logout', { method: 'POST' });
-    },
-
-    /** The signed-in caller's tier and allowance. Requires a token. */
-    async getAccount() {
-      return toAccount(await request('/api/me'));
-    },
-
     async listElections() {
       return (await request('/api/elections')).map(toSummary);
     },
@@ -296,20 +234,6 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getAdminSecret
       await request(`/api/elections/imports/${encodeURIComponent(requestKey)}/preview`, {
         method: 'DELETE',
       });
-    },
-
-    /** A Stripe Checkout URL for one tier. Nothing changes until Stripe says so. */
-    async startCheckout(tier) {
-      const body = await request('/api/billing/checkout', {
-        method: 'POST',
-        body: JSON.stringify({ tier }),
-      });
-      return body.url;
-    },
-
-    /** Stripe's own page for changing or cancelling the subscription. */
-    async openBillingPortal() {
-      return (await request('/api/billing/portal', { method: 'POST' })).url;
     },
   };
 }

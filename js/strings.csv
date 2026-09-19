@@ -30,60 +30,6 @@ calc.majority,Flertal ✓ (+{over}),Majority ✓ (+{over})
 calc.short,Mangler {missing},{missing} short
 seats,{count} mandater,"{count} {count, plural, one {seat} other {seats}}"
 seats.computed,mandater beregnet ud fra stemmeandele,seats calculated from vote shares
-account.summary,Konto og abonnement,Account and subscription
-account.freeNote,Det er gratis at oprette en konto. Abonnement kræves kun for at importere nye valg.,Creating an account is free. A subscription is only needed to import new elections.
-account.manage,Administrér abonnement,Manage subscription
-account.signOut,Log ud,Sign out
-account.loadFailed,Kunne ikke hente kontoen: {message},Couldn't load your account: {message}
-email.label,E-mail,Email
-email.missing,Angiv din e-mailadresse.,Enter your email address.
-email.invalid,Adressen ser ikke ud til at være en e-mailadresse.,That doesn't look like an email address.
-password.label,Adgangskode,Password
-password.missing,Angiv en adgangskode.,Enter a password.
-password.short,Adgangskoden skal være mindst {min} tegn.,The password must be at least {min} characters.
-password.forgot,Glemt adgangskode?,Forgot your password?
-auth.signin.submit,Log ind,Sign in
-auth.signin.switchText,Ny her?,New here?
-auth.signin.switchLabel,Opret en konto,Create an account
-auth.signup.submit,Opret konto,Create account
-auth.signup.switchText,Har du allerede en konto?,Already have an account?
-auth.signup.switchLabel,Log ind,Sign in
-tier.free,Gratis,Free
-tier.basic,Basis,Basic
-tier.premium,Premium,Premium
-quota.adminUnlimited,Ubegrænsede importer som administrator.,Unlimited imports as an administrator.
-quota.unlimited,Ubegrænsede importer (adgangskontrol er slået fra).,Unlimited imports (access control is off).
-quota.none,Din plan giver ikke adgang til at importere nye valg.,Your plan doesn't include importing new elections.
-quota.remaining,"{remaining} af {limit} {remaining, plural, one {import} other {importer}} tilbage denne måned.","{remaining} of {limit} {limit, plural, one {import} other {imports}} left this month."
-upgrade.button,{tier} — {imports} importer/md.,{tier} — {imports} imports/month
-payments.paused,"Betaling virker ikke lige nu — prøv igen i morgen. I mellemtiden kan du skrive under ""Importér et valg"", hvilket valg du mangler: det bliver noteret som et ønske og importeret manuelt.","Payments aren't working right now — try again tomorrow. Meanwhile, enter the election you are missing under ""Import an election"": it is noted as a request and imported by hand."
-signup.created,Kontoen er oprettet.,Your account has been created.
-signup.linkSent,Kontoen er oprettet. Vi har sendt et link til {email} — åbn det for at bekræfte adressen.,Your account has been created. We've sent a link to {email} — open it to confirm your address.
-signup.linkFailed,Kontoen er oprettet. Vi kunne ikke sende bekræftelsesmailen lige nu — tryk på »Send linket igen« om et øjeblik.,"Your account has been created. We couldn't send the confirmation email just now — press ""Send the link again"" in a moment."
-reset.sent,"Hvis der findes en konto for {email}, har vi sendt et link til at vælge en ny adgangskode.","If there is an account for {email}, we've sent it a link to choose a new password."
-verify.note,"Bekræft din e-mailadresse med linket, vi har sendt dig, før du bruger kontoen. Kan du ikke finde mailen, så kig i spam.","Confirm your email address with the link we sent you before using the account. If you can't find the email, check your spam folder."
-verify.done,Jeg har bekræftet,I've confirmed it
-verify.resend,Send linket igen,Send the link again
-verify.confirmed,"Tak, din e-mailadresse er bekræftet.","Thanks, your email address is confirmed."
-verify.notYet,"Adressen er ikke bekræftet endnu. Åbn linket i mailen, og prøv igen.",The address isn't confirmed yet. Open the link in the email and try again.
-verify.resent,Vi har sendt et nyt link til {email}.,We've sent a new link to {email}.
-verify.yourAddress,din e-mailadresse,your email address
-verify.recentlySent,"Vi har for nylig sendt dig et link. Tjek din indbakke og spam-mappen, eller prøv igen om et par minutter.","We sent you a link a moment ago. Check your inbox and spam folder, or try again in a few minutes."
-checkout.opening,Åbner betaling…,Opening payment…
-checkout.failed,Kunne ikke starte betalingen: {message},Couldn't start the payment: {message}
-portal.opening,Åbner abonnementet…,Opening your subscription…
-portal.failed,Kunne ikke åbne abonnementet: {message},Couldn't open your subscription: {message}
-login.notConfigured,Login er ikke konfigureret på denne server.,Sign-in isn't configured on this server.
-auth.emailExists,Der findes allerede en konto med den e-mailadresse.,There is already an account with that email address.
-auth.emailNotFound,Vi kunne ikke finde en konto med den e-mailadresse.,We couldn't find an account with that email address.
-auth.wrongPassword,Forkert adgangskode.,Wrong password.
-auth.wrongCredentials,Forkert e-mailadresse eller adgangskode.,Wrong email address or password.
-auth.disabled,Kontoen er deaktiveret.,This account has been disabled.
-auth.tooManyAttempts,For mange forsøg. Prøv igen om lidt.,Too many attempts. Try again in a moment.
-auth.sessionExpired,Din session er udløbet. Log ind igen.,Your session has expired. Please sign in again.
-auth.failed,Log ind mislykkedes. Prøv igen.,Sign-in failed. Please try again.
-auth.unreachable,Kunne ikke nå login-tjenesten: {message},Couldn't reach the sign-in service: {message}
-auth.signInToConfirm,Log ind for at bekræfte din e-mailadresse.,Sign in to confirm your email address.
 import.summary,Importér et valg,Import an election
 import.year,Valgår,Election year
 import.nation,Land,Country
@@ -104,9 +50,6 @@ admin.wrongSecret,Nøglen blev afvist og er glemt. Indtast den igen under #admin
 form.yearMissing,Angiv valgåret.,Enter the election year.
 form.yearInvalid,Året skal være et årstal mellem {min} og {max}.,The year must be between {min} and {max}.
 form.nationMissing,Angiv landet.,Enter the country.
-import.refusal.signIn,Log ind for at importere eller ønske et valg.,Sign in to import or request an election.
-import.refusal.subscription,Import kræver et abonnement. Vælg en plan ovenfor.,Importing requires a subscription. Pick a plan above.
-import.refusal.usedUp,Denne måneds importer er brugt op. Kvoten fornys ved månedsskiftet.,This month's imports are used up. They renew at the start of next month.
 import.requestNote,"Mangler dit valg? Vi skriver det op som et ønske, og det bliver importeret senere. Det kræver ingen konto.","Missing an election? We note it down as a request, and it is imported later. No account needed."
 import.remaining,"{remaining} {remaining, plural, one {import} other {importer}} tilbage denne måned.","{remaining} {remaining, plural, one {import} other {imports}} left this month."
 import.alreadyImported,Dette valg er allerede importeret.,This election has already been imported.
@@ -146,13 +89,11 @@ select.failed,Kunne ikke hente valget: {message},Couldn't load the election: {me
 privacy.link,Privatliv,Privacy
 privacy.summary,Privatliv og dine data,Privacy and your data
 privacy.controller,"Koalitionsberegner drives af Moritz Marcus Hönscheidt. Skriv hertil, hvis du vil se, rette eller slette dine oplysninger:","Koalitionsberegner is run by Moritz Marcus Hönscheidt. Write here to see, correct or delete your data:"
-privacy.account,"Opretter du en konto, gemmer vi din e-mailadresse og dit abonnement, fordi vi skal bruge dem for at levere tjenesten (GDPR art. 6, stk. 1, litra b). Uden en e-mailadresse kan der ikke oprettes en konto. Login håndteres af Google Firebase. Kontoen gemmes, indtil du beder os slette den. En konto, der ikke har været brugt i 2 år, sletter vi automatisk sammen med login, e-mailadresse og adgangskode, medmindre der stadig løber et abonnement på den.","If you create an account, we keep your email address and your subscription, because providing the service needs them (GDPR Art. 6(1)(b)). An account cannot be created without an email address. Sign-in is handled by Google Firebase. The account is kept until you ask us to delete it. An account that has not been used for 2 years is deleted automatically, together with its sign-in, email address and password, unless a subscription is still running on it."
-privacy.payments,"Betaling håndteres af Stripe, som får din e-mailadresse. Vi ser aldrig dine kortoplysninger. Bogføringsloven kræver, at betalingsoplysninger gemmes i 5 år fra udgangen af regnskabsåret (art. 6, stk. 1, litra c), så de slettes ikke før, heller ikke hvis du sletter din konto.","Payment is handled by Stripe, which receives your email address. We never see your card details. Danish bookkeeping law requires payment records to be kept for 5 years from the end of the financial year (Art. 6(1)(c)), so they are not deleted before then, even if you delete your account."
-privacy.logs,"For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f). Vores egne logs nævner højst en forkortet konto-id.","To deliver and protect the service, Cloudflare and Google Cloud process technical logs, including IP addresses. They are normally kept for 30 days (legitimate interest, Art. 6(1)(f)). Our own logs mention at most a shortened account ID."
-privacy.statistics,"Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). For at tælle forskellige aktive konti gemmer vi pr. dag et pseudonymiseret konto-id: et forkortet hash, som ikke viser, hvem du er, men som kan føres tilbage til din konto. Det slettes automatisk efter omkring 62 dage. Der bruges ingen cookies eller sporing i browseren til dette.","We count how often the page and its features are used, as numbers per day without any information about who (legitimate interest). To count distinct active accounts, we keep a pseudonymised account ID per day: a shortened hash that does not show who you are, but can be traced back to your account. It is deleted automatically after about 62 days. No cookies or browser tracking are used for this."
-privacy.browser,Dit login og dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.,Your sign-in and your display choices (language and party names) are kept only in your own browser.
+privacy.logs,"For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f).","To deliver and protect the service, Cloudflare and Google Cloud process technical logs, including IP addresses. They are normally kept for 30 days (legitimate interest, Art. 6(1)(f))."
+privacy.statistics,"Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). Der bruges ingen cookies eller sporing i browseren til dette.","We count how often the page and its features are used, as numbers per day without any information about who (legitimate interest). No cookies or browser tracking are used for this."
+privacy.browser,Dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.,Your display choices (language and party names) are kept only in your own browser.
 privacy.requests,"Beder du om et valg, oprettes det som et offentligt issue på GitHub. Det nævner kun valget og ikke dig.","If you ask for an election, it is filed as a public issue on GitHub. It names only the election, not you."
-privacy.imports,"Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig. En import, du starter, er knyttet til din konto, mens den kører eller venter på, at du gemmer eller forkaster den, og ikke længere.","When an election is imported, public results pages are sent to Anthropic to read the numbers. Those pages contain no information about you. An import you start is linked to your account while it runs or waits for you to save or discard it, and no longer."
-privacy.transfers,"Din konto og tjenestens øvrige data opbevares hos Google Cloud i Finland. Google, Stripe og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.","Your account and the service's other data are stored with Google Cloud in Finland. Google, Stripe and Cloudflare may also process personal data in the United States under the EU-U.S. Data Privacy Framework or the EU's standard contractual clauses. GitHub and Anthropic receive no information about you."
+privacy.imports,"Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig.","When an election is imported, public results pages are sent to Anthropic to read the numbers. Those pages contain no information about you."
+privacy.transfers,"Tjenestens data opbevares hos Google Cloud i Finland. Google og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.","The service's data is stored with Google Cloud in Finland. Google and Cloudflare may also process personal data in the United States under the EU-U.S. Data Privacy Framework or the EU's standard contractual clauses. GitHub and Anthropic receive no information about you."
 privacy.rights,"Du har ret til indsigt, berigtigelse, sletning, begrænsning, dataportabilitet og til at gøre indsigelse. Vi træffer ingen automatiske afgørelser om dig. Du kan klage til Datatilsynet (datatilsynet.dk).","You have the right to access, rectification, erasure, restriction, data portability and to object. We make no automated decisions about you. You can complain to the Danish Data Protection Agency, Datatilsynet (datatilsynet.dk)."
-privacy.updated,Senest opdateret 13. september 2026,Last updated 13 September 2026
+privacy.updated,Senest opdateret 19. september 2026,Last updated 19 September 2026
