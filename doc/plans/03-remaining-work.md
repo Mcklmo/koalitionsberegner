@@ -230,8 +230,12 @@ guaranteed from memory:
    extraction agent and a strict `CalendarEntry` schema as the fallback when
    the table shape defeats the parser. The same fenced-data prompt discipline
    as `extractor.py` applies (see `doc/threat-model.md` T3, T4).
-3. IFES ElectionGuide only if its terms allow automated reading; check before
-   using it.
+3. IFES ElectionGuide. The owner decided to use it (2026-09-19), because the
+   project is becoming a non-profit funded by sponsors. Its data use policy
+   allows personal and non-commercial use only. A non-profit that pays
+   developers from sponsor money is not automatically "non-commercial" under
+   such terms, so the owner confirms with IFES in writing before the scan
+   reads it in production. Build it behind a switch that is off until then.
 
 Filters: keep elections that fill an assembly with seats (national
 legislatures; regional legislatures for an allowlist of federations, start
@@ -312,11 +316,11 @@ Mostly writing; the conclusions are from the conversation that produced these
 plans. No ads: they pay badly on political content, need a consent banner for
 anything personalised, and cost the one differentiator the page has.
 
-1. **Licence.** Owner's choice; recommendation AGPL-3.0 for the code (it is a
-   hosted service, and AGPL keeps a fork that offers it as a service open) or
-   MIT if the owner prefers frictionless reuse. Add `LICENSE` and a licence
-   line in the README. Note that a `LICENSE` file at the repo root must be
-   added to `.assetsignore` or `test_cloudflare.py` fails.
+1. **Licence.** AGPL-3.0 for the code, decided by the owner (it is a hosted
+   service, and AGPL keeps a fork that offers it as a service open). Add
+   `LICENSE` and a licence line in the README. Note that a `LICENSE` file at
+   the repo root must be added to `.assetsignore` or `test_cloudflare.py`
+   fails.
 2. **Data attribution.** Elections read from Wikipedia carry CC BY-SA
    obligations: keep `source_url` visible (it already is in the footer of
    each election), add a `data.attribution` string under the calculator
@@ -372,7 +376,6 @@ anything personalised, and cost the one differentiator the page has.
    the public path never touches Cloud Run) is deferred. Revisit when Cloud
    Run cost or latency shows up in practice; the API and the Worker cache
    cover the expected load.
-9. Open question for the owner: should older polls of a tracked election be
-   pruned from the picker after the result is final? Recommendation: keep
-   them, grouped under the election (Section B), because "what did the polls
-   say" is part of the story.
+9. Older polls of a tracked election stay in the picker after the result is
+   final, grouped under the election (Section B), because "what did the polls
+   say" is part of the story. Decided by the owner.

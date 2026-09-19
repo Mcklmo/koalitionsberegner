@@ -78,9 +78,14 @@ block per plan, and let whichever branch lands first factor out the Worker's
   `Feature--Import-any-election-by-pasting-its-official-results-URL`, not on
   `main`, which still holds the three-commit static page.
 
-## Open decisions for the owner
+## Decisions made by the owner (2026-09-19)
 
-These are named in the plans and are not a session's to make: the licence
-(recommendation AGPL-3.0), whether older polls stay in the picker after a result
-is final (recommendation keep), and the Stripe and Firebase cleanup in plan 1
-Phase E, which only the account holder can do.
+- **Licence: AGPL-3.0.** Plan 3 section C, item 1, adds it.
+- **Older polls stay in the picker** after a result is final, grouped under the
+  election (plan 3 section D, item 9).
+- **Stripe and Firebase cleanup (plan 1 Phase E)** is done by the owner, on their
+  own schedule. No session touches either console.
+- **IFES ElectionGuide is a calendar source** (plan 3 A5). The project is
+  becoming a non-profit that pays developers only from sponsorship and
+  funding. IFES allows non-commercial use only, so the owner confirms in
+  writing that this counts before the scan reads it in production.
