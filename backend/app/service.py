@@ -388,13 +388,26 @@ class ImportService:
         :meth:`list_elections`'s cache), and :class:`AmbiguousId` is raised when
         more than one starts with it — the caller decides what that is worth
         (a share link answers ``409``).
+
+        A miss falls back to one uncached read, when the store offers one
+        (:class:`~app.cached_store.CachedElectionStore` does): otherwise an id
+        just confirmed on another instance could 404 here for as long as the
+        cached listing stays stale.
         """
         if len(prefix) == 64:
             return await self.get_stored(prefix)
-        matches = [e for e in await self.list_elections() if e.election_hash.startswith(prefix)]
+        matches = self._matching(await self.list_elections(), prefix)
+        if not matches:
+            fresh = getattr(self._store, "list_elections_uncached", None)
+            if fresh is not None:
+                matches = self._matching(await self._in_thread(fresh), prefix)
         if len(matches) > 1:
             raise AmbiguousId(prefix)
         return matches[0] if matches else None
+
+    @staticmethod
+    def _matching(elections: list[StoredElection], prefix: str) -> list[StoredElection]:
+        return [e for e in elections if e.election_hash.startswith(prefix)]
 
     async def find_by_place(
         self, year: int, nation: str, subnation: str | None = None

@@ -192,6 +192,32 @@ test('a title with markup and quotes arrives escaped', async () => {
   assert.doesNotMatch(html, /og:image/, 'no image_path means no image tags');
 });
 
+test('a title with $-patterns survives, unread as a replacement string', async () => {
+  // `String.prototype.replace` reads `$&`, `$``, `$'`, `$<name>` out of a
+  // *string* replacement; escaping turns a lone `$` into `$&lt;` etc., which
+  // then contains `$&` (the whole match) if the replacement is a string
+  // rather than a function. A function replacement must not do that.
+  recordCardFetch({
+    title: "$` and $& and $' and $<x> in one title",
+    description: 'plain',
+    image_path: null,
+  });
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}`), { ...ENV, ...assets }
+  );
+
+  const html = await response.text();
+  assert.match(
+    html,
+    /<title>\$` and \$&amp; and \$&#39; and \$&lt;x&gt; in one title<\/title>/,
+    'the escaped title is inserted verbatim, not reinterpreted as a replacement pattern'
+  );
+  assert.match(html, /<meta property="og:title" content="\$` and \$&amp;/);
+});
+
 test('an unknown id still answers 200 with the generic tags', async () => {
   recordCardFetch({}, { status: 404 });
   const assets = recordAssets(PAGE_HTML);
@@ -207,15 +233,37 @@ test('an unknown id still answers 200 with the generic tags', async () => {
   assert.match(html, /<meta property="og:title" content="Koalitionsberegner">/);
 });
 
-test('/e/ with a bad id falls through to 404', async () => {
+test('/e/ with a bad id still serves the page, with the generic tags', async () => {
+  // A bad-length or uppercase id, or one followed by an extra path segment,
+  // is not a link the Worker can resolve — but it is still `/e/*`, so the
+  // frontend must get the real page (and its own parsing) rather than a bare
+  // Worker 404 it never runs against.
   const calls = recordFetches();
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
   for (const bad of ['short12345', 'ThisIsSixteenNOT', 'a'.repeat(16) + '/extra']) {
     const response = await worker.fetch(
-      new Request(`https://koalitionsberegner.moritzmarcus.com/e/${bad}`), ENV
+      new Request(`https://koalitionsberegner.moritzmarcus.com/e/${bad}`), { ...ENV, ...assets }
     );
-    assert.equal(response.status, 404, bad);
+    assert.equal(response.status, 200, bad);
+    const html = await response.text();
+    assert.match(html, /<title>Koalitionsberegner<\/title>/, bad);
   }
-  assert.equal(calls.length, 0);
+  assert.equal(calls.length, 0, 'an id the Worker cannot even parse is never asked about');
+});
+
+test('/e/<id>/ with a trailing slash resolves the same as /e/<id>', async () => {
+  recordCardFetch({ title: 'A + F + B', description: '79 of 179 seats.', image_path: null });
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}/`), { ...ENV, ...assets }
+  );
+
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /<title>A \+ F \+ B<\/title>/);
 });
 
 test('a second request for the same preview image is served from the cache', async () => {

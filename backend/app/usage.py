@@ -233,7 +233,8 @@ SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     )),
     ("Elections", (
         ("Picked from the list", E.ELECTION_PICKED.value),
-        ("Shared links opened (crawlers included)", E.LINK_OPENED.value),
+        ("Shared-link previews built (at most once per link per hour, crawlers included)",
+         E.LINK_OPENED.value),
     )),
     ("Imports", (
         ("Started", E.IMPORT_STARTED.value),

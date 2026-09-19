@@ -45,9 +45,16 @@ const supermajorityOf = (totalSeats) => Math.floor(totalSeats * 2 / 3);
 /**
  * @param {import('./election.js').Election} election A validated election.
  * @param {Object} [elements] DOM nodes to render into; defaults to the ids used by index.html.
- * @returns {{ clearAll: () => void }}
+ * @param {Object} [options]
+ * @param {number[]} [options.initialSelection] Flattened positions to preselect, as a shared
+ *   link's `c` decodes to (js/share.js). A position with no matching party — past the last one,
+ *   or left over from a different election — selects nothing on its own.
+ * @param {(indices: number[], total: number) => void} [options.onChange] Called once on mount
+ *   and again after every change, with the selection as flattened positions (ascending) and the
+ *   seat total, so a caller can keep a shared link's URL in sync.
+ * @returns {{ clearAll: () => void, selection: () => number[], total: () => number }}
  */
-export function mountCoalitionCalculator(election, elements = {}) {
+export function mountCoalitionCalculator(election, elements = {}, { initialSelection = [], onChange } = {}) {
   if (!isValidatedElection(election)) {
     throw new TypeError('mountCoalitionCalculator requires an election from validateElection()');
   }
@@ -85,6 +92,18 @@ export function mountCoalitionCalculator(election, elements = {}) {
   /** Selection is keyed by position so parties with a repeated abbreviation stay distinct. */
   const selected = new Set();
   const keyOf = (blockIndex, partyIndex) => blockIndex + ':' + partyIndex;
+
+  /** Every `block:party` key, in the same flattened order a shared link's `c` counts in. */
+  const flattenedKeys = election.blocks.flatMap((block, blockIndex) =>
+    block.parties.map((_, partyIndex) => keyOf(blockIndex, partyIndex)));
+  const wanted = new Set(initialSelection);
+  flattenedKeys.forEach((key, position) => {
+    if (wanted.has(position)) selected.add(key);
+  });
+  /** Current selection as flattened positions, ascending — what a link's `c` would encode. */
+  const currentSelection = () => flattenedKeys
+    .map((key, position) => (selected.has(key) ? position : -1))
+    .filter((position) => position !== -1);
 
   document.title = election.title;
   el.title.textContent = election.title;
@@ -134,11 +153,14 @@ export function mountCoalitionCalculator(election, elements = {}) {
     });
   }
 
+  let lastTotal = 0;
+
   function update() {
     let total = 0;
     election.blocks.forEach((block, blockIndex) => block.parties.forEach((p, partyIndex) => {
       if (selected.has(keyOf(blockIndex, partyIndex))) total += p.seats;
     }));
+    lastTotal = total;
     el.total.textContent = total;
     el.bar.style.width = Math.min(total / election.totalSeats * 100, 100) + '%';
     if (total >= election.majoritySeats) {
@@ -154,6 +176,7 @@ export function mountCoalitionCalculator(election, elements = {}) {
       el.verdict.textContent = t('calc.short', { missing: election.majoritySeats - total });
     }
     render();
+    onChange?.(currentSelection(), total);
   }
 
   update();
@@ -163,5 +186,7 @@ export function mountCoalitionCalculator(election, elements = {}) {
       selected.clear();
       update();
     },
+    selection: currentSelection,
+    total: () => lastTotal,
   };
 }

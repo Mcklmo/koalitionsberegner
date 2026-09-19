@@ -7,6 +7,11 @@ names.label,Partinavne,Party names
 names.local,Originalsprog,Original language
 names.english,Engelsk,English
 reset,Ryd alle,Clear all
+share.button,Del,Share
+share.copied,Linket er kopieret,Link copied
+share.stale,"Tallene er ændret siden linket blev lavet. Dit valg af partier er bevaret.","The numbers have changed since this link was made. Your choice of parties is kept."
+share.unknown,"Linket kunne ikke findes. Her er standardvalget i stedet.","That link could not be found. Here is the default election instead."
+share.unavailable,Kunne ikke kopiere linket.,Couldn't copy the link.
 date,{day}. {monthName} {year},{day} {monthName} {year}
 month.1,januar,January
 month.2,februar,February
@@ -92,6 +97,7 @@ privacy.controller,"Koalitionsberegner drives af Moritz Marcus Hönscheidt. Skri
 privacy.logs,"For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f).","To deliver and protect the service, Cloudflare and Google Cloud process technical logs, including IP addresses. They are normally kept for 30 days (legitimate interest, Art. 6(1)(f))."
 privacy.statistics,"Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). Der bruges ingen cookies eller sporing i browseren til dette.","We count how often the page and its features are used, as numbers per day without any information about who (legitimate interest). No cookies or browser tracking are used for this."
 privacy.browser,Dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.,Your display choices (language and party names) are kept only in your own browser.
+privacy.shareLinks,"Et link indeholder kun valgets id og de valgte partier, intet om dig. At åbne det, eller at en platform laver en forhåndsvisning af det, henter siden og — ved en forhåndsvisning — billedet, ligesom ved ethvert andet sideopkald. Hvor mange forhåndsvisninger af delte links der bygges — højst én pr. link pr. time, inklusive crawlere — tælles som et tal pr. dag.","A link holds only the election's id and the chosen parties, nothing about you. Opening it, or a platform generating a preview of it, fetches the page and — for a preview — the image, the same way any other page load does. How many shared-link previews are built — at most one per link per hour, crawlers included — is counted as a number per day."
 privacy.requests,"Beder du om et valg, oprettes det som et offentligt issue på GitHub. Det nævner kun valget og ikke dig.","If you ask for an election, it is filed as a public issue on GitHub. It names only the election, not you."
 privacy.imports,"Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig.","When an election is imported, public results pages are sent to Anthropic to read the numbers. Those pages contain no information about you."
 privacy.transfers,"Tjenestens data opbevares hos Google Cloud i Finland. Google og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.","The service's data is stored with Google Cloud in Finland. Google and Cloudflare may also process personal data in the United States under the EU-U.S. Data Privacy Framework or the EU's standard contractual clauses. GitHub and Anthropic receive no information about you."

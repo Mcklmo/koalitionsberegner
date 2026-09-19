@@ -192,7 +192,10 @@ instead of the election's.
   (`/api/elections/<id>/card?...` on this domain, not on `run.app`), for as
   long as the origin's `Cache-Control` says — an hour. The page itself is
   served with `Cache-Control: public, max-age=300`, so a crawler that revisits
-  a link picks up a corrected card within five minutes.
+  a link picks up a corrected card within five minutes. **A correction
+  (`store.replace_election`) does not clear either cache**: a preview already
+  cached here can still show the pre-correction wording, numbers or image for
+  up to an hour after the correction, until it expires or is purged (below).
 - `GET /api/og/<id>.png` (the preview image) is cached in `caches.default` too,
   keyed on its own request. A link pasted into a busy channel renders the
   image once, not once per viewer.

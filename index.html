@@ -548,9 +548,11 @@
       <span class="footer-note" id="footer-note"></span>
       <span>
         <a class="reset-btn" href="#privacy" data-i18n="privacy.link">Privatliv</a>
+        <button class="reset-btn" id="share" data-i18n="share.button">Del</button>
         <button class="reset-btn" id="reset" data-i18n="reset">Ryd alle</button>
       </span>
     </div>
+    <p class="msg msg-warn" id="share-note" hidden></p>
   </div>
 
   <details class="import" id="import">
@@ -629,6 +631,7 @@
     <p data-i18n="privacy.logs">For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f).</p>
     <p data-i18n="privacy.statistics">Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). Der bruges ingen cookies eller sporing i browseren til dette.</p>
     <p data-i18n="privacy.browser">Dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.</p>
+    <p data-i18n="privacy.shareLinks">Et link indeholder kun valgets id og de valgte partier, intet om dig. At åbne det, eller at en platform laver en forhåndsvisning af det, henter siden og — ved en forhåndsvisning — billedet, ligesom ved ethvert andet sideopkald. Hvor mange forhåndsvisninger af delte links der bygges — højst én pr. link pr. time, inklusive crawlere — tælles som et tal pr. dag.</p>
     <p data-i18n="privacy.requests">Beder du om et valg, oprettes det som et offentligt issue på GitHub. Det nævner kun valget og ikke dig.</p>
     <p data-i18n="privacy.imports">Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig.</p>
     <p data-i18n="privacy.transfers">Tjenestens data opbevares hos Google Cloud i Finland. Google og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.</p>
@@ -636,7 +639,7 @@
     <p class="privacy-updated" data-i18n="privacy.updated">Senest opdateret 19. september 2026</p>
   </details>
 
-  <script type="module" src="./js/main.js"></script>
+  <script type="module" src="/js/main.js"></script>
 </body>
 
 </html>
