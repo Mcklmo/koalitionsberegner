@@ -6,9 +6,10 @@ it and (b) unfurls in Reddit, Facebook, Slack, Discord, Signal, iMessage and
 the rest into an image that shows the seat distribution they built, the total,
 and whether it is a majority.
 
-Depends on [01-open-access.md](01-open-access.md) Phase B: link previews are
-fetched by crawlers that never sign in, so the election behind a link must be
-readable anonymously. The frontend work (WP3) can start before that lands.
+Second of the four plans ([README.md](README.md) has the order). Depends on
+[01-open-access.md](01-open-access.md) Phase B: link previews are fetched by
+crawlers that never sign in, so the election behind a link must be readable
+anonymously. The two pure modules in WP1 can be written before plan 1 lands.
 [03-remaining-work.md](03-remaining-work.md) lists the follow-ups this plan
 leaves open (glyph coverage, a dark image variant).
 

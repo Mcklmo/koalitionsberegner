@@ -8,6 +8,12 @@ plan (an election must be readable without signing in before a crawler can
 unfurl a link to it). [03-remaining-work.md](03-remaining-work.md) builds the
 automated imports that make the owner's manual imports rare.
 
+**Order.** This plan runs first and alone on the shared files. Then
+[02-share-links.md](02-share-links.md), then
+[04-reddit-outreach.md](04-reddit-outreach.md), then
+[03-remaining-work.md](03-remaining-work.md). See
+[README.md](README.md) for what may run concurrently.
+
 ## Why
 
 The product decision, in one paragraph: importing was sold because an import
@@ -51,10 +57,14 @@ Routes that go: `GET /api/me`, `POST /api/auth/register|login|logout`,
 
 Environment after this plan. Removed: `AUTH_MODE`, `FIREBASE_PROJECT_ID`,
 `FIREBASE_API_KEY`, `ADMIN_EMAILS`, `STRIPE_API_KEY`, `STRIPE_PRICE_BASIC`,
-`STRIPE_PRICE_PREMIUM`, `STRIPE_WEBHOOK_SECRET`, `PUBLIC_BASE_URL`,
-`PAYMENTS_PAUSED`, `BASIC_MONTHLY_IMPORTS`, `PREMIUM_MONTHLY_IMPORTS`.
+`STRIPE_PRICE_PREMIUM`, `STRIPE_WEBHOOK_SECRET`, `PAYMENTS_PAUSED`,
+`BASIC_MONTHLY_IMPORTS`, `PREMIUM_MONTHLY_IMPORTS`.
 Added: `ADMIN_SECRET` (at least 32 characters, same rule as `ORIGIN_SECRET`).
-Everything else is unchanged.
+**Kept, and re-documented:** `PUBLIC_BASE_URL`. It arrived as "where Stripe
+returns the user" and stays as "where this site is reachable", because
+[04-reddit-outreach.md](04-reddit-outreach.md) needs an absolute URL for the
+approval email. It is a plain variable, not a secret. Everything else is
+unchanged.
 
 ## Decisions already made
 
@@ -226,8 +236,9 @@ Backend:
 2. `config.py`: remove `AUTH_MODES`, `auth_mode`, `firebase_project_id`,
    `firebase_web_config`, `admin_emails`, `get_accounts`, `get_password_store`,
    `get_identity_remover`, `get_verifier`, `get_quota_policy`, `get_billing`,
-   `payments_paused`, `public_base_url`, and their lines in
-   `describe_configuration` and `validate_configuration`. `LOCAL_PRINCIPAL`
+   `payments_paused`, and their lines in `describe_configuration` and
+   `validate_configuration`. Keep `public_base_url`, whose docstring loses
+   its Stripe sentence and gains the one above. `LOCAL_PRINCIPAL`
    and everything importing `app.auth` goes with it.
 3. `main.py`: prune the imports; `LimitRequestBody` loses the webhook special
    case (`MAX_WEBHOOK_BYTES`, `WEBHOOK_PATH`); `CONTENT_SECURITY_POLICY`

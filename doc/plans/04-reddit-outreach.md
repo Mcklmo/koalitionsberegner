@@ -7,12 +7,12 @@ the queue, the approval email, the one-time approval page, and the posting.
 
 Depends on [01-open-access.md](01-open-access.md) Phase C, which introduces
 `ADMIN_SECRET` and the `x-admin-secret` header. It reuses the SMTP mailer that
-plan 1 keeps for the usage reports. [02-share-links.md](02-share-links.md) makes
-the outreach links better (set `OUTREACH_LINK_STYLE=share` once `/e/<id>`
-exists, so a reply links to the coalition being discussed rather than the front
-page). [03-remaining-work.md](03-remaining-work.md) reduces the
-`missing_elections` the scan reports, because tracked elections are already
-imported when somebody asks about them.
+plan 1 keeps for the usage reports. [02-share-links.md](02-share-links.md) runs before
+this plan, so `/e/<id>` already exists: set `OUTREACH_LINK_STYLE=share` from the
+start, and a reply links to the coalition being discussed rather than the front
+page. [03-remaining-work.md](03-remaining-work.md) runs after this plan, so
+expect the scan to report `missing_elections` until tracked elections land;
+those are import candidates to work by hand in the meantime.
 
 ## Does this bring Firebase back? No.
 
@@ -156,10 +156,10 @@ Reuse `app.mailer.SmtpMailer`. One message per draft, plain text, subject like
 permalink, the excerpt, the proposed reply in full, the election it links to,
 and the approval URL. Say that the link expires in 72 hours and works once.
 
-`PUBLIC_BASE_URL` was removed with Stripe in plan 1; reintroduce it (or a new
-`OUTREACH_BASE_URL`) because the email needs an absolute URL. That is the one
-variable plan 1 removes and this plan wants back, and it is a plain variable,
-not a secret.
+The email needs an absolute URL. Plan 1 keeps `PUBLIC_BASE_URL` for exactly
+this reason, re-documented from "where Stripe returns the user" to "where this
+site is reachable". If you find it gone, plan 1 was followed too literally; put
+it back as a plain variable rather than a secret.
 
 ## 4. Posting to Reddit
 

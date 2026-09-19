@@ -1,10 +1,12 @@
 # Plan 3 — Remaining work: tracked elections, due-based refresh, the front door, funding, housekeeping
 
-Handover plan for a Claude Code session. Depends on
-[01-open-access.md](01-open-access.md) (the admin secret and the open list) and
-sits beside [02-share-links.md](02-share-links.md); nothing here needs the
-share links, but Section B's front door should land after them so shared
-links open on the new picker.
+Handover plan for a Claude Code session, and the last of the four
+([README.md](README.md) has the order). Depends on
+[01-open-access.md](01-open-access.md) for the admin secret and the open list.
+Section B's front door comes after [02-share-links.md](02-share-links.md) so
+shared links open on the new picker. [04-reddit-outreach.md](04-reddit-outreach.md)
+lands before this plan, so Section A's tracked elections are what finally stop
+the outreach scan reporting elections the site does not hold.
 
 Order of work: A (tracked elections and refresh), then B (front door), then C
 (funding and open source, which is mostly writing) and D (housekeeping) as

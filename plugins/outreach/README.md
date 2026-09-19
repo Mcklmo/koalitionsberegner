@@ -41,6 +41,7 @@ Put these in the environment or in `plugins/outreach/.env` (gitignored):
 | `OUTREACH_LOCAL_MODEL` | `qwen3:32b` | Model name as the local server knows it. |
 | `OUTREACH_VERIFY_MODEL` | `claude-opus-5` | The verifying model. |
 | `ANTHROPIC_API_KEY` | from `ant auth login` if unset | Anthropic credentials. |
+| `OUTREACH_LINK_STYLE` | `root` | `root` links to the front page; `share` links to `/e/<id>`, once plan 2 has built that route. |
 | `OUTREACH_LIMIT` | `50` | Newest posts read per subreddit. |
 | `OUTREACH_COMMENT_POSTS` | `10` | Most-commented posts per subreddit whose top-level comments are read too. |
 | `OUTREACH_MAX_DRAFTS` | `5` | Drafts queued per run, whatever was found. |
