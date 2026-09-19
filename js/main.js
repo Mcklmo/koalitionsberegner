@@ -15,6 +15,7 @@ import {
   language, languageName, languages, parseStrings, setLanguage, t, useStrings,
 } from './i18n.js';
 import { Folketing2026Provider } from './providers/folketing-2026.js';
+import { buildPath, parseLocation, shareId } from './share.js';
 
 const apiBase = document.querySelector('meta[name="api-base"]')?.content ?? '';
 
@@ -66,9 +67,33 @@ const api = createApiClient({ baseUrl: apiBase, getAdminSecret: () => readSecret
 
 let calculator = null;
 
+// The share button links to the election on screen; `null` while none of it is
+// known to be stored, which is also when the button stays hidden — nothing to
+// link to yet.
+let currentId = null;
+const shareButton = byId('share');
+const shareNote = byId('share-note');
+
+function setShareNote(text, kind = 'warn') {
+  shareNote.textContent = text ?? '';
+  shareNote.className = 'msg' + (text ? ' msg-' + kind : '');
+  shareNote.hidden = !text;
+}
+
+/** Keep the address bar in step with the selection, for this election's id. */
+function syncUrl(indices, total) {
+  if (currentId) history.replaceState(null, '', buildPath({ id: currentId, indices, total }));
+}
+
+/** `electionHash` is this election's stored hash, or null when it has none (the bundled one). */
+function setShareTarget(electionHash) {
+  currentId = electionHash ? shareId(electionHash) : null;
+  shareButton.hidden = !currentId;
+}
+
 /** Re-render the calculator for a different election. */
-function render(election) {
-  calculator = mountCoalitionCalculator(election);
+function render(election, { initialSelection = [] } = {}) {
+  calculator = mountCoalitionCalculator(election, {}, { initialSelection, onChange: syncUrl });
 }
 
 // The bundled election renders immediately, so the page works with no backend.
@@ -76,6 +101,55 @@ const bundled = await Folketing2026Provider.getElection();
 render(bundled);
 
 byId('reset').addEventListener('click', () => calculator?.clearAll());
+
+async function share() {
+  if (!currentId) return;
+  const url = new URL(
+    buildPath({ id: currentId, indices: calculator.selection(), total: calculator.total() }),
+    globalThis.location.origin,
+  ).toString();
+  try {
+    if (globalThis.navigator?.share) {
+      await globalThis.navigator.share({ url });
+      return;
+    }
+    if (!globalThis.navigator?.clipboard) throw new Error('no share mechanism available');
+    await globalThis.navigator.clipboard.writeText(url);
+    const original = t('share.button');
+    shareButton.textContent = t('share.copied');
+    setTimeout(() => { shareButton.textContent = original; }, 2000);
+  } catch (error) {
+    if (error?.name === 'AbortError') return; // the visitor closed the native share sheet
+    setShareNote(t('share.unavailable'), 'error');
+  }
+}
+shareButton.addEventListener('click', share);
+
+const datePart = (iso) => iso.split('T')[0];
+
+/** The stored election that is this bundled one, if the archive already holds it. */
+function bundledTwin() {
+  return importUi.summaries().find((summary) => summary.nation === bundled.nation
+    && datePart(summary.electionDate) === datePart(bundled.electionDate) && !summary.forecast);
+}
+
+/** Enable sharing the election on screen once it turns out to be the bundled one's twin. */
+function enableShareForBundled() {
+  const twin = bundledTwin();
+  if (!twin) return;
+  setShareTarget(twin.electionHash);
+  syncUrl(calculator.selection(), calculator.total());
+}
+
+/** The picker (and a resolved shared link) both select an election this way. */
+function selectElection(election, electionHash) {
+  setShareNote('');
+  setShareTarget(electionHash);
+  render(election);
+  // The bundled election has no hash of its own; look for its stored twin so
+  // the share button still works when the archive already holds it.
+  if (!electionHash) enableShareForBundled();
+}
 
 // Without a reachable backend there is nothing to ask for and nothing to
 // import; the bundled election still works, which is the point of the fallback.
@@ -89,7 +163,7 @@ const importUi = mountImportUi({
   api,
   bundled,
   config,
-  onSelect: render,
+  onSelect: selectElection,
   // The server refused the secret; the panel has already stopped importing.
   onWrongSecret: () => adminUi.forget(),
   elements: {
@@ -130,3 +204,26 @@ const adminUi = mountAdmin({
 
 await importUi.start();
 importUi.setAdmin(Boolean(readSecret()));
+
+// A shared link names an election by a prefix of its hash. Resolved after the
+// picker's list is loaded, so picking it there afterwards shows the right
+// option selected.
+const link = parseLocation(globalThis.location);
+if (link) {
+  try {
+    const result = await api.getElection(link.id);
+    if (!result.election) throw new Error('no election in the response');
+    byId('picker').value = result.electionHash;
+    setShareTarget(result.electionHash);
+    render(result.election, { initialSelection: link.indices });
+    const total = calculator.total();
+    setShareNote(link.seats !== null && link.seats !== total ? t('share.stale') : '');
+  } catch {
+    // An id nobody holds, or ambiguous, or unreachable: the bundled election
+    // already on screen stays, said as plainly as the reason is irrelevant.
+    setShareNote(t('share.unknown'));
+    enableShareForBundled();
+  }
+} else {
+  enableShareForBundled();
+}

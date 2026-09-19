@@ -376,6 +376,16 @@ def test_the_page_is_served_from_the_same_origin_as_the_api(client):
     assert client.get("/api/elections").status_code == 200, "the mount must not shadow the API"
 
 
+def test_a_shared_link_serves_the_same_page_locally_with_no_tags(client):
+    """In production the Worker owns `/e/*` and injects the card's tags; this
+    app's own `/e/{id}` is only for a local run with no Worker in front, and
+    never adds any tag of its own."""
+    page = client.get("/e/0123456789ab")
+    assert page.status_code == 200
+    assert page.text == client.get("/").text
+    assert "og:title" not in page.text
+
+
 # --- the owner's secret -----------------------------------------------------
 
 SECRET = "an-administrator-secret-of-forty-chars!!"

@@ -7,6 +7,11 @@ names.label,Partinavne,Party names
 names.local,Originalsprog,Original language
 names.english,Engelsk,English
 reset,Ryd alle,Clear all
+share.button,Del,Share
+share.copied,Linket er kopieret,Link copied
+share.stale,"Tallene er ændret siden linket blev lavet. Dit valg af partier er bevaret.","The numbers have changed since this link was made. Your choice of parties is kept."
+share.unknown,"Linket kunne ikke findes. Her er standardvalget i stedet.","That link could not be found. Here is the default election instead."
+share.unavailable,Kunne ikke kopiere linket.,Couldn't copy the link.
 date,{day}. {monthName} {year},{day} {monthName} {year}
 month.1,januar,January
 month.2,februar,February

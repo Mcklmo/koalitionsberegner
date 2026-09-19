@@ -837,4 +837,14 @@ if (FRONTEND_DIR / "index.html").is_file():
     def index() -> FileResponse:
         return FileResponse(FRONTEND_DIR / "index.html")
 
+    # Local parity for shared links: in production the Worker owns `/e/*` and
+    # injects the card's `<meta>` tags before this app ever sees the request,
+    # so serving it here too is only for a local run with no Worker in front.
+    # Plain `index.html`, no tags — `js/main.js` reads the id from the URL
+    # itself, and nothing here can drift from the Worker because nothing here
+    # runs in production.
+    @app.api_route("/e/{election_id}", methods=["GET", "HEAD"], include_in_schema=False)
+    def shared_page(election_id: str) -> FileResponse:
+        return FileResponse(FRONTEND_DIR / "index.html")
+
     app.mount("/js", StaticFiles(directory=FRONTEND_DIR / "js"), name="scripts")

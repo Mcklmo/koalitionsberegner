@@ -413,7 +413,7 @@ export function mountImportUi({
       setMessage(t(saved.duplicate ? `saved.${kind}Already` : `saved.${kind}`), 'ok');
       el.form.reset();
       setFieldErrors({});
-      onSelect(saved.election);
+      onSelect(saved.election, saved.electionHash);
     } catch (error) {
       setMessage(t('saved.failed', { message: error.message }), 'error');
       forgetOnRefusal(error);
@@ -449,12 +449,14 @@ export function mountImportUi({
   async function select() {
     const value = el.picker.value;
     if (value === LOCAL_VALUE) {
-      onSelect(bundled);
+      // The bundled election has no hash of its own; a caller after a link for
+      // it looks up its stored twin, if any, among `summaries()`.
+      onSelect(bundled, null);
       return;
     }
     try {
       const result = await api.getElection(value);
-      if (result.election) onSelect(result.election);
+      if (result.election) onSelect(result.election, result.electionHash);
     } catch (error) {
       setMessage(t('select.failed', { message: error.message }), 'error');
     }
@@ -482,5 +484,9 @@ export function mountImportUi({
         setMessage(t('archive.unreachable'), 'warn');
       }
     },
+
+    /** The stored elections currently listed, for a caller that needs to find
+     *  one by nation and date — a shared link's bundled twin, for instance. */
+    summaries: () => summaries,
   };
 }
