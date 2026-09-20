@@ -17,6 +17,8 @@ import time
 from google.cloud import firestore
 
 from .observability import io_span
+from .outreach import DraftStatus, NewDraft, OutreachDraft
+from .outreach import thread_id as _draft_thread_id
 from .schema import Election
 from .store import (
     DEFAULT_STALE_AFTER_SECONDS,
@@ -39,6 +41,11 @@ JOBS_COLLECTION = "import_jobs"
 # Request key -> election hash. Keyed by request, so a new collection rather
 # than the URL-keyed "pages" one it replaces.
 RESULTS_COLLECTION = "import_results"
+OUTREACH_COLLECTION = "outreach_drafts"
+# thing_id -> draft id. A document of its own so a duplicate ``thing_id`` can
+# be caught inside the same transaction that creates the draft, the way the
+# election store's single-flight claim uses a document to serialise racers.
+OUTREACH_THING_IDS_COLLECTION = "outreach_thing_ids"
 
 
 def _stored_from_doc(election_hash: str, data: dict) -> StoredElection:
@@ -402,3 +409,163 @@ class FirestoreElectionStore:
                 },
                 merge=True,
             )
+
+
+def _draft_from_doc(draft_id: str, data: dict) -> OutreachDraft:
+    return OutreachDraft(
+        id=draft_id,
+        source=data["source"],
+        subreddit=data["subreddit"],
+        thing_id=data["thing_id"],
+        thread_id=data["thread_id"],
+        kind=data["kind"],
+        permalink=data["permalink"],
+        title=data["title"],
+        excerpt=data["excerpt"],
+        election_hash=data["election_hash"],
+        election_title=data["election_title"],
+        link=data["link"],
+        reply_text=data["reply_text"],
+        verification=data["verification"],
+        classifier_reason=data["classifier_reason"],
+        created_at=data["created_at"],
+        status=DraftStatus(data["status"]),
+        token_hash=data.get("token_hash"),
+        token_expires_at=data.get("token_expires_at"),
+        emailed_at=data.get("emailed_at"),
+        decided_at=data.get("decided_at"),
+        posted_at=data.get("posted_at"),
+        posted_url=data.get("posted_url"),
+        last_error=data.get("last_error"),
+        edited=bool(data.get("edited", False)),
+    )
+
+
+class FirestoreOutreachStore:
+    """The outreach approval queue, alongside the elections in the same project."""
+
+    def __init__(self, client: firestore.Client, *, clock=time.time):
+        self._db = client
+        self._clock = clock
+
+    def _draft_ref(self, draft_id: str):
+        return self._db.collection(OUTREACH_COLLECTION).document(draft_id)
+
+    def _thing_id_ref(self, thing_id: str):
+        return self._db.collection(OUTREACH_THING_IDS_COLLECTION).document(thing_id)
+
+    def create(
+        self, draft_id: str, draft: NewDraft, *, token_hash: str, token_expires_at: float,
+        emailed_at: float,
+    ) -> OutreachDraft | None:
+        draft_ref = self._draft_ref(draft_id)
+        thing_ref = self._thing_id_ref(draft.thing_id)
+        data = {
+            "source": draft.source,
+            "subreddit": draft.subreddit,
+            "thing_id": draft.thing_id,
+            "thread_id": _draft_thread_id(draft.permalink),
+            "kind": draft.kind,
+            "permalink": draft.permalink,
+            "title": draft.title,
+            "excerpt": draft.excerpt,
+            "election_hash": draft.election_hash,
+            "election_title": draft.election_title,
+            "link": draft.link,
+            "reply_text": draft.reply_text,
+            "verification": draft.verification,
+            "classifier_reason": draft.classifier_reason,
+            "created_at": draft.created_at,
+            "status": DraftStatus.PENDING.value,
+            "token_hash": token_hash,
+            "token_expires_at": token_expires_at,
+            "emailed_at": emailed_at,
+        }
+
+        @firestore.transactional
+        def _create(transaction):
+            if thing_ref.get(transaction=transaction).exists:
+                return None
+            transaction.set(thing_ref, {"draft_id": draft_id})
+            transaction.set(draft_ref, data)
+            return _draft_from_doc(draft_id, data)
+
+        with io_span(log, "firestore", "outreach-create", thing_id=draft.thing_id) as span:
+            created = _create(self._db.transaction())
+            span["duplicate"] = created is None
+            return created
+
+    def get(self, draft_id: str) -> OutreachDraft | None:
+        with io_span(log, "firestore", "outreach-get", id=draft_id) as span:
+            snapshot = self._draft_ref(draft_id).get()
+            span["found"] = snapshot.exists
+            return _draft_from_doc(draft_id, snapshot.to_dict()) if snapshot.exists else None
+
+    def get_by_token_hash(self, token_hash: str) -> OutreachDraft | None:
+        with io_span(log, "firestore", "outreach-get-by-token") as span:
+            query = self._db.collection(OUTREACH_COLLECTION).where(
+                filter=firestore.FieldFilter("token_hash", "==", token_hash)
+            ).limit(1)
+            for snapshot in query.stream():
+                span["found"] = True
+                return _draft_from_doc(snapshot.id, snapshot.to_dict())
+            span["found"] = False
+            return None
+
+    def list_drafts(self) -> list[OutreachDraft]:
+        with io_span(log, "firestore", "outreach-list") as span:
+            drafts = [
+                _draft_from_doc(snapshot.id, snapshot.to_dict())
+                for snapshot in self._db.collection(OUTREACH_COLLECTION).stream()
+            ]
+            span["count"] = len(drafts)
+            return sorted(drafts, key=lambda d: d.created_at)
+
+    def set_status(
+        self, draft_id: str, status: DraftStatus, *, consume_token: bool = False, **fields
+    ) -> None:
+        with io_span(log, "firestore", "outreach-set-status", id=draft_id, status=status.value):
+            updates = dict(fields)
+            updates["status"] = status.value
+            if consume_token:
+                updates["token_hash"] = None
+                updates["token_expires_at"] = None
+            self._draft_ref(draft_id).set(updates, merge=True)
+
+    def delete(self, draft_id: str) -> None:
+        with io_span(log, "firestore", "outreach-delete", id=draft_id):
+            draft = self.get(draft_id)
+            batch = self._db.batch()
+            batch.delete(self._draft_ref(draft_id))
+            if draft is not None:
+                batch.delete(self._thing_id_ref(draft.thing_id))
+            batch.commit()
+
+    def thread_posted(self, thread_id: str) -> bool:
+        with io_span(log, "firestore", "outreach-thread-posted") as span:
+            query = self._db.collection(OUTREACH_COLLECTION).where(
+                filter=firestore.FieldFilter("thread_id", "==", thread_id)
+            ).where(filter=firestore.FieldFilter("status", "==", DraftStatus.POSTED.value)).limit(1)
+            posted = any(True for _ in query.stream())
+            span["posted"] = posted
+            return posted
+
+    def count_posted(self, subreddit: str, since: float) -> int:
+        with io_span(log, "firestore", "outreach-count-posted", subreddit=subreddit) as span:
+            query = self._db.collection(OUTREACH_COLLECTION).where(
+                filter=firestore.FieldFilter("subreddit", "==", subreddit)
+            ).where(
+                filter=firestore.FieldFilter("status", "==", DraftStatus.POSTED.value)
+            ).where(filter=firestore.FieldFilter("posted_at", ">=", since))
+            count = sum(1 for _ in query.stream())
+            span["count"] = count
+            return count
+
+    def count_posted_total(self, since: float) -> int:
+        with io_span(log, "firestore", "outreach-count-posted-total") as span:
+            query = self._db.collection(OUTREACH_COLLECTION).where(
+                filter=firestore.FieldFilter("status", "==", DraftStatus.POSTED.value)
+            ).where(filter=firestore.FieldFilter("posted_at", ">=", since))
+            count = sum(1 for _ in query.stream())
+            span["count"] = count
+            return count

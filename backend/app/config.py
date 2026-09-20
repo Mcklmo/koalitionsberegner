@@ -128,6 +128,43 @@ def get_store() -> ElectionStore:
     return CachedElectionStore(FirestoreElectionStore(client, stale_after=stale_after))
 
 
+@lru_cache(maxsize=1)
+def get_outreach_store():
+    """The outreach approval queue, in the same backend the elections use.
+
+    Beside :func:`get_store` rather than inside it: the queue is not part of
+    the election data at all, but ``ELECTION_STORE`` is still the one variable
+    that says whether this process has a database, so a second one would only
+    ask the same question twice.
+    """
+    from .outreach import InMemoryOutreachStore
+
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    backend = _env_choice(
+        "ELECTION_STORE", STORE_BACKENDS, "firestore" if project else "memory"
+    )
+
+    if backend == "memory":
+        return InMemoryOutreachStore()
+
+    if backend == "sqlite":
+        from .sqlite_store import SqliteOutreachStore
+
+        return SqliteOutreachStore(os.environ.get("SQLITE_PATH", DEFAULT_SQLITE_PATH))
+
+    if not project:
+        raise ConfigError("ELECTION_STORE=firestore requires GOOGLE_CLOUD_PROJECT")
+
+    from google.cloud import firestore
+
+    from .firestore_store import FirestoreOutreachStore
+
+    client = firestore.Client(
+        project=project, database=os.environ.get("FIRESTORE_DATABASE", "(default)")
+    )
+    return FirestoreOutreachStore(client)
+
+
 def search_mode() -> str:
     """Which search engine an import consults besides the resolver, in effect.
 
@@ -395,6 +432,38 @@ def get_wishlist() -> Wishlist:
     return GithubWishlist(token, owner=owner, repo=name)
 
 
+@lru_cache(maxsize=1)
+def get_reddit_poster():
+    """Where an approved reply is actually posted.
+
+    All five ``REDDIT_*`` variables or none: :func:`app.reddit.poster_from_env`
+    returns a poster that answers ``503`` for every one missing, so the rest of
+    the approval gate — the queue, the email, viewing a draft — works before any
+    Reddit credential exists.
+    """
+    from . import reddit
+
+    return reddit.poster_from_env()
+
+
+#: The subreddits this deployment may post to. Its own list, not the
+#: scanner's ``OUTREACH_SUBREDDITS`` — a server posting to a subreddit the
+#: scanner no longer reads from would be a stale allowlist nobody noticed.
+def outreach_allowed_subreddits() -> frozenset[str]:
+    raw = _env_str("OUTREACH_ALLOWED_SUBREDDITS")
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+#: At most this many posted replies per subreddit per rolling seven days.
+def outreach_subreddit_weekly_cap() -> int:
+    return _env_int("OUTREACH_SUBREDDIT_WEEKLY_CAP", 2)
+
+
+#: At most this many posted replies in total per day.
+def outreach_daily_cap() -> int:
+    return _env_int("OUTREACH_DAILY_CAP", 3)
+
+
 def public_base_url() -> str:
     """Where this site is reachable, as an absolute URL. No trailing slash.
 
@@ -451,7 +520,14 @@ def describe_configuration() -> dict[str, str]:
         "wikipedia": (
             f"{wikipedia_language()}.wikipedia.org" if wikipedia_mode() == "on" else "off"
         ),
+        "reddit": "posting" if not _missing_reddit_credentials() else "off",
     }
+
+
+def _missing_reddit_credentials() -> list[str]:
+    from . import reddit
+
+    return reddit.missing_credentials()
 
 
 def validate_configuration() -> dict[str, str]:
@@ -480,6 +556,8 @@ def validate_configuration() -> dict[str, str]:
     get_wishlist()
     get_usage()
     get_mailer()
+    get_outreach_store()
+    get_reddit_poster()
     for name, secret in (
         ("ORIGIN_SECRET", origin_secret()),
         ("USAGE_REPORT_SECRET", usage_report_secret()),
