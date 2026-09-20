@@ -30,6 +30,11 @@ log = logging.getLogger(__name__)
 #: candidate further down the list is rarely the official one.
 DEFAULT_PAGE_LIMIT = 3
 
+#: How long after election day "no page states the seats" still means "not
+#: counted yet" rather than "this is not a real election". Within it, the polls
+#: are offered instead of a failure.
+RESULTS_GRACE_DAYS = 10
+
 #: How many forecasts one upcoming election is offered with. The newest ones;
 #: a list longer than this is a table to read, not a choice to make.
 MAX_FORECASTS = 10
@@ -118,7 +123,16 @@ class LlmElectionParser:
     async def parse(self, request: ImportRequest) -> Election | list[Election]:
         resolved = await self._resolve(request)
         want: Literal["polls", "results"] = "polls" if self._upcoming(resolved) else "results"
-        return await self.parse_resolved(resolved, request, want=want)
+        try:
+            return await self.parse_resolved(resolved, request, want=want)
+        except ParseError:
+            # Election night: the day has come, so the seats are what to read,
+            # but nobody has published them yet. Answer with the polls rather
+            # than with a failure, and let the next attempt find the result.
+            if want == "results" and self._may_fall_back_to_polls(resolved):
+                log.info("no results yet for %r; offering its polls", request.describe())
+                return await self.parse_resolved(resolved, request, want="polls")
+            raise
 
     async def parse_resolved(
         self, resolved: ResolvedElection, request: ImportRequest, *, want: Literal["polls", "results"]
@@ -231,11 +245,37 @@ class LlmElectionParser:
     def _upcoming(self, resolved: ResolvedElection) -> bool:
         """Whether this election is still to be held, and so has polls, not results.
 
-        The resolver says so, and the date is checked as well: an election dated
-        today or later has no seats to read, whatever the flag was left at — on
-        its day the votes are still being cast or counted.
+        The date decides, not the resolver's flag. The flag is the model's
+        judgement, and a model that last read about "the next Swedish election"
+        keeps calling a held one upcoming; the day it was held is a fact on the
+        page. A date that cannot be read at all leaves only the flag.
+
+        Election day itself counts as held, because the count begins that
+        evening and the whole point of this app is to play with the result as
+        soon as it is published. :meth:`parse` falls back to the polls when no
+        result page can be found yet, so asking too early still answers.
         """
-        return resolved.upcoming or normalize_date(resolved.election_date) >= self._clock()
+        try:
+            held = normalize_date(resolved.election_date)
+        except (ValueError, TypeError):
+            return resolved.upcoming
+        return held > self._clock()
+
+    def _may_fall_back_to_polls(self, resolved: ResolvedElection) -> bool:
+        """Whether "no results page" should be answered with the polls instead.
+
+        Only for an election held within the last :data:`RESULTS_GRACE_DAYS` —
+        the window where the count is under way and no page states the seats —
+        or one the resolver still believes is upcoming, which is the case its
+        flag was wrong about the date for.
+        """
+        if resolved.upcoming:
+            return True
+        try:
+            held = normalize_date(resolved.election_date)
+        except (ValueError, TypeError):
+            return False
+        return (self._clock() - held).days <= RESULTS_GRACE_DAYS
 
     async def _forecasts(
         self, resolved: ResolvedElection, request: ImportRequest

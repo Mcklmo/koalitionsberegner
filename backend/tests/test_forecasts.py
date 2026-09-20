@@ -303,3 +303,44 @@ async def test_a_polls_local_names_are_kept_beside_the_english_ones():
 
     assert [(p.name, p.local_name) for b in forecast.blocks for p in b.parties] == [
         ("Social Democrats", "Socialdemokratiet"), ("Venstre", None)]
+
+
+# --- the day the election is held -------------------------------------------
+
+async def test_an_election_the_resolver_still_calls_upcoming_is_read_as_a_result():
+    """The flag is the model's belief; the date on the page is the fact. A model
+    that last read about "the next Swedish election" calls a held one upcoming,
+    and the app answered every import of it with polls."""
+    held = upcoming(election_date="2026-09-06", upcoming=True, sources=[POLLS])
+    extractor = MockExtractor(clock=lambda: TODAY)
+
+    election = await parser(
+        SiteFetcher({POLLS: "results"}), extractor, resolved=held,
+    ).parse(make_request(year=2026, nation="Danmark"))
+
+    assert election.forecast is None, "the seats were read, not the polls"
+
+
+async def test_an_election_held_today_with_no_results_yet_still_offers_its_polls():
+    """Election night: the count is under way, no page states the seats. The
+    polls are better than a failure, and the next attempt finds the result."""
+    counting = upcoming(election_date=TODAY.isoformat(), upcoming=False, sources=[POLLS])
+    extractor = PollExtractor(polls(poll("Voxmeter", "2026-09-07")))
+
+    forecasts = await parser(
+        SiteFetcher({POLLS: "polls"}), extractor, resolved=counting,
+    ).parse(make_request(year=2026, nation="Danmark"))
+
+    assert [f.forecast.publisher for f in forecasts] == ["Voxmeter"]
+
+
+async def test_an_old_election_with_no_results_page_stays_a_failure():
+    """Past the grace window, "no page states the seats" is the answer, not
+    somebody's old polls."""
+    long_over = upcoming(election_date="2025-01-01", upcoming=False, sources=[POLLS])
+    extractor = PollExtractor(polls(poll("Voxmeter", "2024-12-20")))
+
+    with pytest.raises(ParseError):
+        await parser(
+            SiteFetcher({POLLS: "polls"}), extractor, resolved=long_over,
+        ).parse(make_request(year=2025, nation="Danmark"))
