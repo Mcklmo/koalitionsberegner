@@ -26,6 +26,7 @@ from app.calendar import (
     CalendarRow,
     CalendarScanner,
     ExtractedCalendar,
+    IfesElectionGuide,
     StubCalendarExtractor,
     Wikidata,
     WikipediaArticles,
@@ -34,6 +35,7 @@ from app.calendar import (
     extracted_entries,
     label_kind,
     parse_calendar_article,
+    parse_ifes_electionguide,
     title_kind,
     wikidata_entries,
     wikidata_query,
@@ -411,6 +413,94 @@ async def test_an_oversized_answer_is_refused(monkeypatch):
         ).entries(date(2026, 1, 1), date(2027, 1, 1))
 
 
+# --- source 3: IFES ElectionGuide, off by default -------------------------------------
+# Offline like every other source here: the transport is a MockTransport, never a real
+# socket, whatever IFES_ELECTIONGUIDE is set to (app/config.py's switch is not even
+# consulted by this module -- app.calendar has no idea the switch exists).
+
+IFES_TABLE = """
+<table>
+  <tr><th>Date</th><th>Country</th><th>Election</th></tr>
+  <tr><td>2026-11-08</td><td>Testland</td><td>Testland parliamentary election</td></tr>
+  <tr><td>2026-05-01</td><td>Testland</td><td>Testland presidential election</td></tr>
+  <tr><td>not a date</td><td>Nowhere</td><td>Some election</td></tr>
+  <tr><td>2026-06-06</td><td>Missing title</td><td></td></tr>
+</table>
+"""
+
+
+def test_parse_ifes_electionguide_reads_a_row_per_election():
+    entries = parse_ifes_electionguide(IFES_TABLE, source_url="https://www.electionguide.org/elections/")
+
+    assert {e.title for e in entries} == {
+        "Testland parliamentary election", "Testland presidential election",
+    }
+    parliamentary = next(e for e in entries if "parliamentary" in e.title)
+    assert parliamentary.kind == "national_legislature"
+    assert parliamentary.election_date == date(2026, 11, 8)
+    assert parliamentary.date_precision == "day"
+    presidential = next(e for e in entries if "presidential" in e.title)
+    assert presidential.kind == "executive"
+
+
+def test_parse_ifes_electionguide_skips_unparseable_rows():
+    """A bad date or a missing cell drops the row rather than failing the scan."""
+    entries = parse_ifes_electionguide(IFES_TABLE, source_url="https://example.org/")
+    assert not any(e.nation in ("Nowhere", "Missing title") for e in entries)
+
+
+def test_parse_ifes_electionguide_reads_an_empty_page_as_no_entries():
+    assert parse_ifes_electionguide("<html><body>nothing here</body></html>", source_url="x") == []
+
+
+def ifes(handler) -> IfesElectionGuide:
+    return IfesElectionGuide(client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+
+async def test_ifes_electionguide_is_fetched_and_parsed():
+    seen = {}
+
+    def handle(request):
+        seen["host"] = request.url.host
+        seen["user-agent"] = request.headers["user-agent"]
+        return httpx.Response(200, text=IFES_TABLE)
+
+    entries = await ifes(handle).entries(date(2026, 1, 1), date(2027, 1, 1))
+
+    assert seen["host"] == "www.electionguide.org"
+    assert "koalitionsberegner" in seen["user-agent"]
+    assert len(entries) == 2
+
+
+async def test_ifes_electionguide_endpoint_goes_through_the_address_guard(monkeypatch):
+    checked = []
+    monkeypatch.setattr(calendar_module, "assert_public_url", lambda url: checked.append(url) or url)
+    await ifes(lambda r: httpx.Response(200, text="<table></table>")).entries(
+        date(2026, 1, 1), date(2027, 1, 1)
+    )
+    assert checked == ["https://www.electionguide.org/elections/"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(502, text="Bad Gateway"),
+        httpx.Response(302, headers={"location": "http://169.254.169.254/"}),
+    ],
+)
+async def test_ifes_electionguide_unusable_answer_is_a_fetch_error(response):
+    with pytest.raises(FetchError):
+        await ifes(lambda r: response).entries(date(2026, 1, 1), date(2027, 1, 1))
+
+
+async def test_ifes_electionguide_oversized_answer_is_refused(monkeypatch):
+    monkeypatch.setattr(calendar_module, "MAX_BYTES", 10)
+    with pytest.raises(FetchError):
+        await ifes(lambda r: httpx.Response(200, text=IFES_TABLE)).entries(
+            date(2026, 1, 1), date(2027, 1, 1)
+        )
+
+
 # --- reading an article, and the model fallback --------------------------------------
 
 class StubArticles:
@@ -600,9 +690,11 @@ class StubPlaces:
         return object() if (year, nation, subnation) in self.stored else None
 
 
-def scanner(*, wikidata=None, pages=None, store=None, extractor=None) -> CalendarScanner:
+def scanner(*, wikidata=None, ifes=None, pages=None, store=None, extractor=None) -> CalendarScanner:
     wikipedia = WikipediaCalendar(StubArticles(pages), extractor=extractor) if pages is not None else None
-    return CalendarScanner(wikidata=wikidata, wikipedia=wikipedia, store=store, clock=lambda: TODAY)
+    return CalendarScanner(
+        wikidata=wikidata, wikipedia=wikipedia, ifes=ifes, store=store, clock=lambda: TODAY
+    )
 
 
 async def test_a_scan_proposes_coming_legislatures_soonest_first():
@@ -624,6 +716,27 @@ async def test_a_scan_proposes_coming_legislatures_soonest_first():
     assert result.skipped["past"] >= 1
     assert result.skipped["executive"] >= 1 and result.skipped["local"] == 1
     assert result.failures == []
+
+
+async def test_ifes_is_off_by_default_and_a_third_source_when_given():
+    """CalendarScanner never reads app.config's switch itself -- whatever the
+    scan does with an IFES source is entirely down to whether a caller passed
+    one in, exactly as for Wikidata and Wikipedia."""
+    without = await scanner(wikidata=StubWikidata([])).scan([2026])
+    assert without.entries == [] and without.failures == []
+
+    ifes_entry = entry(nation="Freedonia", title="2026 Freedonian legislative election",
+                        election_date=date(2026, 11, 1), source_url="https://www.electionguide.org/x")
+    result = await scanner(wikidata=StubWikidata([]), ifes=StubWikidata([ifes_entry])).scan([2026])
+    assert [e.nation for e in result.entries] == ["Freedonia"]
+
+
+async def test_an_ifes_failure_is_reported_without_failing_the_scan():
+    result = await scanner(
+        wikidata=StubWikidata(wikidata_entries(BINDINGS)), ifes=StubWikidata([], error=FetchError("down"))
+    ).scan([2026])
+    assert any("ifes" in failure for failure in result.failures)
+    assert result.entries  # Wikidata's rows still came through.
 
 
 async def test_the_same_election_from_both_sources_is_proposed_once():

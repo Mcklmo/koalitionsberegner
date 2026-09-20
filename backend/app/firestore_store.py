@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import date, datetime
 
 from google.cloud import firestore
 
@@ -21,6 +22,8 @@ from .outreach import RETRYABLE_STATUSES, DraftStatus, NewDraft, OutreachDraft
 from .outreach import thread_id as _draft_thread_id
 from .schema import Election
 from .store import (
+    ACTIVE_STATUSES,
+    DEFAULT_PROVENANCE,
     DEFAULT_STALE_AFTER_SECONDS,
     DISCARDABLE_STATUSES,
     Claim,
@@ -30,8 +33,14 @@ from .store import (
     Job,
     JobStatus,
     StoredElection,
+    TrackedElection,
+    TrackedStatus,
     _decide,
+    check_fields,
+    from_epoch,
+    is_available,
     select_by_place,
+    to_epoch,
 )
 
 log = logging.getLogger(__name__)
@@ -46,6 +55,8 @@ OUTREACH_COLLECTION = "outreach_drafts"
 # be caught inside the same transaction that creates the draft, the way the
 # election store's single-flight claim uses a document to serialise racers.
 OUTREACH_THING_IDS_COLLECTION = "outreach_thing_ids"
+# Elections the app watches, keyed by request key (plan 3, A1).
+TRACKED_COLLECTION = "tracked_elections"
 
 
 def _stored_from_doc(election_hash: str, data: dict) -> StoredElection:
@@ -55,6 +66,7 @@ def _stored_from_doc(election_hash: str, data: dict) -> StoredElection:
         election=Election.model_validate(data["election"]),
         stored_at=float(data.get("stored_at", 0.0)),
         selected=bool(data.get("selected", False)),
+        provenance=data.get("provenance") or DEFAULT_PROVENANCE,
     )
 
 
@@ -70,7 +82,6 @@ def _job_from_doc(request_key: str, data: dict) -> Job:
         # A staged draft is re-validated on read like anything else from storage.
         result=Election.model_validate(result) if result else None,
         forecasts=tuple(Election.model_validate(item) for item in data.get("forecasts") or ()),
-        owner=data.get("owner"),
     )
 
 
@@ -158,6 +169,31 @@ class FirestoreElectionStore:
             span["found"] = True
             return True
 
+    def put_election(
+        self, election_hash: str, election: Election, *, provenance: str = "auto"
+    ) -> bool:
+        ref, clock = self._election_ref(election_hash), self._clock
+
+        @firestore.transactional
+        def _put(transaction):
+            # In a transaction so that two ticks reading the same poll cannot
+            # both decide it is new; the loser re-reads and answers False.
+            if ref.get(transaction=transaction).exists:
+                return False
+            transaction.set(ref, {
+                "election": election.model_dump(mode="json"),
+                "stored_at": clock(),
+                "selected": False,
+                "provenance": provenance,
+            })
+            return True
+
+        with io_span(log, "firestore", "put_election", hash=election_hash[:12],
+                     provenance=provenance) as span:
+            stored = _put(self._db.transaction())
+            span["stored"] = stored
+            return stored
+
     def get_job(self, request_key: str) -> Job | None:
         with io_span(log, "firestore", "get_job", request=request_key[:12]) as span:
             snapshot = self._job_ref(request_key).get()
@@ -197,9 +233,7 @@ class FirestoreElectionStore:
             span["outcome"] = peeked.outcome.value
             return peeked
 
-    def claim(
-        self, request_key: str, request: ImportRequest, owner: str | None = None
-    ) -> Claim:
+    def claim(self, request_key: str, request: ImportRequest) -> Claim:
         job_ref = self._job_ref(request_key)
         db, clock = self._db, self._clock
 
@@ -216,7 +250,6 @@ class FirestoreElectionStore:
                 query=request.describe(),
                 started_at=clock(),
                 attempt=(job.attempt + 1) if job else 1,
-                owner=owner,
             )
             # The write is what serialises racing claimers: whichever transaction
             # commits first turns the others' reads stale, forcing them to retry.
@@ -227,7 +260,6 @@ class FirestoreElectionStore:
                     "query": new_job.query,
                     "started_at": new_job.started_at,
                     "attempt": new_job.attempt,
-                    "owner": new_job.owner,
                     "error": None,
                     "result": None,
                     "forecasts": None,
@@ -595,3 +627,178 @@ class FirestoreOutreachStore:
             count = sum(1 for _ in query.stream())
             span["count"] = count
             return count
+
+
+# --- tracked elections (plan 3, A1) -------------------------------------------
+
+#: Every field of a tracked election document. Timestamps are epoch seconds
+#: (:func:`app.store.to_epoch`) so ``next_refresh_at`` can be ordered on.
+TRACKED_COLUMNS = (
+    "year", "nation", "subnation", "election_date", "resolved", "status",
+    "last_refresh_at", "next_refresh_at", "consecutive_failures", "last_error",
+    "result_hash", "result_digest", "first_result_at", "unchanged_reads", "source_digest",
+    "lease_until", "added_by",
+)
+
+
+def _tracked_value(name: str, value):
+    """One field of a tracked election as Firestore holds it."""
+    if name in ("last_refresh_at", "next_refresh_at", "lease_until", "first_result_at"):
+        return to_epoch(value)
+    if name == "election_date":
+        return value.isoformat() if value is not None else None
+    if name == "status":
+        return TrackedStatus(value).value
+    return value
+
+
+def pushed_next_refresh_at(current: float | None, lease_until: float) -> float:
+    """Where ``next_refresh_at`` goes the instant a lease is taken.
+
+    Unlike SQLite's ``due_tracked``, which filters ``lease_until`` in the
+    ``WHERE`` clause itself, Firestore's query can only order and ``LIMIT``
+    (see :meth:`FirestoreTrackedStore.due_tracked`) — an inequality on a
+    second field would either need a composite index keyed to *this* call's
+    ``now``, or drop the never-scheduled rows the same way an inequality on
+    ``next_refresh_at`` already would. So a leased row is pushed to sort
+    *after* the rows still worth trying, for as long as the lease lasts,
+    rather than merely marked unavailable once fetched (plan 3 review,
+    finding 7): otherwise it keeps a slot at the head of ``ORDER BY
+    next_refresh_at LIMIT`` for the whole lease, and an overlapping tick's
+    query never even reaches the rows genuinely due behind it. Never pulls a
+    row that was already scheduled *later* than the lease back earlier.
+    """
+    return lease_until if current is None else max(float(current), lease_until)
+
+
+def _tracked_from_doc(request_key: str, data: dict) -> TrackedElection:
+    election_date = data.get("election_date")
+    return TrackedElection(
+        request_key=request_key,
+        year=int(data["year"]),
+        nation=data["nation"],
+        subnation=data.get("subnation"),
+        election_date=date.fromisoformat(election_date) if election_date else None,
+        resolved=data.get("resolved"),
+        status=TrackedStatus(data["status"]),
+        last_refresh_at=from_epoch(data.get("last_refresh_at")),
+        next_refresh_at=from_epoch(data.get("next_refresh_at")),
+        consecutive_failures=int(data.get("consecutive_failures", 0)),
+        last_error=data.get("last_error"),
+        result_hash=data.get("result_hash"),
+        result_digest=data.get("result_digest"),
+        first_result_at=from_epoch(data.get("first_result_at")),
+        unchanged_reads=int(data.get("unchanged_reads", 0)),
+        source_digest=data.get("source_digest"),
+        lease_until=from_epoch(data.get("lease_until")),
+        added_by=data.get("added_by") or "owner",
+    )
+
+
+class FirestoreTrackedStore:
+    """Tracked elections in Firestore, keyed by request key.
+
+    :meth:`lease` is a transaction for the same reason :meth:`claim` is: two
+    Cloud Run instances whose crons fire in the same minute both read the row,
+    and only the one whose transaction commits may read the page.
+
+    :meth:`due_tracked` needs the composite index on ``status`` and
+    ``next_refresh_at`` in ``firestore.indexes.json``.
+    """
+
+    def __init__(self, client: firestore.Client, *, clock=time.time):
+        self._db = client
+        self._clock = clock
+
+    def _ref(self, request_key: str):
+        return self._db.collection(TRACKED_COLLECTION).document(request_key)
+
+    def get_tracked(self, request_key: str) -> TrackedElection | None:
+        with io_span(log, "firestore", "get_tracked", request=request_key[:12]) as span:
+            snapshot = self._ref(request_key).get()
+            span["found"] = snapshot.exists
+            if not snapshot.exists:
+                return None
+            return _tracked_from_doc(request_key, snapshot.to_dict())
+
+    def list_tracked(self) -> list[TrackedElection]:
+        with io_span(log, "firestore", "list_tracked") as span:
+            query = self._db.collection(TRACKED_COLLECTION).order_by("next_refresh_at")
+            rows = [_tracked_from_doc(doc.id, doc.to_dict()) for doc in query.stream()]
+            span["count"] = len(rows)
+            return rows
+
+    def add_tracked(self, tracked: TrackedElection) -> bool:
+        ref = self._ref(tracked.request_key)
+        data = {name: _tracked_value(name, getattr(tracked, name)) for name in TRACKED_COLUMNS}
+
+        @firestore.transactional
+        def _add(transaction):
+            if ref.get(transaction=transaction).exists:
+                return False
+            transaction.set(ref, data)
+            return True
+
+        with io_span(log, "firestore", "add_tracked",
+                     request=tracked.request_key[:12]) as span:
+            added = _add(self._db.transaction())
+            span["added"] = added
+            return added
+
+    def update_tracked(self, request_key: str, **fields) -> TrackedElection | None:
+        check_fields(fields)
+        if not fields:
+            return self.get_tracked(request_key)
+        ref = self._ref(request_key)
+        with io_span(log, "firestore", "update_tracked", request=request_key[:12]) as span:
+            if not ref.get().exists:
+                span["found"] = False
+                return None
+            ref.update({name: _tracked_value(name, value) for name, value in fields.items()})
+            span["found"] = True
+            return self.get_tracked(request_key)
+
+    def due_tracked(self, now: datetime, limit: int) -> list[TrackedElection]:
+        with io_span(log, "firestore", "due_tracked", limit=limit) as span:
+            # Ordered by next_refresh_at with nulls first, so the first `limit`
+            # documents are the most overdue. Dueness itself is not a filter:
+            # an inequality on next_refresh_at would drop exactly the rows with
+            # no schedule yet, which are the ones a new row starts as.
+            query = (
+                self._db.collection(TRACKED_COLLECTION)
+                .where(filter=firestore.FieldFilter(
+                    "status", "in", [status.value for status in ACTIVE_STATUSES]
+                ))
+                .order_by("next_refresh_at")
+                .limit(limit)
+            )
+            rows = [_tracked_from_doc(doc.id, doc.to_dict()) for doc in query.stream()]
+            due = [row for row in rows if is_available(row, now)]
+            span["count"] = len(due)
+            return due
+
+    def lease(self, request_key: str, until: datetime) -> TrackedElection | None:
+        ref, clock = self._ref(request_key), self._clock
+        new_until = to_epoch(until)
+
+        @firestore.transactional
+        def _lease(transaction):
+            snapshot = ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return False
+            data = snapshot.to_dict()
+            held = data.get("lease_until")
+            if held is not None and float(held) > clock():
+                return False
+            pushed = pushed_next_refresh_at(data.get("next_refresh_at"), new_until)
+            transaction.update(ref, {"lease_until": new_until, "next_refresh_at": pushed})
+            return True
+
+        with io_span(log, "firestore", "lease", request=request_key[:12]) as span:
+            taken = _lease(self._db.transaction())
+            span["taken"] = taken
+            return self.get_tracked(request_key) if taken else None
+
+    def release(self, request_key: str) -> None:
+        with io_span(log, "firestore", "release", request=request_key[:12]):
+            self._ref(request_key).update({"lease_until": None})

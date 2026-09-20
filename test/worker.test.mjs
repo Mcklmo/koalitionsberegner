@@ -4,8 +4,14 @@ import assert from 'node:assert/strict';
 import worker, {
   escapeAttribute,
   ORIGIN_SECRET_HEADER,
-  REPORT_SECRET_HEADER,
+  SCHEDULE_SECRET_HEADER,
   USAGE_REPORTS_PATH,
+  REFRESH_PATH,
+  CALENDAR_SCAN_PATH,
+  DAILY_CRON,
+  REFRESH_CRON,
+  CALENDAR_SCAN_CRON,
+  calendarScanYears,
 } from '../worker/index.js';
 
 const ENV = {
@@ -324,7 +330,7 @@ test('the approval page never carries Open Graph tags', async () => {
   assert.doesNotMatch(html, /og:/);
 });
 
-// --- the daily cron -----------------------------------------------------------
+// --- the three crons ------------------------------------------------------
 
 const REPORT_ENV = { ...ENV, USAGE_REPORT_SECRET: 'r'.repeat(64) };
 
@@ -334,50 +340,102 @@ function scheduledContext() {
   return { pending, waitUntil: (promise) => pending.push(promise) };
 }
 
-test('the cron asks the origin for the reports, carrying both secrets', async () => {
+test('the daily cron asks the origin for the reports, carrying both secrets', async () => {
   const calls = recordFetches();
   const ctx = scheduledContext();
 
-  await worker.scheduled({}, REPORT_ENV, ctx);
+  await worker.scheduled({ cron: DAILY_CRON }, REPORT_ENV, ctx);
   await Promise.all(ctx.pending);
 
   assert.deepEqual(calls.map((call) => call.url), [`${ENV.ORIGIN_URL}${USAGE_REPORTS_PATH}`]);
   for (const call of calls) {
     assert.equal(call.init.method, 'POST');
     assert.equal(call.init.headers[ORIGIN_SECRET_HEADER], ENV.ORIGIN_SECRET);
-    assert.equal(call.init.headers[REPORT_SECRET_HEADER], REPORT_ENV.USAGE_REPORT_SECRET);
+    assert.equal(call.init.headers[SCHEDULE_SECRET_HEADER], REPORT_ENV.USAGE_REPORT_SECRET);
   }
+});
+
+test('an unrecognised cron is logged and does nothing', async (t) => {
+  const calls = recordFetches();
+  t.mock.method(console, 'warn', () => {});
+  const ctx = scheduledContext();
+
+  await worker.scheduled({ cron: 'not one of ours' }, REPORT_ENV, ctx);
+  await Promise.all(ctx.pending);
+
+  // A cron string this file does not recognise must not be guessed at — it
+  // is a configuration mistake, not a signal to run the daily report early
+  // (plan 3 review, finding 8): the wrong guess would email reports every
+  // time the mismatched cron fires and silently never refresh anything.
+  assert.equal(calls.length, 0);
+  assert.equal(ctx.pending.length, 0);
+  assert.ok(
+    console.warn.mock.calls.some((call) => call.arguments[0].includes('not one of ours')),
+  );
+});
+
+test('the 30-minute cron asks the origin to refresh tracked elections', async () => {
+  const calls = recordFetches();
+  const ctx = scheduledContext();
+
+  await worker.scheduled({ cron: REFRESH_CRON }, REPORT_ENV, ctx);
+  await Promise.all(ctx.pending);
+
+  assert.deepEqual(calls.map((call) => call.url), [`${ENV.ORIGIN_URL}${REFRESH_PATH}`]);
+  assert.equal(calls[0].init.headers[SCHEDULE_SECRET_HEADER], REPORT_ENV.USAGE_REPORT_SECRET);
+});
+
+test('the monthly cron asks the origin to scan for new elections, years included', async () => {
+  const calls = recordFetches();
+  const ctx = scheduledContext();
+
+  await worker.scheduled({ cron: CALENDAR_SCAN_CRON }, REPORT_ENV, ctx);
+  await Promise.all(ctx.pending);
+
+  assert.equal(calls.length, 1);
+  const url = new URL(calls[0].url);
+  assert.equal(url.pathname, CALENDAR_SCAN_PATH);
+  assert.equal(url.searchParams.get('years'), calendarScanYears());
+});
+
+test('calendarScanYears names this year and the following two', () => {
+  assert.equal(calendarScanYears(new Date('2026-12-31T23:59:59Z')), '2026,2027,2028');
+  assert.equal(calendarScanYears(new Date('2027-01-01T00:00:00Z')), '2027,2028,2029');
 });
 
 test('a report run the origin refused shows as a failed cron', async () => {
   globalThis.fetch = async () => new Response('{}', { status: 502 });
   const ctx = scheduledContext();
 
-  await worker.scheduled({}, REPORT_ENV, ctx);
+  await worker.scheduled({ cron: DAILY_CRON }, REPORT_ENV, ctx);
 
   await assert.rejects(Promise.all(ctx.pending), /HTTP 502/);
 });
 
-test('without a report secret the cron sends nothing', async (t) => {
+test('without a report secret no cron sends anything', async (t) => {
   const calls = recordFetches();
   t.mock.method(console, 'warn', () => {});
   const ctx = scheduledContext();
 
-  await worker.scheduled({}, ENV, ctx);
+  for (const cron of [DAILY_CRON, REFRESH_CRON, CALENDAR_SCAN_CRON]) {
+    await worker.scheduled({ cron }, ENV, ctx);
+  }
 
   assert.equal(ctx.pending.length, 0);
   assert.equal(calls.length, 0);
 });
 
-test('the endpoint only the cron calls is never forwarded from the public side', async () => {
+test('the endpoints only the crons call are never forwarded from the public side', async () => {
   const calls = recordFetches();
-  const response = await worker.fetch(
-    new Request(`https://koalitionsberegner.moritzmarcus.com${USAGE_REPORTS_PATH}`, {
-      method: 'POST',
-      headers: { [REPORT_SECRET_HEADER]: REPORT_ENV.USAGE_REPORT_SECRET },
-    }),
-    REPORT_ENV
-  );
-  assert.equal(response.status, 404);
+  for (const path of [USAGE_REPORTS_PATH, REFRESH_PATH, CALENDAR_SCAN_PATH]) {
+    const response = await worker.fetch(
+      new Request(`https://koalitionsberegner.moritzmarcus.com${path}`, {
+        method: 'POST',
+        headers: { [SCHEDULE_SECRET_HEADER]: REPORT_ENV.USAGE_REPORT_SECRET },
+      }),
+      REPORT_ENV
+    );
+    assert.equal(response.status, 404, path);
+  }
   assert.equal(calls.length, 0);
 });

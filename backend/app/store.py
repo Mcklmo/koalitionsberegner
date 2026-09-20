@@ -17,9 +17,10 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime
 from enum import Enum
 from threading import Lock
-from typing import Protocol
+from typing import Any, Protocol
 
 from .identity import same_place
 from .schema import Election
@@ -93,11 +94,6 @@ class Job:
     """The extracted election awaiting confirmation; never served as stored."""
     forecasts: tuple[Election, ...] = ()
     """The polls of an upcoming election, awaiting the user's choice; newest first."""
-    owner: str | None = None
-    """The account that started this attempt — and paid for it, so the only one
-    besides an administrator who may throw its result away. Cleared once the
-    attempt is over — saved, linked or failed: nothing is left to throw away
-    then, and a lasting note of who imported what would serve no one."""
 
 
 @dataclass(frozen=True)
@@ -117,6 +113,13 @@ class Confirmation:
     """True when this request turned out to name an already-stored election."""
 
 
+#: How an election got into the store. ``manual`` is a person confirming an
+#: import; ``auto`` is the scheduled refresh (plan 3, A4) storing one nobody
+#: looked at, which is why the page footnotes it and offers a way to report it.
+PROVENANCES = ("manual", "auto")
+DEFAULT_PROVENANCE = "manual"
+
+
 @dataclass(frozen=True)
 class StoredElection:
     election_hash: str
@@ -124,6 +127,8 @@ class StoredElection:
     stored_at: float
     selected: bool = False
     """Curated for the front page: the only elections a visitor sees signed out."""
+    provenance: str = DEFAULT_PROVENANCE
+    """``manual`` (somebody confirmed it) or ``auto`` (the refresh stored it)."""
 
 
 def select_by_place(
@@ -192,15 +197,25 @@ class ElectionStore(Protocol):
         """
         ...
 
+    def put_election(
+        self, election_hash: str, election: Election, *, provenance: str = "auto"
+    ) -> bool:
+        """Store an election outright, with no job and nobody confirming it.
+
+        What the scheduled refresh writes with (plan 3, A4): the staging table
+        is a conversation with a person, and the refresh is not having one. New
+        returns ``True``; an election already under that hash is left alone and
+        the answer is ``False``, which is what makes a re-read idempotent.
+        """
+        ...
+
     def get_job(self, request_key: str) -> Job | None: ...
 
     def resolve_request(self, request_key: str) -> str | None:
         """The election hash this request produced, if it has produced one."""
         ...
 
-    def claim(
-        self, request_key: str, request: ImportRequest, owner: str | None = None
-    ) -> Claim: ...
+    def claim(self, request_key: str, request: ImportRequest) -> Claim: ...
 
     def peek(self, request_key: str) -> Claim:
         """What :meth:`claim` would decide right now, without claiming anything.
@@ -321,6 +336,20 @@ class InMemoryElectionStore:
             self._elections[election_hash] = replace(stored, election=election)
             return True
 
+    def put_election(
+        self, election_hash: str, election: Election, *, provenance: str = "auto"
+    ) -> bool:
+        with self._lock:
+            if election_hash in self._elections:
+                return False
+            self._elections[election_hash] = StoredElection(
+                election_hash=election_hash,
+                election=election,
+                stored_at=self._clock(),
+                provenance=provenance,
+            )
+            return True
+
     def get_job(self, request_key: str) -> Job | None:
         with self._lock:
             return self._jobs.get(request_key)
@@ -345,9 +374,7 @@ class InMemoryElectionStore:
         with self._lock:
             return self._peek_locked(request_key)
 
-    def claim(
-        self, request_key: str, request: ImportRequest, owner: str | None = None
-    ) -> Claim:
+    def claim(self, request_key: str, request: ImportRequest) -> Claim:
         with self._lock:
             peeked = self._peek_locked(request_key)
             if peeked.outcome is not ClaimOutcome.STARTED:
@@ -359,7 +386,6 @@ class InMemoryElectionStore:
                 query=request.describe(),
                 started_at=self._clock(),
                 attempt=(job.attempt + 1) if job else 1,
-                owner=owner,
             )
             self._jobs[request_key] = new_job
             return Claim(ClaimOutcome.STARTED, request_key, job=new_job)
@@ -374,7 +400,6 @@ class InMemoryElectionStore:
                 # Restart the lease so the user gets a full window to confirm.
                 started_at=self._clock(),
                 attempt=job.attempt if job else 1,
-                owner=job.owner if job else None,
                 result=election,
             )
 
@@ -414,7 +439,6 @@ class InMemoryElectionStore:
                 # Restart the lease so the user gets a full window to choose.
                 started_at=self._clock(),
                 attempt=job.attempt if job else 1,
-                owner=job.owner if job else None,
                 forecasts=tuple(forecasts),
             )
 
@@ -467,3 +491,241 @@ class InMemoryElectionStore:
                 attempt=job.attempt if job else 1,
                 error=error,
             )
+
+
+# --- tracked elections (plan 3, A1) -------------------------------------------
+# The other half of the store: not an election somebody imported, but one the
+# app has undertaken to watch. A row per request key, carrying everything the
+# scheduled refresh needs to decide whether to read it again and what to do with
+# what it reads. A protocol of its own rather than more methods on
+# ElectionStore: a deployment that runs no cron never touches it.
+
+
+class TrackedStatus(str, Enum):
+    UPCOMING = "upcoming"      # not held yet; polls are what there is to read
+    COUNTING = "counting"      # held; a result is stored but not yet stable
+    FINAL = "final"            # stable; nothing is fetched for it again
+    PARKED = "parked"          # given up on after too many failures
+    UNTRACKED = "untracked"    # the owner said stop
+
+
+#: The statuses a tick may pick up. ``final``, ``parked`` and ``untracked`` all
+#: mean "leave it alone": the first because it is done, the other two because a
+#: person has to look before anything reads it again.
+ACTIVE_STATUSES = (TrackedStatus.UPCOMING, TrackedStatus.COUNTING)
+
+#: Who put the row there. Both are the owner's doing; the distinction is whether
+#: they typed it (``owner``) or let a calendar scan propose it (``calendar``).
+ADDED_BY = ("owner", "calendar")
+
+
+@dataclass(frozen=True)
+class TrackedElection:
+    """One election the app re-reads on a schedule. Keyed by request, not identity.
+
+    By request key, because tracking starts before the election is held and an
+    election's identity is its *day*, which a calendar only guesses at. The
+    resolver's answer is kept in :attr:`resolved`, so every refresh after the
+    first is a fetch and one extraction with no resolution to pay for (plan 3,
+    A6.2).
+    """
+
+    request_key: str
+    year: int
+    nation: str
+    subnation: str | None = None
+    election_date: date | None = None
+    resolved: dict[str, Any] | None = None
+    """The ``ResolvedElection`` from the first run, as JSON. Never re-derived."""
+    status: TrackedStatus = TrackedStatus.UPCOMING
+    last_refresh_at: datetime | None = None
+    next_refresh_at: datetime | None = None
+    """When this row is due. ``None`` means due now — or, once final, never again."""
+    consecutive_failures: int = 0
+    last_error: str | None = None
+    result_hash: str | None = None
+    """The identity hash of the stored election, once a result has been stored."""
+    result_digest: str | None = None
+    """SHA-256 of the last result read, to tell a changed count from a repeat."""
+    first_result_at: datetime | None = None
+    """When a result was first stored (or adopted) for this row. Set once, never
+    moved: what a minimum stability duration is measured from (plan 3 review,
+    finding 5), so two quiet ticks around one real read cannot finalise a
+    partial count within the hour."""
+    unchanged_reads: int = 0
+    source_digest: str | None = None
+    """SHA-256 of the condensed source text last read, so a page that has not
+    changed costs no model call at all (plan 3, A6.1)."""
+    lease_until: datetime | None = None
+    added_by: str = "owner"
+
+    def describe(self) -> str:
+        where = f"{self.nation}/{self.subnation}" if self.subnation else self.nation
+        return f"{self.year} {where}"
+
+
+#: Every field of :class:`TrackedElection` a caller may write with
+#: ``update_tracked``. A name outside this set is a programming error, not a
+#: silent no-op — which is what an implementation writing straight through
+#: would make of a typo.
+TRACKED_FIELDS = frozenset(
+    {
+        "election_date", "resolved", "status", "last_refresh_at", "next_refresh_at",
+        "consecutive_failures", "last_error", "result_hash", "result_digest",
+        "first_result_at", "unchanged_reads", "source_digest", "lease_until",
+    }
+)
+
+
+#: The fields holding an instant, which must always be told in UTC.
+TRACKED_TIMES = ("last_refresh_at", "next_refresh_at", "lease_until", "first_result_at")
+
+
+def check_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """The patch a store is about to apply, or a :class:`ValueError` saying why not.
+
+    Here rather than in each backend, so the in-memory store — which could
+    happily hold anything — refuses exactly what the databases would: an
+    unknown field name, and a naive datetime, which two backends would read
+    back as two different instants.
+    """
+    unknown = sorted(set(fields) - TRACKED_FIELDS)
+    if unknown:
+        raise ValueError(f"not a tracked election field: {', '.join(unknown)}")
+    for name in TRACKED_TIMES:
+        value = fields.get(name)
+        if isinstance(value, datetime) and value.tzinfo is None:
+            raise ValueError(f"{name} must carry a time zone, got {value!r}")
+    return fields
+
+
+def to_epoch(value: datetime | None) -> float | None:
+    """A UTC instant as seconds since the epoch, which is how both databases hold it.
+
+    Seconds rather than an ISO string, because SQLite and Firestore both sort
+    and compare numbers without caring how the string was spelled, and a naive
+    datetime slipping in is caught here rather than compared wrongly later.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        raise ValueError("a tracked election's timestamps must carry a time zone")
+    return value.timestamp()
+
+
+def from_epoch(value: float | int | None) -> datetime | None:
+    """The inverse of :func:`to_epoch`, always in UTC."""
+    return None if value is None else datetime.fromtimestamp(float(value), UTC)
+
+
+def due_order(tracked: TrackedElection) -> tuple[int, float]:
+    """Sort key putting the longest-overdue row first, a never-scheduled one before all."""
+    if tracked.next_refresh_at is None:
+        return (0, 0.0)
+    return (1, tracked.next_refresh_at.timestamp())
+
+
+def is_available(tracked: TrackedElection, now: datetime) -> bool:
+    """Whether a tick may pick this row up: active, due, and not already leased.
+
+    One rule, shared by every implementation so that three backends cannot
+    disagree about which elections a tick sees — the same reason
+    :func:`select_by_place` is a filter rather than a query per backend.
+    """
+    return (
+        tracked.status in ACTIVE_STATUSES
+        and (tracked.next_refresh_at is None or now >= tracked.next_refresh_at)
+        and (tracked.lease_until is None or tracked.lease_until <= now)
+    )
+
+
+class TrackedStore(Protocol):
+    """Storage seam for tracked elections. :meth:`lease` must be atomic."""
+
+    def get_tracked(self, request_key: str) -> TrackedElection | None: ...
+
+    def list_tracked(self) -> list[TrackedElection]:
+        """Every row, soonest due first. The admin table and the daily report."""
+        ...
+
+    def add_tracked(self, tracked: TrackedElection) -> bool:
+        """Write a new row. ``False`` when that request key is already tracked."""
+        ...
+
+    def update_tracked(self, request_key: str, **fields) -> TrackedElection | None:
+        """Change some fields of one row; ``None`` when there is no such row."""
+        ...
+
+    def due_tracked(self, now: datetime, limit: int) -> list[TrackedElection]:
+        """At most ``limit`` active rows due at ``now``, longest overdue first.
+
+        A row whose lease has not expired is left out: something is already
+        reading it.
+        """
+        ...
+
+    def lease(self, request_key: str, until: datetime) -> TrackedElection | None:
+        """Take the single-flight lease, or ``None`` if somebody else holds it.
+
+        The one indivisible operation here. Two containers whose crons fire in
+        the same minute must not both read the same page: exactly one of them
+        gets a row back (plan 3, A4.1).
+        """
+        ...
+
+    def release(self, request_key: str) -> None:
+        """Give the lease back, whether the run succeeded or not."""
+        ...
+
+
+class InMemoryTrackedStore:
+    """Process-local tracked elections, for tests and for a run without a database."""
+
+    def __init__(self, *, clock=lambda: datetime.now(UTC)):
+        self._rows: dict[str, TrackedElection] = {}
+        self._lock = Lock()
+        self._clock = clock
+
+    def get_tracked(self, request_key: str) -> TrackedElection | None:
+        with self._lock:
+            return self._rows.get(request_key)
+
+    def list_tracked(self) -> list[TrackedElection]:
+        with self._lock:
+            return sorted(self._rows.values(), key=due_order)
+
+    def add_tracked(self, tracked: TrackedElection) -> bool:
+        with self._lock:
+            if tracked.request_key in self._rows:
+                return False
+            self._rows[tracked.request_key] = tracked
+            return True
+
+    def update_tracked(self, request_key: str, **fields) -> TrackedElection | None:
+        check_fields(fields)
+        with self._lock:
+            row = self._rows.get(request_key)
+            if row is None:
+                return None
+            self._rows[request_key] = replace(row, **fields)
+            return self._rows[request_key]
+
+    def due_tracked(self, now: datetime, limit: int) -> list[TrackedElection]:
+        with self._lock:
+            rows = sorted(self._rows.values(), key=due_order)
+        return [row for row in rows if is_available(row, now)][:limit]
+
+    def lease(self, request_key: str, until: datetime) -> TrackedElection | None:
+        with self._lock:
+            row = self._rows.get(request_key)
+            now = self._clock()
+            if row is None or (row.lease_until is not None and row.lease_until > now):
+                return None
+            self._rows[request_key] = replace(row, lease_until=until)
+            return self._rows[request_key]
+
+    def release(self, request_key: str) -> None:
+        with self._lock:
+            row = self._rows.get(request_key)
+            if row is not None:
+                self._rows[request_key] = replace(row, lease_until=None)

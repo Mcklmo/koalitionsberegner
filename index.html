@@ -266,6 +266,69 @@
       color: #888
     }
 
+    .picker-combo {
+      position: relative;
+      flex: 1;
+      min-width: 0
+    }
+
+    .picker-results {
+      list-style: none;
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(100% + 4px);
+      z-index: 10;
+      max-height: 320px;
+      overflow-y: auto;
+      background: #fff;
+      border: 0.5px solid #ccc;
+      border-radius: 6px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .12)
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .picker-results {
+        background: #222;
+        border-color: #444
+      }
+    }
+
+    .picker-result {
+      padding: 7px 10px;
+      font-size: 13px;
+      cursor: pointer
+    }
+
+    .picker-result-older {
+      padding-left: 24px;
+      opacity: .8
+    }
+
+    .picker-result.active,
+    .picker-result:hover {
+      background: #f3f3f3
+    }
+
+    @media(prefers-color-scheme:dark) {
+
+      .picker-result.active,
+      .picker-result:hover {
+        background: #2a2a2a
+      }
+    }
+
+    .picker-result-ask {
+      font-style: italic;
+      color: #666
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .picker-result-ask {
+        color: #aaa
+      }
+    }
+
     select,
     input {
       font: inherit;
@@ -518,8 +581,13 @@
   </div>
 
   <div class="picker-row" id="picker-row" hidden>
-    <label for="picker" data-i18n="picker.label">Valg</label>
-    <select id="picker"></select>
+    <label for="picker-search" data-i18n="picker.label">Valg</label>
+    <div class="picker-combo">
+      <input type="text" id="picker-search" role="combobox" aria-expanded="false"
+             aria-controls="picker-results" aria-autocomplete="list" autocomplete="off"
+             data-i18n-placeholder="picker.searchPlaceholder">
+      <ul class="picker-results" id="picker-results" role="listbox" hidden></ul>
+    </div>
   </div>
 
   <h2 id="title"></h2>
@@ -548,11 +616,23 @@
       <span class="footer-note" id="footer-note"></span>
       <span>
         <a class="reset-btn" href="#privacy" data-i18n="privacy.link">Privatliv</a>
+        <a class="reset-btn" id="support-link" href="#" target="_blank" rel="noopener noreferrer"
+           data-i18n="footer.support" hidden>Støt projektet</a>
         <button class="reset-btn" id="share" data-i18n="share.button">Del</button>
         <button class="reset-btn" id="reset" data-i18n="reset">Ryd alle</button>
       </span>
     </div>
     <p class="msg msg-warn" id="share-note" hidden></p>
+    <!-- Only for an election the scheduled refresh stored, which nobody read
+         before it went up (doc/plans/03-remaining-work.md, A1). Worded by
+         js/app.js, because it names the source it was read from. -->
+    <p class="footer-note" id="auto-note" hidden></p>
+    <!-- CC BY-SA obligations for data read from Wikipedia (plan 3, C2). Worded
+         by js/app.js, which names the actual source of this election. -->
+    <p class="footer-note" id="attribution-note"></p>
+    <!-- "Supported by ...", set by js/main.js from the owner's SUPPORT_SPONSOR
+         (plan 3, C4). Empty and hidden until the owner names a sponsor. -->
+    <p class="footer-note" id="sponsor-note" hidden></p>
   </div>
 
   <details class="import" id="import">

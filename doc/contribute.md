@@ -209,10 +209,12 @@ they are labelled in the list, the preview and the calculator's footer.
 2. A Firestore database in **Native mode** — single-flight parsing relies on its
    transactions. The `elections`, `extraction_jobs`, `pages`, `usage_daily`
    and `usage_reports` collections are created on demand.
-3. Two composite indexes for `outreach_drafts`, before the first outreach send
-   on this project — without them `FirestoreOutreachStore.count_posted` and
-   `count_posted_total` 500 with `FAILED_PRECONDITION`, and the etiquette caps
-   in `doc/plans/04-reddit-outreach.md` never run:
+3. Three composite indexes, before the first outreach send and before the
+   refresh cron starts finding due rows on this project — without them
+   `FirestoreOutreachStore.count_posted`, `count_posted_total` and
+   `FirestoreTrackedStore.due_tracked` 500 with `FAILED_PRECONDITION`, and
+   the etiquette caps in `doc/plans/04-reddit-outreach.md` and the schedule
+   in `doc/plans/03-remaining-work.md` (section A) never run:
    ```sh
    gcloud firestore indexes composite create --collection-group=outreach_drafts \
      --field-config field-path=subreddit,order=ascending \
@@ -222,14 +224,18 @@ they are labelled in the list, the preview and the calculator's footer.
    gcloud firestore indexes composite create --collection-group=outreach_drafts \
      --field-config field-path=status,order=ascending \
      --field-config field-path=posted_at,order=ascending
+
+   gcloud firestore indexes composite create --collection-group=tracked_elections \
+     --field-config field-path=status,order=ascending \
+     --field-config field-path=next_refresh_at,order=ascending
    ```
-   Add `--database=NAME` to both if `FIRESTORE_DATABASE` is not `(default)`.
-   `thread_posted`'s query (`thread_id ==` and `status ==`, two equalities and
-   no range filter) needs no composite index — Firestore serves that from its
-   automatic single-field indexes, the one case exempt from this. The same two
-   indexes are defined in `firestore.indexes.json` at the repo root, for a
-   deploy that uses the Firebase CLI instead (`firebase deploy --only
-   firestore:indexes`).
+   Add `--database=NAME` to all three if `FIRESTORE_DATABASE` is not
+   `(default)`. `thread_posted`'s query (`thread_id ==` and `status ==`, two
+   equalities and no range filter) needs no composite index — Firestore
+   serves that from its automatic single-field indexes, the one case exempt
+   from this. The same three indexes are defined in `firestore.indexes.json`
+   at the repo root, for a deploy that uses the Firebase CLI instead
+   (`firebase deploy --only firestore:indexes`).
 4. A service account for the Cloud Run revision holding `roles/datastore.user`,
    plus `roles/secretmanager.secretAccessor` once `LLM_MODE=live` or
    `ADMIN_SECRET` is mounted from Secret Manager.
@@ -251,6 +257,62 @@ gcloud run deploy koalitionsberegner \
 To host the page separately (e.g. Cloudflare) instead, point the page at the API
 with `<meta name="api-base" content="https://…">` in `index.html` and set
 `ALLOWED_ORIGINS` on the backend.
+
+### Rolling out tracked elections and the scheduled refresh
+
+[doc/plans/03-remaining-work.md](plans/03-remaining-work.md), section A: the
+app reading polls and results on a schedule instead of waiting for a person to
+import each one. Nothing in it spends anything on its own — deploy it cold and
+it does nothing — so the rollout is about watching it before it is trusted with
+the calendar scan's proposals.
+
+1. **Deploy with the crons in place and no tracked rows.** The 30-minute tick
+   (`POST /api/internal/refresh`) answers all zeros; the monthly one has
+   nothing scheduled to fire yet. Confirm the crons registered in the
+   Cloudflare dashboard (Workers & Pages → the Worker → Triggers) and that a
+   manual `curl -X POST -H "x-report-secret: $USAGE_REPORT_SECRET" -H
+   "x-origin-secret: $ORIGIN_SECRET" $ORIGIN_URL/api/internal/refresh` answers
+   `{"refreshed": 0, ...}` rather than `403` or `404` — either of those means a
+   secret or `GOOGLE_CLOUD_PROJECT` (for the Firestore composite index above)
+   is missing.
+2. **Add three elections by hand**, through `POST /api/admin/tracked`
+   (`x-admin-secret`, body `{"year": …, "nation": "…", "election_date":
+   "YYYY-MM-DD"}`): one due in a few months, one within the next two weeks,
+   and one already held earlier this year — the third exercises the results
+   path (gates, digest, finalising) immediately rather than waiting for a real
+   election night. Watch `GET /api/admin/tracked` for a week; a row that fails
+   repeatedly shows it in `last_error`, and eight consecutive failures park it
+   (`status: "parked"`) — the daily usage report's "Tracked elections" section
+   counts added, refreshed, parked and failed ticks, but only this table names
+   *which* row and why. `PUT
+   /api/admin/tracked/{request_key}` with `{"refresh_now": true}` reactivates
+   a parked row after the cause is fixed, without waiting for the backoff to
+   expire on its own.
+3. **Run the calendar scan once by hand** before letting the monthly cron own
+   it: `POST /api/internal/calendar-scan?years=2026,2027` (same two secrets).
+   Read what it proposed and skipped in the response, `GET /api/admin/tracked`
+   for what it tracked, and untrack (`PUT … {"status": "untracked"}`) whatever
+   does not belong — a regional election outside the allowed federations that
+   slipped past the filter, say. Only once that first scan's proposals look
+   right is the monthly cron worth leaving unwatched.
+
+IFES ElectionGuide is a third calendar source behind `IFES_ELECTIONGUIDE`,
+`off` by default. Its data use policy allows personal and non-commercial use
+only, and this project is becoming a non-profit that pays developers from
+sponsorship — whether that still counts is not this repository's call to
+make. `app/calendar.py`'s own module docstring (item 3) explains the
+position. **Do not set `IFES_ELECTIONGUIDE=on` without the owner's written
+confirmation from IFES that this project's use qualifies**; nothing in this
+codebase has ever fetched an IFES page, including while `IfesElectionGuide`
+was written, so its parser is unverified against the live site — fetch one
+real page and check it against `parse_ifes_electionguide`'s assumed row shape
+before flipping the switch for the first time.
+
+The election-request issue link the frontend now shows under an
+auto-refreshed election (plan 3, A1: "Imported automatically from
+{source}. Report a problem") reuses `GITHUB_ISSUES_REPO` — the same
+repository `GITHUB_ISSUES_TOKEN` files election requests against. No new
+variable to set: if requests are already open, the link is too.
 
 ### The .env file
 
@@ -306,17 +368,24 @@ variables from `--set-env-vars` and Secret Manager.
 | `ADMIN_SECRET` | required on Cloud Run | — | At least 32 characters, same rule as `ORIGIN_SECRET`. Importing needs `x-admin-secret` to match this value; every other caller gets `403`. With none set, every caller is the owner — right for a local run, refused at boot on Cloud Run. |
 | `PUBLIC_BASE_URL` | for the outreach approval email | — | Where this site is reachable, as an absolute URL, no trailing slash. Used to build the `/approve/{token}` link a queued draft is emailed with ([04-reddit-outreach.md](plans/04-reddit-outreach.md)); without it the email carries a relative link instead. |
 | `GITHUB_ISSUES_TOKEN` | for election requests | — | Fine-grained PAT with **Issues: write** on `GITHUB_ISSUES_REPO` and nothing else. Unset means the page is told not to offer requests. Not named `GITHUB_TOKEN` on purpose: GitHub Actions and several agent runtimes export that name, and a token that happens to be in the environment is not a decision to open issues with it. |
-| `GITHUB_ISSUES_REPO` | with `GITHUB_ISSUES_TOKEN` | — | Repository the requests are filed on, as `owner/name`. Set without a token, or in any other shape, it is a startup error rather than a guess. |
+| `GITHUB_ISSUES_REPO` | with `GITHUB_ISSUES_TOKEN` | — | Repository the requests are filed on, as `owner/name`. Set without a token, or in any other shape, it is a startup error rather than a guess. Also where the "Report a problem" link under an auto-refreshed election points (plan 3, A1) — one repository, no separate variable. |
 | `SMTP_HOST` | for emailed usage reports | — | Mail server the reports are submitted to, e.g. `smtp.gmail.com`. Set together with the three below, or not at all; a partial set is a startup error. |
 | `SMTP_PORT` | no | `587` | `465` is TLS from the first byte; any other port is upgraded with STARTTLS before the password is sent. |
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | with `SMTP_HOST` | — | The login. With Gmail, an app password. Put the password in Secret Manager. |
 | `REPORT_EMAIL_TO` | with `SMTP_HOST` | — | Comma-separated addresses the reports go to. |
 | `REPORT_EMAIL_FROM` | no | `SMTP_USERNAME` | The sender address, where the server allows a different one. |
-| `USAGE_REPORT_SECRET` | for scheduled usage reports | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret`. If it is unset, `POST /api/internal/usage-reports` does not exist. |
+| `USAGE_REPORT_SECRET` | for scheduled usage reports | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret` — the same header now also guards `/api/internal/refresh` and `/api/internal/calendar-scan` ([03-remaining-work.md](plans/03-remaining-work.md), section A). If it is unset, none of the three `/api/internal/*` routes exist. |
+| `REFRESH_CONFIG` | no | the bundled `app/refresh.yaml` | A different schedule file — how often a tracked election is re-read, before and after election day. See the comments in `app/refresh.yaml` for the grammar. |
+| `REFRESH_TICK` | no | `30m` | How often the Worker's refresh cron actually fires; a schedule row asking to be read more often than this earns a startup warning, not an error, so tightening the cron does not require editing the schedule file first. Keep it equal to the cron's own period in `wrangler.jsonc`. |
+| `REFRESH_MAX_PER_TICK` | no | `5` | Tracked elections one call to `/api/internal/refresh` reads, oldest due first. The cap keeps one tick inside Cloud Run's request timeout — each row is a fetch and at most one model call, run one after another. |
+| `REFRESH_MODEL` | no | the extractor's own model | A cheaper model for scheduled refreshes only, tried first on the polls path: the strict schema and `app/refresh.py`'s own gates catch a weaker model's mistakes. Never used by an ordinary import. |
+| `IFES_ELECTIONGUIDE` | no | `off` | `on` lets the monthly calendar scan also read IFES ElectionGuide as a third source. Stays `off` until the owner has IFES's written confirmation that this project's use qualifies as non-commercial under their data use policy — see "Rolling out tracked elections" below and `app/calendar.py`'s module docstring, item 3. Unlike `WIKIPEDIA` and `SEARCH_MODE`, not tied to `LLM_MODE`: this source is deterministic, not model-backed. |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USERNAME` / `REDDIT_PASSWORD` / `REDDIT_USER_AGENT` | for posting approved outreach replies | — | A script-app OAuth login, all five or none ([04-reddit-outreach.md](plans/04-reddit-outreach.md)). Missing any one leaves the approval queue and email working; only `POST /api/outreach/approval/{token}/send` answers `503`. Never logged, never in a `repr`. |
 | `OUTREACH_ALLOWED_SUBREDDITS` | for posting | — (nothing is allowed) | Comma-separated subreddit names this deployment may post to. Its own list, not the scanner's `OUTREACH_SUBREDDITS`. |
 | `OUTREACH_SUBREDDIT_WEEKLY_CAP` | no | `2` | Posted replies per subreddit per rolling seven days, enforced server-side regardless of what the scanner queued. |
 | `OUTREACH_DAILY_CAP` | no | `3` | Posted replies in total per rolling 24 hours. |
+| `SUPPORT_LINK` | no | — | One donate/sponsor link in the footer (plan 3, C4) — GitHub Sponsors, Ko-fi or MobilePay, the owner's choice. Unset hides it. Only followed by the page when it is `https`. |
+| `SUPPORT_SPONSOR` | no | — | An optional "Supported by …" line under the calculator, shown as plain text. Unset hides it, independently of `SUPPORT_LINK`. |
 | `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
 | `ENV_FILE` | no | nearest `.env` walking up from the working directory | A different file to read variables from. Empty loads none. A path that does not exist is a startup error. |
 | `PORT` | no | `8080` | Set by Cloud Run. |

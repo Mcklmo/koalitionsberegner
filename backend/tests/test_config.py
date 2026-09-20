@@ -14,6 +14,8 @@ def clean_config():
     cached = (
         config.get_store,
         config.get_parser,
+        config.get_refresh_parser,
+        config.get_calendar_scanner,
         config.get_search,
         config.get_wikipedia,
         config.get_wishlist,
@@ -49,6 +51,8 @@ def clean_config():
         ({"SEARCH_MODE": "google", "GOOGLE_SEARCH_API_KEY": "k", "GOOGLE_SEARCH_CX": "c"}, None),
         ({"SEARCH_MODE": "anthropic", "ANTHROPIC_API_KEY": ""}, "requires ANTHROPIC_API_KEY"),
         ({"WIKIPEDIA": "yes"}, "WIKIPEDIA must be one of"),
+        ({"IFES_ELECTIONGUIDE": "yes"}, "IFES_ELECTIONGUIDE must be one of"),
+        ({"IFES_ELECTIONGUIDE": "on"}, None),
         # Checked even under a mocked agent that will never look anything up: it
         # becomes a hostname, and a typo should not wait for the first import.
         ({"WIKIPEDIA_LANGUAGE": "deutsche sprache"}, "WIKIPEDIA_LANGUAGE must be"),
@@ -172,6 +176,39 @@ def test_a_mocked_agent_never_reaches_wikipedia_either(monkeypatch, clean_config
     assert get_wikipedia() is None
 
 
+def test_ifes_electionguide_is_off_by_default(monkeypatch, clean_config):
+    """Nothing may read IFES until the owner has its written confirmation
+    (plan 3, A5) -- the switch defaults to off, whatever LLM_MODE is."""
+    from app.calendar import IfesElectionGuide
+    from app.config import get_calendar_scanner, ifes_electionguide_enabled
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    assert ifes_electionguide_enabled() is False
+    assert get_calendar_scanner()._ifes is None
+
+
+def test_ifes_electionguide_is_wired_in_once_switched_on(monkeypatch, clean_config):
+    from app.calendar import IfesElectionGuide
+    from app.config import get_calendar_scanner, ifes_electionguide_enabled
+
+    monkeypatch.setenv("IFES_ELECTIONGUIDE", "on")
+    assert ifes_electionguide_enabled() is True
+    scanner = get_calendar_scanner()
+    assert isinstance(scanner._ifes, IfesElectionGuide)
+
+
+def test_ifes_electionguide_is_not_gated_by_llm_mode(monkeypatch, clean_config):
+    """Unlike Wikipedia and search, this source is deterministic, not
+    model-backed, so a mocked pipeline is not a reason to leave it off too."""
+    from app.config import get_calendar_scanner, ifes_electionguide_enabled
+
+    monkeypatch.setenv("LLM_MODE", "mock")
+    monkeypatch.setenv("IFES_ELECTIONGUIDE", "on")
+    assert ifes_electionguide_enabled() is True
+    assert get_calendar_scanner()._ifes is not None
+
+
 def test_an_unconfigured_deployment_still_names_itself_to_wikimedia(
     monkeypatch, clean_config
 ):
@@ -213,6 +250,23 @@ def test_mock_mode_wires_neither(monkeypatch, clean_config):
     parser = get_parser()
     assert isinstance(parser._resolver, MockResolver)
     assert isinstance(parser._extractor, MockExtractor)
+
+
+def test_the_refresh_parser_takes_a_cheaper_model_when_one_is_named(monkeypatch, clean_config):
+    from app.config import get_parser, get_refresh_parser
+    from app.extractor import MODEL
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    monkeypatch.delenv("REFRESH_MODEL", raising=False)
+
+    assert get_parser()._extractor._model == MODEL
+    assert get_refresh_parser()._extractor._model == MODEL  # unset: same as the import's
+
+    get_refresh_parser.cache_clear()
+    monkeypatch.setenv("REFRESH_MODEL", "claude-haiku-5")
+    assert get_refresh_parser()._extractor._model == "claude-haiku-5"
+    assert get_parser()._extractor._model == MODEL  # the ordinary import is untouched
 
 
 def test_an_unknown_llm_mode_never_silently_becomes_the_mock(monkeypatch, clean_config):
@@ -269,3 +323,17 @@ def test_cloud_run_refuses_to_boot_without_an_admin_secret(monkeypatch, clean_co
 
     monkeypatch.setenv("ADMIN_SECRET", "a" * 32)
     validate_configuration()
+
+
+def test_the_issues_url_is_built_from_the_same_repository_the_wishlist_files_against(monkeypatch):
+    from app.config import ConfigError, issues_url
+
+    monkeypatch.delenv("GITHUB_ISSUES_REPO", raising=False)
+    assert issues_url() == ""
+
+    monkeypatch.setenv("GITHUB_ISSUES_REPO", "owner/repo")
+    assert issues_url() == "https://github.com/owner/repo/issues"
+
+    monkeypatch.setenv("GITHUB_ISSUES_REPO", "not a repo")
+    with pytest.raises(ConfigError, match="must be owner/name"):
+        issues_url()

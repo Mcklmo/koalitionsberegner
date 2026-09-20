@@ -12,19 +12,47 @@
  * indexed, so an approval link leaked to a crawler or a chat preview shows
  * nothing.
  *
- * Once a day the cron in wrangler.jsonc runs `scheduled`, which asks the origin
- * to email the usage reports that are due. That endpoint lives under
- * `/api/internal/`, which is never forwarded from the public side: the report
- * secret already guards it, and this keeps it off the internet altogether.
+ * Three crons in wrangler.jsonc run `scheduled`, dispatched by `controller.cron`
+ * (doc/plans/03-remaining-work.md, A3): once a day, it asks the origin to email
+ * the usage reports that are due; every 30 minutes, it asks the origin to
+ * refresh whichever tracked elections are due; once a month, it asks the
+ * origin to scan for new elections to track. All three endpoints live under
+ * `/api/internal/`, which is never forwarded from the public side: the
+ * schedule secret already guards them, and this keeps them off the internet
+ * altogether.
  *
  * `ORIGIN_URL` is a plain var in wrangler.jsonc; `ORIGIN_SECRET` and
  * `USAGE_REPORT_SECRET` are set with `wrangler secret put` and must equal the
- * backend's.
+ * backend's. `USAGE_REPORT_SECRET` is kept as the variable's name to avoid
+ * rotating it (doc/plans/03-remaining-work.md, D3) — only the header constant
+ * below is renamed, for honesty: every scheduled call carries it now, not
+ * only the usage reports.
  */
 
 export const ORIGIN_SECRET_HEADER = 'x-origin-secret';
-export const REPORT_SECRET_HEADER = 'x-report-secret';
+export const SCHEDULE_SECRET_HEADER = 'x-report-secret';
 export const USAGE_REPORTS_PATH = '/api/internal/usage-reports';
+export const REFRESH_PATH = '/api/internal/refresh';
+export const CALENDAR_SCAN_PATH = '/api/internal/calendar-scan';
+
+//: The three crons, exactly as wrangler.jsonc's `triggers.crons` spells them —
+//: `controller.cron` is compared against these, not parsed, so a typo in
+//: either place shows up as the wrong branch running rather than a silent
+//: mismatch.
+export const DAILY_CRON = '0 6 * * *';
+export const REFRESH_CRON = '*/30 * * * *';
+export const CALENDAR_SCAN_CRON = '0 5 1 * *';
+
+/**
+ * This year and the next two, comma-separated: the window
+ * `app.calendar.CalendarScanner.scan` accepts (`MAX_YEARS_AHEAD`). Computed
+ * here rather than pinned in wrangler.jsonc, so nobody has to remember to
+ * bump it every December.
+ */
+export function calendarScanYears(now = new Date()) {
+  const year = now.getUTCFullYear();
+  return `${year},${year + 1},${year + 2}`;
+}
 
 //: A shared link's id: a prefix of an election hash, 12 to 64 hex characters
 //: (see `backend/app/share.py`, `MIN_ID_LENGTH`/`ID_LENGTH`), with an optional
@@ -168,7 +196,7 @@ async function callOrigin(env, path) {
     method: 'POST',
     headers: {
       [ORIGIN_SECRET_HEADER]: env.ORIGIN_SECRET,
-      [REPORT_SECRET_HEADER]: env.USAGE_REPORT_SECRET,
+      [SCHEDULE_SECRET_HEADER]: env.USAGE_REPORT_SECRET,
     },
   });
   // Thrown rather than logged, so the run shows as failed in the dashboard.
@@ -227,11 +255,28 @@ export default {
 
   async scheduled(controller, env, ctx) {
     if (!env.ORIGIN_URL || !env.ORIGIN_SECRET || !env.USAGE_REPORT_SECRET) {
-      // A deployment without the secret has no daily job to run.
-      console.warn('the daily job is not configured; skipping');
+      // A deployment without the secret has no scheduled job to run.
+      console.warn('the schedule is not configured; skipping');
       return;
     }
-    // If it fails, the run is marked failed.
-    ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
+    // If it fails, the run is marked failed — for all three, alike.
+    if (controller.cron === REFRESH_CRON) {
+      ctx.waitUntil(callOrigin(env, REFRESH_PATH));
+      return;
+    }
+    if (controller.cron === CALENDAR_SCAN_CRON) {
+      ctx.waitUntil(callOrigin(env, `${CALENDAR_SCAN_PATH}?years=${calendarScanYears()}`));
+      return;
+    }
+    if (controller.cron === DAILY_CRON) {
+      ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
+      return;
+    }
+    // A cron string matching none of the three configured here means
+    // wrangler.toml's schedule and this file have drifted apart. Falling back
+    // to the daily report would be worse than doing nothing: a typo'd cron
+    // firing every few minutes would spam reports and the refresh would
+    // silently never run at all.
+    console.warn(`scheduled: unrecognised cron ${controller.cron}; doing nothing`);
   },
 };

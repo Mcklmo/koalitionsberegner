@@ -13,6 +13,7 @@ dependencies = [
     "anthropic>=0.40",
     "beautifulsoup4>=4.12",   # reading a Wikipedia article down to its results tables
     "pillow>=10",             # rasterising the share-link preview image
+    "pyyaml>=6",              # the refresh schedule in app/refresh.yaml
 ]
 
 # Test-only dependencies. A dependency group rather than an optional extra:
@@ -29,7 +30,7 @@ build-backend = "setuptools.build_meta"
 packages = ["app"]
 
 [tool.setuptools.package-data]
-app = ["fonts/*"]
+app = ["fonts/*", "refresh.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

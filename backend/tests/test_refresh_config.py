@@ -39,6 +39,7 @@ after_election:
     every: 1d
 results:
   stable_after: 3
+  min_finalize_after: 12h
 polls:
   keep_newest: 3
 failures:
@@ -133,6 +134,7 @@ def test_the_fixture_loads_into_the_table(config):
         ),
         after_election=(AfterRow(2 * D, 30 * M), AfterRow(45 * D, D)),
         stable_after=3,
+        min_finalize_after=12 * H,
         keep_newest=3,
         backoff_factor=2,
         max_backoff=7 * D,
@@ -210,6 +212,9 @@ def test_an_every_below_the_tick_is_a_warning_naming_the_row(tmp_path, caplog):
         ("within: 2d", "within: 0d", "after_election[0].within: '0d' must be longer than zero"),
         ("every: 1d\nafter", "every: 0m\nafter", "before_election[3].every: '0m' must be longer"),
         ("max_backoff: 7d", "max_backoff: 7d7d", "failures.max_backoff: '7d7d' gives the unit"),
+        ("min_finalize_after: 12h", "min_finalize_after: 12",
+         "results.min_finalize_after: 12 is not a duration"),
+        ("  min_finalize_after: 12h\n", "", "results: missing 'min_finalize_after'"),
         # Integers.
         ("stable_after: 3", "stable_after: 0", "results.stable_after must be a positive whole number, got 0"),
         ("keep_newest: 3", "keep_newest: -1", "polls.keep_newest must be a positive whole number, got -1"),

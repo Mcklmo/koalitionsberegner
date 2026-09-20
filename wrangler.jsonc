@@ -20,10 +20,16 @@
     // counts against the Worker's request allowance.
     "run_worker_first": ["/api/*", "/e/*", "/approve/*"]
   },
-  // Once a day the Worker asks the origin to email whichever usage reports are
-  // due (daily always, weekly on Mondays, monthly on the 1st). 06:00 UTC.
+  // Three schedules (doc/plans/03-remaining-work.md, A3), dispatched in
+  // worker/index.js's `scheduled` by which of these fired:
+  // - 06:00 UTC daily: email whichever usage reports are due (daily always,
+  //   weekly on Mondays, monthly on the 1st).
+  // - every 30 minutes: refresh whichever tracked elections are due. Matches
+  //   backend/app/refresh.yaml's smallest `every` — tightening the schedule
+  //   there needs this tightened too, or the extra reads are never taken.
+  // - 05:00 UTC on the 1st of the month: scan for new elections to track.
   "triggers": {
-    "crons": ["0 6 * * *"]
+    "crons": ["0 6 * * *", "*/30 * * * *", "0 5 1 * *"]
   },
   "vars": {
     "ORIGIN_URL": "https://koalitionsberegner-711803377000.europe-north1.run.app"

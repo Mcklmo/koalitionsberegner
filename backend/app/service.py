@@ -165,12 +165,9 @@ class ImportService:
 
         ``on_parse_failed`` runs if this call's own import fails, so the caller
         can count a failed import.
-
-        Only the owner imports, so no importer is recorded on the job: its owner
-        field stays ``None``, kept in storage for the rows that already have one.
         """
         key = self.request_key_for(request)
-        claim = await self._in_thread(self._store.claim, key, request, None)
+        claim = await self._in_thread(self._store.claim, key, request)
         # One line per state transition, so the decision is visible whichever
         # store backend is in use (Firestore logs its own wire-level spans).
         log.info(

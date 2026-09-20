@@ -1,7 +1,20 @@
 # Koalitionsberegner
 
-Coalition-seat calculator. Pick parties, see whether they reach a majority.
-Elections can be imported by naming a year and a place — the server finds the official results itself — and shared between users.
+Coalition-seat calculator, for every election rather than one country's.
+Pick parties, see whether they reach a majority, share the result. One tool
+instead of a spreadsheet per election is the whole pitch: the renderer knows
+nothing about any particular country, assembly size or majority threshold —
+every number and name it shows comes from an election that passed the same
+schema check, whether it is the one bundled with the page, one a visitor
+asked for, or one the app went and read on its own.
+
+Elections get in three ways: a visitor names a year and a place and the
+server reads the official results itself; the owner imports one directly,
+poll by poll; or the app tracks an election ahead of time from a public
+calendar and reads it on a schedule that tightens as the day approaches,
+without anyone asking (`doc/plans/03-remaining-work.md`, Section A). Nothing
+about who asked, or who is looking, is ever stored — see
+[Usage reports and privacy](#usage-reports-and-privacy) below.
 
 The renderer (`js/app.js`) is election-agnostic; elections come from an injected
 provider and must pass the canonical schema validator in `js/election.js` before
@@ -111,6 +124,63 @@ curl -s -X POST -H 'x-report-secret: local-report-secret-at-least-32-chars' 'loc
 
 uv run pytest tests/test_usage.py       # the counting, the reports and the endpoints
 ```
+
+## Licence
+
+The code is [AGPL-3.0](LICENSE), chosen because this is a hosted service: the
+AGPL's network clause keeps a fork that offers it as a service to others open
+too, not just a fork that stays on someone's own laptop.
+
+## Data and its licence
+
+Where results and polls are read from is named on every election — the
+figures under the calculator say "Figures from *hostname*" — and the source
+page itself stays one click away for anyone who wants to check. Data read
+from Wikipedia carries the site's own
+[CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/) licence, which
+requires that attribution to stay visible and that anything derived from it
+stays share-alike; the note under the calculator (`data.attribution` in
+`js/strings.csv`) exists for exactly that reason. This matters beyond the
+page itself: any later commercial licensing of this project's *data* (as
+opposed to the code) has to keep the Wikipedia-derived parts share-alike,
+whatever licence the rest of it carries.
+
+## Funding
+
+No ads: they pay badly on political content, would need a consent banner for
+anything personalised, and would cost the one thing that sets this page
+apart from one with a sponsor's thumb on the scale.
+
+Instead, a single donate/sponsor link in the footer — GitHub Sponsors, Ko-fi
+or MobilePay, whichever the deployment's owner sets as `SUPPORT_LINK` — and
+an optional "Supported by …" line (`SUPPORT_SPONSOR`) that stays hidden until
+someone is named. Both are documented in `.env.example` and
+[doc/contribute.md](doc/contribute.md). Beyond that, this README is written
+to double as the pitch for the grants an open-source, privacy-respecting
+civic tool can apply to: NLnet (NGI Zero), the Prototype Fund (Germany),
+the EU's Next Generation Internet calls, and Danish democracy or
+digitisation foundations.
+
+## Embedding and the API
+
+`GET /api/elections` (every stored election, newest `election_date` first)
+and `GET /api/elections/<hash>` (one election) are open to anyone, need no
+secret, and are meant to be stable enough to embed — a newsroom's page, for
+instance. Both send `Cache-Control: public, max-age=60`, and `ALLOWED_ORIGINS`
+on the backend is the CORS half of that story: set it to the calling origin
+and the browser will allow the read. Nothing further is built on top of this
+today — no client library, no versioned API path — until somebody asks for
+it; the shape is already the `ElectionSummary`/election JSON the page itself
+uses; see `backend/app/main.py`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — in short: everyone may ask for a
+missing election from the page itself, no account needed; code changes are
+pull requests against a green `node --test test/*.test.mjs` and
+`cd backend && uv run pytest`; and
+[doc/contribute.md](doc/contribute.md) has cloud setup and every environment
+variable.
 
 ## Run locally
 

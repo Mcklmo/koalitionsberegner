@@ -80,12 +80,21 @@ function toForecast(forecast) {
 function toSummary(row) {
   return {
     electionHash: row.election_hash,
+    // Shared by every poll and the eventual result of the same election
+    // (plan 3, B1), so the picker can group them. An older backend with no
+    // such field groups nothing, rather than crashing: each row is its own
+    // group, exactly today's behaviour.
+    electionKey: typeof row.election_key === 'string' && row.election_key ? row.election_key : row.election_hash,
     nation: row.nation,
     state: row.state ?? null,
     electionDate: row.election_date,
     title: row.title,
     totalSeats: row.total_seats,
     forecast: toForecast(row.forecast),
+    // 'auto' means the scheduled refresh stored it and nobody read it first
+    // (doc/plans/03-remaining-work.md, A1). Anything unrecognised is treated
+    // as confirmed, so an older backend does not footnote every election.
+    provenance: row.provenance === 'auto' ? 'auto' : 'manual',
   };
 }
 
@@ -97,7 +106,37 @@ function toConfig(body) {
     importsEnabled: Boolean(body.imports_enabled),
     // Whether importing needs no secret here: a local run with none configured.
     importsOpen: Boolean(body.imports_open),
+    // This repository's issue tracker, for reporting a wrong figure. Only an
+    // https address on github.com is kept: it becomes a link on the page, and
+    // the page does not follow a scheme it did not expect.
+    issuesUrl: safeIssuesUrl(body.issues_url),
+    // The footer's donate/sponsor link (plan 3, C4). The owner's choice of
+    // provider, so only the scheme is checked — any https address is kept.
+    supportLink: safeHttpsUrl(body.support_link),
+    // "Supported by …", shown as text — never a reason to trust the string as
+    // markup, whatever the owner puts here.
+    supportSponsor: typeof body.support_sponsor === 'string' ? body.support_sponsor : '',
   };
+}
+
+function safeHttpsUrl(value) {
+  if (typeof value !== 'string' || !value) return '';
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function safeIssuesUrl(value) {
+  if (typeof value !== 'string' || !value) return '';
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'github.com' ? url.toString() : '';
+  } catch {
+    return '';
+  }
 }
 
 /** Where an election request was written down. */

@@ -23,9 +23,16 @@ The sources, in order of preference, as checked when this was written:
    article changed shape, is the text handed to a model, exactly as a results
    page is: fenced as untrusted data, no tools, and a closed schema
    (:func:`build_calendar_request`).
-3. **IFES ElectionGuide is not used.** Its data use policy allows "personal and
-   non-commercial purposes" and puts commercial use under a licence, which this
-   project's funding plans (plan 3, section C) cannot promise to stay clear of.
+3. **IFES ElectionGuide, behind a switch that defaults to off.** Its data use
+   policy allows "personal and non-commercial purposes" and puts commercial use
+   under a licence; this project's funding plans (plan 3, section C) — a
+   non-profit paying developers from sponsorship — cannot promise to stay clear
+   of that on its own reading. The owner decided (2026-09-19) to use this
+   source once IFES confirms in writing that the project's use qualifies, and
+   not before: `IFES_ELECTIONGUIDE=on` (see :mod:`app.config`) is the only
+   thing that can make :class:`IfesElectionGuide` run, it defaults to `off`,
+   and nothing else in this module ever reads IFES on its own. See
+   ``doc/contribute.md`` for the rollout note once that confirmation exists.
 
 What is kept (:data:`KEPT_KINDS`): elections that fill an assembly with seats.
 National legislatures anywhere; regional legislatures only in the federations
@@ -575,9 +582,7 @@ class WikipediaArticles:
         self._wikipedia = wikipedia
 
     async def read(self, title: str) -> tuple[str, str]:
-        # ``_article`` is the one method that returns the parsed HTML; making it
-        # public is a change to wikipedia.py, left for when this is wired in.
-        article = await self._wikipedia._article(self._wikipedia.host, title)
+        article = await self._wikipedia.article(self._wikipedia.host, title)
         return article.url, article.html
 
 
@@ -916,6 +921,110 @@ class WikipediaCalendar:
         return extracted_entries(extracted, year, source_url=url)
 
 
+# --- Source 3: IFES ElectionGuide (behind a switch, off by default) --------------
+
+#: Best-effort guess at where IFES ElectionGuide lists coming elections. Nothing
+#: in this module has ever fetched this URL — doing so would itself be the read
+#: the switch exists to prevent before the owner has IFES's written word — so
+#: this and :func:`parse_ifes_electionguide` are unverified. Whoever turns
+#: `IFES_ELECTIONGUIDE=on` on for the first time must fetch one real page,
+#: compare it against the row shape assumed below, and fix both before trusting
+#: what the scan proposes.
+IFES_ELECTIONGUIDE_ENDPOINT = "https://www.electionguide.org/elections/"
+
+
+def parse_ifes_electionguide(html: str, *, source_url: str) -> list[CalendarEntry]:
+    """Elections an IFES ElectionGuide calendar page lists, deterministically.
+
+    Assumed shape, not a verified one (see :data:`IFES_ELECTIONGUIDE_ENDPOINT`):
+    a table row per election, with a date cell (``YYYY-MM-DD``), a country cell
+    and a title cell. A row that does not match, or whose date does not parse,
+    is silently skipped rather than failing the scan — the same rule as every
+    other source here (:func:`_entry`): one bad row must not cost the rest.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    entries: list[CalendarEntry] = []
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 3:
+            continue
+        raw_date = " ".join(cells[0].get_text(" ", strip=True).split())
+        nation = " ".join(cells[1].get_text(" ", strip=True).split())
+        title = " ".join(cells[2].get_text(" ", strip=True).split())
+        if not raw_date or not nation or not title:
+            continue
+        try:
+            when = date.fromisoformat(raw_date)
+        except ValueError:
+            continue
+        kind = reconcile(label_kind(title), title)
+        entry = _entry(
+            nation=clean_nation(nation), election_date=when, date_precision="day",
+            title=title, source_url=source_url, kind=kind,
+        )
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+class IfesElectionGuide:
+    """IFES ElectionGuide's calendar of coming elections.
+
+    Off until the owner has IFES's written confirmation that this project's
+    use qualifies as non-commercial (module docstring, item 3; see also
+    ``doc/contribute.md``). Never constructed unless
+    ``IFES_ELECTIONGUIDE=on`` (:func:`app.config.ifes_electionguide_enabled`),
+    so importing this class, and its tests, cost nothing and touch no network
+    by default — no test in this repository is allowed to make a real request
+    to IFES, switch or no switch.
+    """
+
+    def __init__(
+        self,
+        *,
+        contact: str = "",
+        client: httpx.AsyncClient | None = None,
+        endpoint: str = IFES_ELECTIONGUIDE_ENDPOINT,
+    ):
+        # Wikimedia's identification rule is not IFES's, but naming a contact
+        # in the user agent is a reasonable default for any scraper.
+        self._user_agent = user_agent(contact)
+        self._client = client
+        self._endpoint = endpoint
+
+    async def entries(self, start: date, end: date) -> list[CalendarEntry]:
+        """Every election the calendar page lists.
+
+        ``start``/``end`` are accepted for symmetry with :class:`Wikidata`; the
+        page is not known (unverified) to take a date-range query, so the
+        scanner's own year filter and de-duplication do the narrowing, as they
+        do for every source.
+        """
+        endpoint = assert_public_url(self._endpoint)
+        client = self._client or httpx.AsyncClient(timeout=WIKIDATA_TIMEOUT_SECONDS)
+        owns_client = self._client is None
+        try:
+            with io_span(log, "ifes_electionguide", "fetch") as span:
+                response = await client.get(
+                    endpoint, headers={"user-agent": self._user_agent}, follow_redirects=False,
+                )
+                span["status"] = response.status_code
+                if response.is_redirect:
+                    raise FetchError("IFES ElectionGuide answered with a redirect")
+                if response.status_code >= 400:
+                    raise FetchError(f"IFES ElectionGuide returned HTTP {response.status_code}")
+                if len(response.content) > MAX_BYTES:
+                    raise FetchError("IFES ElectionGuide returned more than can be read")
+                found = parse_ifes_electionguide(response.text, source_url=endpoint)
+                span["rows"] = len(found)
+            return found
+        except httpx.HTTPError as exc:
+            raise FetchError(f"could not reach IFES ElectionGuide: {type(exc).__name__}") from None
+        finally:
+            if owns_client:
+                await client.aclose()
+
+
 # --- The scan ---------------------------------------------------------------------
 
 
@@ -936,8 +1045,10 @@ class PlaceLookup(Protocol):
 class CalendarScanner:
     """Proposes the elections to track: coming, legislative, and not yet known.
 
-    Both sources are optional, so a deployment (or a test) can run either alone;
-    a source that fails is reported and the other one still counts.
+    Every source is optional, so a deployment (or a test) can run any subset;
+    a source that fails is reported and the others still count. ``ifes`` is
+    ``None`` unless the owner has switched it on (:func:`app.config
+    .ifes_electionguide_enabled`) — see the module docstring, item 3.
     """
 
     def __init__(
@@ -945,12 +1056,14 @@ class CalendarScanner:
         *,
         wikidata: WikidataSource | None = None,
         wikipedia: CalendarSource | None = None,
+        ifes: WikidataSource | None = None,
         store: PlaceLookup | None = None,
         federations: Iterable[str] = REGIONAL_FEDERATIONS,
         clock=date.today,
     ):
         self._wikidata = wikidata
         self._wikipedia = wikipedia
+        self._ifes = ifes
         self._store = store
         self._federations = tuple(federations)
         self._clock = clock
@@ -988,6 +1101,11 @@ class CalendarScanner:
             # is stored as the first of it, and still means later this year.
             start, end = date(wanted[0], 1, 1), date(wanted[-1] + 1, 1, 1)
             candidates += await self._read("wikidata", result, self._wikidata.entries(start, end))
+        if self._ifes is not None:
+            start, end = date(wanted[0], 1, 1), date(wanted[-1] + 1, 1, 1)
+            candidates += await self._read(
+                "ifes_electionguide", result, self._ifes.entries(start, end)
+            )
         if self._wikipedia is not None:
             for year in wanted:
                 candidates += await self._read(

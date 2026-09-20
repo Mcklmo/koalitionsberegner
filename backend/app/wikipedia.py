@@ -291,7 +291,7 @@ class Wikipedia:
         if target is None:  # unreachable through WikipediaFetcher, which checks first
             raise FetchError(f"not a Wikipedia article: {url!r}")
         host, title = target
-        article = await self._article(host, title)
+        article = await self.article(host, title)
         text = condense_article(article.html, title=article.title)
         if not text.strip():
             raise FetchError("the article states no seat counts")
@@ -329,7 +329,10 @@ class Wikipedia:
             log.warning("wikipedia search failed: %s", exc)
             return []
 
-    async def _article(self, host: str, title: str) -> _Article:
+    async def article(self, host: str, title: str) -> _Article:
+        """One article's parsed HTML, by title. Public: the calendar scan (plan 3, A5)
+        reads a whole article, not just the results table :meth:`fetch_article`
+        condenses it to, so it goes this one step lower."""
         with io_span(log, "wikipedia", "article", host=host, chars=len(title)) as span:
             payload = await self._call(
                 host,

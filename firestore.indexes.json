@@ -16,6 +16,14 @@
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "posted_at", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "tracked_elections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "next_refresh_at", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

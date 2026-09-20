@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.identity import election_hash
 from app.service import ImportService
 from app.store import InMemoryElectionStore, StoredElection
 from tests.factories import CountingParser, make_election
@@ -260,6 +261,47 @@ def test_a_caller_with_no_header_may_open_any_stored_election(client):
     assert response.json()["election"]["title"] == "Koalitionsberegner"
 
 
+def test_listing_is_sorted_by_election_date_descending(client, store):
+    """Plan 3, B1 — newest election first, regardless of import order."""
+    older = make_election(nation="Deutschland", state="Sachsen-Anhalt", election_date="2021-06-06")
+    newer = make_election(nation="Danmark", election_date="2026-03-25")
+    main.app.dependency_overrides[main.get_service] = lambda: ImportService(
+        store, CountingParser(by_year={2021: older, 2026: newer})
+    )
+    save(client, OTHER_BODY)  # 2021, saved first
+    save(client)  # 2026, saved second — but sorts ahead of it
+
+    listed = client.get("/api/elections").json()
+    assert [row["election_date"] for row in listed] == ["2026-03-25", "2021-06-06"]
+
+
+def test_every_poll_of_one_election_shares_its_election_key(client, store):
+    """Plan 3, B1 — the picker groups rows by this key."""
+    danish = make_election(nation="Danmark", election_date="2026-03-25")
+    german = make_election(nation="Deutschland", state="Sachsen-Anhalt", election_date="2021-06-06")
+    main.app.dependency_overrides[main.get_service] = lambda: ImportService(
+        store, CountingParser(by_year={2026: danish, 2021: german})
+    )
+    save(client)
+    save(client, OTHER_BODY)
+
+    listed = client.get("/api/elections").json()
+    assert len({row["election_key"] for row in listed}) == 2, "two elections, two keys"
+    for row in listed:
+        assert row["election_key"] == election_hash(row["nation"], row["state"], row["election_date"])
+
+
+def test_the_election_list_and_a_single_election_are_cache_friendly(client):
+    """Plan 3, C6 — stable enough for a newsroom to embed."""
+    saved = save(client)
+
+    listing = client.get("/api/elections")
+    assert listing.headers["cache-control"] == "public, max-age=60"
+
+    single = client.get(f"/api/elections/{saved['election_hash']}")
+    assert single.headers["cache-control"] == "public, max-age=60"
+
+
 def test_an_unknown_election_is_404_to_anyone(client):
     response = client.get("/api/elections/" + "0" * 64, headers={})
     assert response.status_code == 404
@@ -474,7 +516,10 @@ def test_reading_and_looking_up_need_no_secret(client, secret):
 def test_the_page_is_told_whether_it_may_import(client, monkeypatch):
     monkeypatch.delenv("ADMIN_SECRET", raising=False)
     local = client.get("/api/config").json()
-    assert local == {"requests_enabled": False, "imports_enabled": True, "imports_open": True}
+    assert local == {
+        "requests_enabled": False, "imports_enabled": True, "imports_open": True, "issues_url": "",
+        "support_link": "", "support_sponsor": "",
+    }
 
     monkeypatch.setenv("ADMIN_SECRET", SECRET)
     deployed = client.get("/api/config").json()
@@ -482,3 +527,11 @@ def test_the_page_is_told_whether_it_may_import(client, monkeypatch):
 
     monkeypatch.setenv("LLM_MODE", "off")
     assert client.get("/api/config").json()["imports_enabled"] is False
+
+
+def test_the_page_learns_the_support_link_and_sponsor_when_set(client, monkeypatch):
+    monkeypatch.setenv("SUPPORT_LINK", "https://github.com/sponsors/mcklmo")
+    monkeypatch.setenv("SUPPORT_SPONSOR", "Ada")
+    body = client.get("/api/config").json()
+    assert body["support_link"] == "https://github.com/sponsors/mcklmo"
+    assert body["support_sponsor"] == "Ada"

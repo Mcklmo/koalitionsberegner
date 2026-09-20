@@ -22,7 +22,13 @@ from . import ENV_FILE_LOADED, ENV_NAMES_LOADED
 from .mailer import DisabledMailer, Mailer, SmtpMailer
 from .parser import DEFAULT_PAGE_LIMIT, ElectionParser, UnavailableParser
 from .search import DEFAULT_SEARCH_LIMIT
-from .store import DEFAULT_STALE_AFTER_SECONDS, ElectionStore, InMemoryElectionStore
+from .store import (
+    DEFAULT_STALE_AFTER_SECONDS,
+    ElectionStore,
+    InMemoryElectionStore,
+    InMemoryTrackedStore,
+    TrackedStore,
+)
 from .usage import InMemoryUsageStore, UsageRecorder, UsageStore
 from .wikipedia import DEFAULT_LANGUAGE
 from .wishlist import DisabledWishlist, GithubWishlist, Wishlist
@@ -34,6 +40,7 @@ STORE_BACKENDS = ("firestore", "sqlite", "memory")
 LLM_MODES = ("mock", "live", "off")
 SEARCH_MODES = ("auto", "google", "anthropic", "off")
 WIKIPEDIA_MODES = ("on", "off")
+IFES_ELECTIONGUIDE_MODES = ("on", "off")
 
 DEFAULT_SQLITE_PATH = "./data/elections.db"
 
@@ -165,6 +172,125 @@ def get_outreach_store():
     return FirestoreOutreachStore(client)
 
 
+@lru_cache(maxsize=1)
+def get_tracked_store() -> TrackedStore:
+    """The elections this deployment watches, in the same backend as the elections.
+
+    Beside :func:`get_store` rather than inside it, for the same reason
+    :func:`get_outreach_store` is: tracking is not part of the election data,
+    and ``ELECTION_STORE`` is still the one variable that says whether this
+    process has a database.
+    """
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    backend = _env_choice(
+        "ELECTION_STORE", STORE_BACKENDS, "firestore" if project else "memory"
+    )
+
+    if backend == "memory":
+        return InMemoryTrackedStore()
+
+    if backend == "sqlite":
+        from .sqlite_store import SqliteTrackedStore
+
+        return SqliteTrackedStore(os.environ.get("SQLITE_PATH", DEFAULT_SQLITE_PATH))
+
+    if not project:
+        raise ConfigError("ELECTION_STORE=firestore requires GOOGLE_CLOUD_PROJECT")
+
+    from google.cloud import firestore
+
+    from .firestore_store import FirestoreTrackedStore
+
+    client = firestore.Client(
+        project=project, database=os.environ.get("FIRESTORE_DATABASE", "(default)")
+    )
+    return FirestoreTrackedStore(client)
+
+
+#: Most tracked elections one scheduled tick may refresh. The cap is what keeps
+#: a tick inside Cloud Run's request timeout: each one is a fetch and at most
+#: one model call, run one after another (plan 3, A3).
+DEFAULT_REFRESH_MAX_PER_TICK = 5
+
+
+def refresh_max_per_tick() -> int:
+    value = _env_int("REFRESH_MAX_PER_TICK", DEFAULT_REFRESH_MAX_PER_TICK)
+    if value < 1:
+        raise ConfigError("REFRESH_MAX_PER_TICK must be at least 1")
+    return value
+
+
+def refresh_model() -> str:
+    """A cheaper model for scheduled refreshes, or empty for the extractor's own.
+
+    Plan 3, A6.3: a refresh re-reads a page whose shape the strict schema and
+    the gates in :mod:`app.refresh` already check, so it is the one place a
+    weaker model can be tried without a person having to notice the mistake.
+    """
+    return _env_str("REFRESH_MODEL")
+
+
+@lru_cache(maxsize=1)
+def get_refresh_config():
+    """The refresh schedule, read once per process from ``refresh.yaml``."""
+    from .refresh_config import load_configured
+
+    return load_configured()
+
+
+def ifes_electionguide_enabled() -> bool:
+    """Whether the calendar scan may read IFES ElectionGuide (plan 3, A5).
+
+    ``off`` by default and independent of ``LLM_MODE``: this source is
+    deterministic, not model-backed, so there is no "mocked pipeline" reason to
+    leave it off the way there is for Wikipedia and search. The only reason it
+    is off is IFES's data use policy — personal and non-commercial use only —
+    and the owner not yet having IFES's written word that this project's use
+    (a non-profit paying developers from sponsorship) qualifies. See
+    ``doc/contribute.md`` and :mod:`app.calendar`'s module docstring, item 3.
+    """
+    return _env_choice("IFES_ELECTIONGUIDE", IFES_ELECTIONGUIDE_MODES, "off") == "on"
+
+
+@lru_cache(maxsize=1)
+def get_calendar_scanner():
+    """Where the monthly calendar scan looks for elections to track (plan 3, A5).
+
+    Wikidata needs no key and is always asked; Wikipedia's calendar articles
+    are asked too when Wikipedia is on, with the same model as the extractor
+    as its fallback for a shaped-differently article. IFES ElectionGuide is
+    wired in only when :func:`ifes_electionguide_enabled` says so.
+    """
+    from .calendar import (
+        AnthropicCalendarExtractor,
+        CalendarScanner,
+        IfesElectionGuide,
+        StubCalendarExtractor,
+        Wikidata,
+        WikipediaArticles,
+        WikipediaCalendar,
+    )
+
+    mode = _env_choice("LLM_MODE", LLM_MODES, "mock")
+    contact = _env_str("WIKIPEDIA_CONTACT")
+    wikidata = Wikidata(contact=contact)
+    ifes = IfesElectionGuide(contact=contact) if ifes_electionguide_enabled() else None
+
+    wikipedia = get_wikipedia()
+    wikipedia_source = None
+    if wikipedia is not None:
+        extractor = None
+        if mode == "live":
+            extractor = AnthropicCalendarExtractor()
+        elif mode == "mock":
+            extractor = StubCalendarExtractor()
+        wikipedia_source = WikipediaCalendar(WikipediaArticles(wikipedia), extractor=extractor)
+
+    return CalendarScanner(
+        wikidata=wikidata, wikipedia=wikipedia_source, ifes=ifes, store=get_store()
+    )
+
+
 def search_mode() -> str:
     """Which search engine an import consults besides the resolver, in effect.
 
@@ -290,7 +416,25 @@ def get_parser() -> ElectionParser:
     ``IMPORT_PAGE_LIMIT=1`` reads only the first candidate — which, with
     Wikipedia on, is the article rather than the resolver's best answer.
     """
-    from .extractor import AnthropicExtractor, MockExtractor
+    return _build_parser(model=None)
+
+
+@lru_cache(maxsize=1)
+def get_refresh_parser() -> ElectionParser:
+    """The scheduled refresh's own parser: same pipeline, a cheaper model.
+
+    Plan 3, A6.3: a refresh re-reads a page whose shape the strict schema and
+    :mod:`app.refresh`'s own gates already check, so it is the one place a
+    weaker model can be tried without a person having to notice the mistake —
+    ``REFRESH_MODEL`` names it, and an empty value means "the same one
+    ``get_parser`` uses". Built the same way, so ``LLM_MODE=off`` or a mock
+    deployment answers the refresh exactly as it answers an import.
+    """
+    return _build_parser(model=refresh_model() or None)
+
+
+def _build_parser(*, model: str | None) -> ElectionParser:
+    from .extractor import MODEL, AnthropicExtractor, MockExtractor
     from .fetcher import HttpPageFetcher
     from .parser import LlmElectionParser
     from .resolver import AnthropicResolver, MockResolver
@@ -315,7 +459,7 @@ def get_parser() -> ElectionParser:
 
             fetcher = WikipediaFetcher(wikipedia, fetcher)
         return LlmElectionParser(
-            fetcher, AnthropicExtractor(), AnthropicResolver(),
+            fetcher, AnthropicExtractor(model=model or MODEL), AnthropicResolver(),
             search=get_search(), wikipedia=wikipedia, **limits
         )
     # Mock: a page is still fetched and the whole pipeline runs, minus the models.
@@ -432,6 +576,41 @@ def get_wishlist() -> Wishlist:
     return GithubWishlist(token, owner=owner, repo=name)
 
 
+def issues_url() -> str:
+    """This repository's issue tracker, as a browsable URL; empty when unset.
+
+    Not a credential and not the API address :class:`app.wishlist.GithubWishlist`
+    posts to — the page needs somewhere to send a visitor who spots a wrong
+    number in an election nobody confirmed (plan 3, A1). Empty leaves the
+    footnote without its link rather than guessing a repository.
+    """
+    repo = _env_str("GITHUB_ISSUES_REPO")
+    if not repo:
+        return ""
+    if not _REPO_PATTERN.match(repo):
+        raise ConfigError(f"GITHUB_ISSUES_REPO must be owner/name, not {repo!r}")
+    return f"https://github.com/{repo}/issues"
+
+
+def support_link() -> str:
+    """Where the footer's donate/sponsor link points; empty hides it (plan 3, C4).
+
+    The owner's choice of GitHub Sponsors, Ko-fi or MobilePay — one link, not a
+    named provider this module would have to validate the shape of. The page
+    only follows it if it is ``https``; see ``js/api.js``'s ``safeSupportLink``.
+    """
+    return _env_str("SUPPORT_LINK")
+
+
+def support_sponsor() -> str:
+    """"Supported by …" under the calculator; empty means nobody is named yet.
+
+    Plain text, shown as text: whatever the owner sets is not a promise this
+    module checks, only a name the page repeats.
+    """
+    return _env_str("SUPPORT_SPONSOR")
+
+
 @lru_cache(maxsize=1)
 def get_reddit_poster():
     """Where an approved reply is actually posted.
@@ -520,6 +699,9 @@ def describe_configuration() -> dict[str, str]:
         "wikipedia": (
             f"{wikipedia_language()}.wikipedia.org" if wikipedia_mode() == "on" else "off"
         ),
+        # Worth its own line in the startup log: this one reads real people's
+        # written confirmation before it may be "on" at all (module docstring).
+        "ifes_electionguide": "on" if ifes_electionguide_enabled() else "off",
         "reddit": "posting" if not _missing_reddit_credentials() else "off",
     }
 
@@ -549,6 +731,13 @@ def validate_configuration() -> dict[str, str]:
     _env_float("IMPORT_MAX_WAIT_SECONDS", 25.0)
     get_store()
     get_parser()
+    # A typo in the schedule does not fail loudly on its own: it just refreshes
+    # the wrong elections at the wrong times until somebody notices.
+    get_refresh_config()
+    refresh_max_per_tick()
+    get_tracked_store()
+    get_refresh_parser()
+    get_calendar_scanner()
     # Not reached by ``get_parser`` when importing is off, and a misspelled
     # SEARCH_MODE or WIKIPEDIA_LANGUAGE must still stop the boot.
     get_search()

@@ -57,6 +57,14 @@ class UsageEvent(str, Enum):
     OUTREACH_POSTED = "outreach_posted"
     OUTREACH_FAILED = "outreach_failed"
     OUTREACH_EXPIRED = "outreach_expired"
+    #: Plan 3, A5's "Tracked elections" report section. Counts only, like
+    #: everything else here: which election was added, refreshed or parked is
+    #: `GET /api/admin/tracked`'s job, not this report's (see
+    #: `doc/contribute.md`'s "Rolling out tracked elections").
+    TRACKED_ADDED = "tracked_added"
+    TRACKED_REFRESHED = "tracked_refreshed"
+    TRACKED_FAILED = "tracked_failed"
+    TRACKED_PARKED = "tracked_parked"
 
 
 def language_bucket(accept_language: str | None) -> str:
@@ -261,6 +269,12 @@ SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("Posted", E.OUTREACH_POSTED.value),
         ("Failed to post", E.OUTREACH_FAILED.value),
         ("Expired unapproved", E.OUTREACH_EXPIRED.value),
+    )),
+    ("Tracked elections", (
+        ("Added by the calendar scan", E.TRACKED_ADDED.value),
+        ("Refresh ticks run", E.TRACKED_REFRESHED.value),
+        ("Failed a tick", E.TRACKED_FAILED.value),
+        ("Parked after repeated failures", E.TRACKED_PARKED.value),
     )),
 )
 
