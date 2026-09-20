@@ -14,6 +14,7 @@ def clean_config():
     cached = (
         config.get_store,
         config.get_parser,
+        config.get_refresh_parser,
         config.get_search,
         config.get_wikipedia,
         config.get_wishlist,
@@ -213,6 +214,23 @@ def test_mock_mode_wires_neither(monkeypatch, clean_config):
     parser = get_parser()
     assert isinstance(parser._resolver, MockResolver)
     assert isinstance(parser._extractor, MockExtractor)
+
+
+def test_the_refresh_parser_takes_a_cheaper_model_when_one_is_named(monkeypatch, clean_config):
+    from app.config import get_parser, get_refresh_parser
+    from app.extractor import MODEL
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    monkeypatch.delenv("REFRESH_MODEL", raising=False)
+
+    assert get_parser()._extractor._model == MODEL
+    assert get_refresh_parser()._extractor._model == MODEL  # unset: same as the import's
+
+    get_refresh_parser.cache_clear()
+    monkeypatch.setenv("REFRESH_MODEL", "claude-haiku-5")
+    assert get_refresh_parser()._extractor._model == "claude-haiku-5"
+    assert get_parser()._extractor._model == MODEL  # the ordinary import is untouched
 
 
 def test_an_unknown_llm_mode_never_silently_becomes_the_mock(monkeypatch, clean_config):

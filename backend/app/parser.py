@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import ValidationError
 
 from .extractor import MAX_POLLS_PER_PAGE
+from .fetcher import FetchedPage
 from .identity import normalize_date, place_token, same_place
 from .resolver import ResolvedElection, unresolved_message
 from .schema import Election
@@ -116,9 +117,24 @@ class LlmElectionParser:
 
     async def parse(self, request: ImportRequest) -> Election | list[Election]:
         resolved = await self._resolve(request)
-        if self._upcoming(resolved):
+        want: Literal["polls", "results"] = "polls" if self._upcoming(resolved) else "results"
+        return await self.parse_resolved(resolved, request, want=want)
+
+    async def parse_resolved(
+        self, resolved: ResolvedElection, request: ImportRequest, *, want: Literal["polls", "results"]
+    ) -> Election | list[Election]:
+        """The rest of :meth:`parse`, given an election already resolved.
+
+        Split out for the scheduled refresh (plan 3, A4): resolving costs a
+        model call and this is what may run again and again without paying for
+        one — ``want`` stands in for :meth:`_upcoming`, because election night
+        is the one day the calendar and the clock disagree about what there is
+        to read: the resolver still calls it "upcoming", but the day has come
+        and it is a result, not a poll, that the refresh is after.
+        """
+        if want == "polls":
             # Wikipedia is searched for polling articles by the flag, so the
-            # calendar's answer is written into it.
+            # caller's answer is written into it.
             return await self._forecasts(resolved.model_copy(update={"upcoming": True}), request)
         candidates = await self._candidates(resolved)
         if not candidates:
@@ -138,6 +154,41 @@ class LlmElectionParser:
                 problems.append(problem)
 
         raise ParseError(_summarise_attempt(resolved, read, problems))
+
+    async def peek_source(
+        self, resolved: ResolvedElection, *, want: Literal["polls", "results"]
+    ) -> FetchedPage | None:
+        """The first candidate page, fetched but not extracted — nothing paid for yet.
+
+        What the scheduled refresh hashes to tell an unchanged page from one
+        worth a model call (plan 3, A6.1). Its text is already the condensed
+        table where the candidate is a Wikipedia article — the same fetcher
+        seam :meth:`_read` and :meth:`_read_polls` use — and the page as fetched
+        otherwise. ``None`` when there is no candidate, or the one there is
+        cannot be reached; either way the caller falls through to the ordinary
+        read, which will explain why in terms a person can act on.
+        """
+        from .fetcher import FetchError
+
+        candidates = (
+            await self._poll_candidates(resolved)
+            if want == "polls"
+            else await self._candidates(resolved)
+        )
+        if not candidates:
+            return None
+        try:
+            return await self._fetcher.fetch(candidates[0])
+        except FetchError:
+            return None
+
+    async def _poll_candidates(self, resolved: ResolvedElection) -> list[str]:
+        """Where :meth:`_forecasts` looks: the same list, without the reading."""
+        candidates = await self._articles(resolved)
+        for url in resolved.sources:
+            if url not in candidates:
+                candidates.append(url)
+        return candidates
 
     async def _resolve(self, request: ImportRequest) -> ResolvedElection:
         """Work out which election this is, and refuse if it is not one.
@@ -186,10 +237,7 @@ class LlmElectionParser:
         for more pages: the ones :mod:`app.search` is prompted to find are
         results, which is the one thing an upcoming election does not have.
         """
-        candidates = await self._articles(resolved)
-        for url in resolved.sources:
-            if url not in candidates:
-                candidates.append(url)
+        candidates = await self._poll_candidates(resolved)
         if not candidates:
             raise ParseError(
                 f"no page publishing polls for {_clip(resolved.describe(), 80)} could be found"

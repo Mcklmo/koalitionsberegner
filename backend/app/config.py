@@ -362,7 +362,25 @@ def get_parser() -> ElectionParser:
     ``IMPORT_PAGE_LIMIT=1`` reads only the first candidate — which, with
     Wikipedia on, is the article rather than the resolver's best answer.
     """
-    from .extractor import AnthropicExtractor, MockExtractor
+    return _build_parser(model=None)
+
+
+@lru_cache(maxsize=1)
+def get_refresh_parser() -> ElectionParser:
+    """The scheduled refresh's own parser: same pipeline, a cheaper model.
+
+    Plan 3, A6.3: a refresh re-reads a page whose shape the strict schema and
+    :mod:`app.refresh`'s own gates already check, so it is the one place a
+    weaker model can be tried without a person having to notice the mistake —
+    ``REFRESH_MODEL`` names it, and an empty value means "the same one
+    ``get_parser`` uses". Built the same way, so ``LLM_MODE=off`` or a mock
+    deployment answers the refresh exactly as it answers an import.
+    """
+    return _build_parser(model=refresh_model() or None)
+
+
+def _build_parser(*, model: str | None) -> ElectionParser:
+    from .extractor import MODEL, AnthropicExtractor, MockExtractor
     from .fetcher import HttpPageFetcher
     from .parser import LlmElectionParser
     from .resolver import AnthropicResolver, MockResolver
@@ -387,7 +405,7 @@ def get_parser() -> ElectionParser:
 
             fetcher = WikipediaFetcher(wikipedia, fetcher)
         return LlmElectionParser(
-            fetcher, AnthropicExtractor(), AnthropicResolver(),
+            fetcher, AnthropicExtractor(model=model or MODEL), AnthropicResolver(),
             search=get_search(), wikipedia=wikipedia, **limits
         )
     # Mock: a page is still fetched and the whole pipeline runs, minus the models.
@@ -642,6 +660,7 @@ def validate_configuration() -> dict[str, str]:
     get_refresh_config()
     refresh_max_per_tick()
     get_tracked_store()
+    get_refresh_parser()
     # Not reached by ``get_parser`` when importing is off, and a misspelled
     # SEARCH_MODE or WIKIPEDIA_LANGUAGE must still stop the boot.
     get_search()
