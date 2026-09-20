@@ -937,6 +937,7 @@ async def run_refresh(
     store: ElectionStore = Depends(get_store_provider),
     parser=Depends(get_refresh_parser_provider),
     config: RefreshConfig = Depends(get_refresh_config_provider),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> RefreshRun:
     """Refresh the tracked elections that are due. Called every 30 minutes.
 
@@ -945,6 +946,10 @@ async def run_refresh(
     Worker's fetch is content to wait a minute for this one. The cap
     (``REFRESH_MAX_PER_TICK``) is what keeps one tick inside Cloud Run's own
     request timeout.
+
+    Every tracked election taken up here is counted into the daily usage
+    report's "Tracked elections" section (plan 3, A5) — numbers only, never
+    which election; ``GET /api/admin/tracked`` still names those.
     """
     now = datetime.now(UTC)
     due = await run_in_threadpool(tracked_store.due_tracked, now, refresh_max_per_tick())
@@ -959,6 +964,11 @@ async def run_refresh(
         counts["finalised"] += int(outcome.finalised)
         counts["failed"] += int(outcome.failed)
         counts["skipped_unchanged"] += int(outcome.skipped_unchanged)
+        await run_in_threadpool(usage.record, UsageEvent.TRACKED_REFRESHED)
+        if outcome.failed:
+            await run_in_threadpool(usage.record, UsageEvent.TRACKED_FAILED)
+        if outcome.parked:
+            await run_in_threadpool(usage.record, UsageEvent.TRACKED_PARKED)
     return RefreshRun(refreshed=len(due), **counts)
 
 
@@ -977,6 +987,7 @@ async def run_calendar_scan(
     _schedule: None = Depends(require_schedule),
     scanner: CalendarScanner = Depends(get_calendar_scanner_provider),
     tracked_store: TrackedStore = Depends(get_tracked_store_provider),
+    usage: UsageRecorder = Depends(get_usage),
 ) -> CalendarScanOut:
     """Propose elections to track from Wikidata and Wikipedia's calendars.
 
@@ -1009,6 +1020,7 @@ async def run_calendar_scan(
         )
         if await run_in_threadpool(tracked_store.add_tracked, new_row):
             added += 1
+            await run_in_threadpool(usage.record, UsageEvent.TRACKED_ADDED)
     return CalendarScanOut(
         proposed=len(result.entries), tracked=added, skipped=result.skipped, failures=result.failures
     )

@@ -194,6 +194,29 @@ def test_the_report_counts_every_section_and_says_how_it_changed():
     assert "Day by day" not in body, "a single day needs no table of days"
 
 
+def test_the_tracked_elections_section_counts_added_refreshed_parked_and_failed():
+    """Plan 3, A5's report section, carried over from the section A pass that
+    left it out: numbers only, matching GET /api/admin/tracked's own columns
+    without naming a single election."""
+    current = period_range(Period.DAILY, MONDAY)
+    previous = previous_range(Period.DAILY, current)
+
+    _, body = build_report(
+        Period.DAILY,
+        current,
+        figures({SUNDAY: {
+            "tracked_added": 2, "tracked_refreshed": 5, "tracked_failed": 1, "tracked_parked": 1,
+        }}),
+        previous,
+        figures({}),
+    )
+
+    assert row(body, "Added by the calendar scan") == ["2", "(+2)"]
+    assert row(body, "Refresh ticks run") == ["5", "(+5)"]
+    assert row(body, "Failed a tick") == ["1", "(+1)"]
+    assert row(body, "Parked after repeated failures") == ["1", "(+1)"]
+
+
 def test_the_link_counter_is_labelled_by_what_it_actually_counts():
     """It counts the Worker's card fetches to the origin (at most one per link
     per hour, cached), not how many people opened a link — see

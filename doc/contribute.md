@@ -282,9 +282,9 @@ the calendar scan's proposals.
    path (gates, digest, finalising) immediately rather than waiting for a real
    election night. Watch `GET /api/admin/tracked` for a week; a row that fails
    repeatedly shows it in `last_error`, and eight consecutive failures park it
-   (`status: "parked"`) — the daily usage report does not carry any of this
-   yet (plan 3, A5's "Tracked elections" report section is not built), so this
-   table is the only oversight there is until it lands. `PUT
+   (`status: "parked"`) — the daily usage report's "Tracked elections" section
+   counts added, refreshed, parked and failed ticks, but only this table names
+   *which* row and why. `PUT
    /api/admin/tracked/{request_key}` with `{"refresh_now": true}` reactivates
    a parked row after the cause is fixed, without waiting for the backoff to
    expire on its own.
@@ -296,13 +296,17 @@ the calendar scan's proposals.
    slipped past the filter, say. Only once that first scan's proposals look
    right is the monthly cron worth leaving unwatched.
 
-IFES ElectionGuide is not a calendar source here, on purpose: its data use
-policy allows personal and non-commercial use only, and this project is
-becoming a non-profit that pays developers from sponsorship — whether that
-still counts is not this repository's call to make. `app/calendar.py`'s own
-module docstring (item 3) explains the position; nothing needs switching on if
-the owner obtains that confirmation in writing, because nothing was built
-against it to switch on — a third source would be new work, not a flag flip.
+IFES ElectionGuide is a third calendar source behind `IFES_ELECTIONGUIDE`,
+`off` by default. Its data use policy allows personal and non-commercial use
+only, and this project is becoming a non-profit that pays developers from
+sponsorship — whether that still counts is not this repository's call to
+make. `app/calendar.py`'s own module docstring (item 3) explains the
+position. **Do not set `IFES_ELECTIONGUIDE=on` without the owner's written
+confirmation from IFES that this project's use qualifies**; nothing in this
+codebase has ever fetched an IFES page, including while `IfesElectionGuide`
+was written, so its parser is unverified against the live site — fetch one
+real page and check it against `parse_ifes_electionguide`'s assumed row shape
+before flipping the switch for the first time.
 
 The election-request issue link the frontend now shows under an
 auto-refreshed election (plan 3, A1: "Imported automatically from
@@ -375,6 +379,7 @@ variables from `--set-env-vars` and Secret Manager.
 | `REFRESH_TICK` | no | `30m` | How often the Worker's refresh cron actually fires; a schedule row asking to be read more often than this earns a startup warning, not an error, so tightening the cron does not require editing the schedule file first. Keep it equal to the cron's own period in `wrangler.jsonc`. |
 | `REFRESH_MAX_PER_TICK` | no | `5` | Tracked elections one call to `/api/internal/refresh` reads, oldest due first. The cap keeps one tick inside Cloud Run's request timeout — each row is a fetch and at most one model call, run one after another. |
 | `REFRESH_MODEL` | no | the extractor's own model | A cheaper model for scheduled refreshes only, tried first on the polls path: the strict schema and `app/refresh.py`'s own gates catch a weaker model's mistakes. Never used by an ordinary import. |
+| `IFES_ELECTIONGUIDE` | no | `off` | `on` lets the monthly calendar scan also read IFES ElectionGuide as a third source. Stays `off` until the owner has IFES's written confirmation that this project's use qualifies as non-commercial under their data use policy — see "Rolling out tracked elections" below and `app/calendar.py`'s module docstring, item 3. Unlike `WIKIPEDIA` and `SEARCH_MODE`, not tied to `LLM_MODE`: this source is deterministic, not model-backed. |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USERNAME` / `REDDIT_PASSWORD` / `REDDIT_USER_AGENT` | for posting approved outreach replies | — | A script-app OAuth login, all five or none ([04-reddit-outreach.md](plans/04-reddit-outreach.md)). Missing any one leaves the approval queue and email working; only `POST /api/outreach/approval/{token}/send` answers `503`. Never logged, never in a `repr`. |
 | `OUTREACH_ALLOWED_SUBREDDITS` | for posting | — (nothing is allowed) | Comma-separated subreddit names this deployment may post to. Its own list, not the scanner's `OUTREACH_SUBREDDITS`. |
 | `OUTREACH_SUBREDDIT_WEEKLY_CAP` | no | `2` | Posted replies per subreddit per rolling seven days, enforced server-side regardless of what the scanner queued. |

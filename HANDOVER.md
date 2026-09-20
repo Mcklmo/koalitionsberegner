@@ -4,18 +4,37 @@
 - Merged plan 3 section A (691a9d0) into this branch.
 - D2: removed dead `Job.owner` / `store.claim(..., owner=)` (always `None` in
   prod). Left the `owner` DB columns in place (sqlite/firestore), matching the
-  `selected` precedent — just stopped writing meaningful values. Both suites
-  green (1023 pytest, 238 node).
+  `selected` precedent — just stopped writing meaningful values.
+- Carried-over item 2: IFES ElectionGuide switch. `IFES_ELECTIONGUIDE=on|off`
+  (default off, config.py), `IfesElectionGuide` + `parse_ifes_electionguide`
+  in `app/calendar.py`, wired into `CalendarScanner` and
+  `config.get_calendar_scanner`. Docs updated: `.env.example`,
+  `doc/contribute.md` (env table + the two rollout paragraphs). The parser is
+  explicitly unverified — no code here has ever fetched a real IFES page, on
+  purpose. Tests offline throughout (MockTransport only). 1038 pytest / 238
+  node green.
+
+- Carried-over item 1: daily report "Tracked elections" section. Four new
+  `UsageEvent`s (`tracked_added`, `tracked_refreshed`, `tracked_failed`,
+  `tracked_parked`) recorded in `main.py`'s `run_refresh` (per due row) and
+  `run_calendar_scan` (per row actually added), rendered as a new section in
+  `usage.py`'s `SECTIONS`. `doc/contribute.md`'s stopgap sentence rewritten to
+  say what the report now does; the admin table is still what names *which*
+  row. 1042 pytest / 238 node green.
 
 ## Next concrete step
-Implement carried-over item 2: IFES ElectionGuide switch in
-`backend/app/calendar.py` (`IFES_ELECTIONGUIDE=on|off`, default off; new
-`IfesElectionGuide` class + `parse_ifes_electionguide`, wired in
-`config.get_calendar_scanner`). Then carried-over item 1 (daily report
-"Tracked elections" section). Then section C (LICENSE, README, data
-attribution, funding/support, grants pitch, README rewrite,
-CONTRIBUTING.md/issue template). Then section D9 + section B (front door
-search/grouping) — biggest remaining piece.
+Section C (mostly writing): LICENSE (AGPL-3.0) + `.assetsignore` entry +
+README licence line; data attribution (`data.attribution` string under the
+calculator, CC BY-SA paragraph in README) — needs `js/strings.csv` +
+`index.html` in both languages per the house rule; donate/sponsor footer
+link; README rewrite as a pitch; `CONTRIBUTING.md` +
+`.github/ISSUE_TEMPLATE/election-request.md` (label from
+`app.wishlist.LABEL`). Then section D9 (older polls stay in the picker,
+grouped under the election) folded into section B's picker rework — the
+biggest remaining piece: `ElectionSummary.election_key`/`provenance`, a
+search box, grouping, keyboard nav, "ask for it" fallback, default-election
+logic. Consider splitting `js/import-ui.js`'s picker into `js/picker.js` as
+the plan suggests, with `test/picker.test.mjs`.
 
 ## Decisions not to re-litigate
 - Licence: AGPL-3.0. LICENSE goes in `.assetsignore` (like README.md), not

@@ -51,6 +51,8 @@ def clean_config():
         ({"SEARCH_MODE": "google", "GOOGLE_SEARCH_API_KEY": "k", "GOOGLE_SEARCH_CX": "c"}, None),
         ({"SEARCH_MODE": "anthropic", "ANTHROPIC_API_KEY": ""}, "requires ANTHROPIC_API_KEY"),
         ({"WIKIPEDIA": "yes"}, "WIKIPEDIA must be one of"),
+        ({"IFES_ELECTIONGUIDE": "yes"}, "IFES_ELECTIONGUIDE must be one of"),
+        ({"IFES_ELECTIONGUIDE": "on"}, None),
         # Checked even under a mocked agent that will never look anything up: it
         # becomes a hostname, and a typo should not wait for the first import.
         ({"WIKIPEDIA_LANGUAGE": "deutsche sprache"}, "WIKIPEDIA_LANGUAGE must be"),
@@ -172,6 +174,39 @@ def test_a_mocked_agent_never_reaches_wikipedia_either(monkeypatch, clean_config
     monkeypatch.setenv("WIKIPEDIA", "on")
     assert wikipedia_mode() == "off"
     assert get_wikipedia() is None
+
+
+def test_ifes_electionguide_is_off_by_default(monkeypatch, clean_config):
+    """Nothing may read IFES until the owner has its written confirmation
+    (plan 3, A5) -- the switch defaults to off, whatever LLM_MODE is."""
+    from app.calendar import IfesElectionGuide
+    from app.config import get_calendar_scanner, ifes_electionguide_enabled
+
+    monkeypatch.setenv("LLM_MODE", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    assert ifes_electionguide_enabled() is False
+    assert get_calendar_scanner()._ifes is None
+
+
+def test_ifes_electionguide_is_wired_in_once_switched_on(monkeypatch, clean_config):
+    from app.calendar import IfesElectionGuide
+    from app.config import get_calendar_scanner, ifes_electionguide_enabled
+
+    monkeypatch.setenv("IFES_ELECTIONGUIDE", "on")
+    assert ifes_electionguide_enabled() is True
+    scanner = get_calendar_scanner()
+    assert isinstance(scanner._ifes, IfesElectionGuide)
+
+
+def test_ifes_electionguide_is_not_gated_by_llm_mode(monkeypatch, clean_config):
+    """Unlike Wikipedia and search, this source is deterministic, not
+    model-backed, so a mocked pipeline is not a reason to leave it off too."""
+    from app.config import get_calendar_scanner, ifes_electionguide_enabled
+
+    monkeypatch.setenv("LLM_MODE", "mock")
+    monkeypatch.setenv("IFES_ELECTIONGUIDE", "on")
+    assert ifes_electionguide_enabled() is True
+    assert get_calendar_scanner()._ifes is not None
 
 
 def test_an_unconfigured_deployment_still_names_itself_to_wikimedia(

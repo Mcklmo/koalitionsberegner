@@ -14,6 +14,7 @@ from app.calendar import CalendarEntry, ScanResult
 from app.identity import request_key as compute_request_key
 from app.refresh_config import AfterRow, BeforeRow, RefreshConfig
 from app.store import InMemoryElectionStore, InMemoryTrackedStore, TrackedElection, TrackedStatus
+from app.usage import InMemoryUsageStore, UsageRecorder
 
 ADMIN_SECRET = "a" * 40
 ADMIN = {"x-admin-secret": ADMIN_SECRET}
@@ -61,16 +62,27 @@ def election_store():
 
 
 @pytest.fixture
-def client(tracked_store, election_store):
+def usage():
+    return UsageRecorder(InMemoryUsageStore())
+
+
+@pytest.fixture
+def client(tracked_store, election_store, usage):
     overrides = main.app.dependency_overrides
     overrides[main.get_tracked_store_provider] = lambda: tracked_store
     overrides[main.get_store_provider] = lambda: election_store
     overrides[main.get_refresh_config_provider] = lambda: CONFIG
     overrides[main.get_refresh_parser_provider] = lambda: object()  # unused unless due rows exist
     overrides[main.get_calendar_scanner_provider] = lambda: FakeScanner()
+    overrides[main.get_usage] = lambda: usage
     with TestClient(main.app) as test_client:
         yield test_client
     overrides.clear()
+
+
+def counted(usage) -> dict[str, int]:
+    today = usage.today()
+    return usage.store.daily(today, today + timedelta(days=1)).get(today, {})
 
 
 # --- /api/internal/refresh ----------------------------------------------------
@@ -109,6 +121,33 @@ def test_refresh_counts_a_failed_row_and_still_answers_200(client, monkeypatch, 
     assert tracked_store.get_tracked(REQUEST_KEY).consecutive_failures == 1
 
 
+def test_a_refresh_tick_is_counted_into_the_daily_usage_report(
+    client, monkeypatch, tracked_store, usage
+):
+    """Plan 3, A5's "Tracked elections" report section: numbers only, no
+    election names — GET /api/admin/tracked still names the row."""
+    monkeypatch.setenv("USAGE_REPORT_SECRET", SCHEDULE_SECRET)
+    tracked_store.add_tracked(row())
+
+    client.post("/api/internal/refresh", headers=SCHEDULE)
+
+    assert counted(usage) == {"tracked_refreshed": 1, "tracked_failed": 1}
+
+
+def test_a_park_after_repeated_failures_is_counted_too(
+    client, monkeypatch, tracked_store, usage
+):
+    monkeypatch.setenv("USAGE_REPORT_SECRET", SCHEDULE_SECRET)
+    tracked_store.add_tracked(row(consecutive_failures=7))
+
+    client.post("/api/internal/refresh", headers=SCHEDULE)
+
+    assert counted(usage) == {
+        "tracked_refreshed": 1, "tracked_failed": 1, "tracked_parked": 1,
+    }
+    assert tracked_store.get_tracked(REQUEST_KEY).status is TrackedStatus.PARKED
+
+
 # --- /api/internal/calendar-scan ----------------------------------------------
 
 
@@ -141,6 +180,23 @@ def test_calendar_scan_tracks_every_proposed_entry(client, monkeypatch, tracked_
     assert stored is not None
     assert stored.added_by == "calendar"
     assert stored.status is TrackedStatus.UPCOMING
+
+
+def test_calendar_scan_counts_what_it_tracked_in_the_daily_usage_report(
+    client, monkeypatch, tracked_store, usage
+):
+    monkeypatch.setenv("USAGE_REPORT_SECRET", SCHEDULE_SECRET)
+    entry = CalendarEntry(
+        nation="Danmark", election_date=date(2026, 11, 3), title="Folketingsvalg 2026",
+        source_url="https://en.wikipedia.org/wiki/X", kind="national_legislature",
+    )
+    scanner = FakeScanner(ScanResult(entries=[entry], skipped={"past": 2}, failures=[]))
+    main.app.dependency_overrides[main.get_calendar_scanner_provider] = lambda: scanner
+
+    response = client.post("/api/internal/calendar-scan?years=2026,2027", headers=SCHEDULE)
+
+    assert response.status_code == 200
+    assert counted(usage) == {"tracked_added": 1}
 
 
 def test_calendar_scan_does_not_re_track_what_is_already_tracked(client, monkeypatch, tracked_store):
