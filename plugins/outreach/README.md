@@ -62,9 +62,11 @@ logged-in browser. Open the post with `.json` on the end
 (`https://www.reddit.com/r/Sverige/comments/<id>/.json`), save the page, and:
 
 ```sh
-python3 plugins/outreach/scripts/from_reddit_json.py saved.json -o thread.json
-OUTREACH_SUBREDDITS=Sverige plugins/outreach/scripts/scan.py \
-  --posts-file thread.json --submit stdout --state none
+# Keep both files out of the repo root: anything there is published by
+# `wrangler deploy` unless `.assetsignore` names it.
+python3 plugins/outreach/scripts/from_reddit_json.py ~/Downloads/saved.json -o ~/thread.json
+OUTREACH_SUBREDDITS=Sverige ./plugins/outreach/scripts/scan.py \
+  --posts-file ~/thread.json --submit stdout --state none
 ```
 
 The converter keeps the post and its top-level comments, dropping Reddit's
