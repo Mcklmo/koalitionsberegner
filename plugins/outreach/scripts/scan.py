@@ -86,7 +86,14 @@ def http_json(
     404 means for them. Only a transport failure raises.
     """
     data = None
-    request_headers = {"Accept": "application/json", **(headers or {})}
+    # Name ourselves on every call. Without this urllib says "Python-urllib/3.x",
+    # which Cloudflare refuses in front of our own site (error 1010), and which
+    # Reddit asks callers not to send either. A caller's own User-Agent wins.
+    request_headers = {
+        "Accept": "application/json",
+        "User-Agent": DEFAULT_USER_AGENT,
+        **(headers or {}),
+    }
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         request_headers["Content-Type"] = "application/json"

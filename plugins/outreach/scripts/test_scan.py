@@ -5,8 +5,11 @@ Run: uv run --with pytest --with pydantic --with anthropic pytest plugins/outrea
 
 from __future__ import annotations
 
+import io
 import json
 import sys
+import urllib.error
+from unittest import mock
 from pathlib import Path
 
 import pytest
@@ -311,3 +314,22 @@ def test_stdout_sink_prints_one_json_line(capsys):
 def test_candidates_from_listing_tolerates_garbage():
     assert candidates_from_listing(None, "de") == []
     assert candidates_from_listing({"data": {"children": [42, {"kind": "t3"}]}}, "de") == []
+
+
+def test_every_request_names_this_client():
+    """Cloudflare refuses urllib's own User-Agent in front of our site (1010),
+    and Reddit asks callers not to send it either."""
+    seen = {}
+
+    def fake_urlopen(request, timeout=None):
+        seen.update(request.headers)
+        raise urllib.error.HTTPError(request.full_url, 204, "No Content", {}, io.BytesIO(b"{}"))
+
+    with mock.patch("urllib.request.urlopen", fake_urlopen):
+        scan.http_json("GET", "https://example.test/api/elections")
+    assert seen.get("User-agent") == scan.DEFAULT_USER_AGENT
+
+    seen.clear()
+    with mock.patch("urllib.request.urlopen", fake_urlopen):
+        scan.http_json("GET", "https://example.test/x", headers={"User-Agent": "mine/1.0"})
+    assert seen.get("User-agent") == "mine/1.0", "a caller's own name wins"
