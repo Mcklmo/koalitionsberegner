@@ -14,7 +14,7 @@ import pytest
 from app.identity import request_key
 from app.service import ImportService, ImportState, identity_of
 from app.store import ClaimOutcome, InMemoryElectionStore, JobStatus
-from tests.factories import CountingParser, make_election, make_request, wait_until
+from tests.factories import CountingParser, make_election, make_forecast, make_request, wait_until
 
 pytestmark = pytest.mark.anyio
 
@@ -391,3 +391,40 @@ async def test_a_prefix_miss_with_no_cache_to_fall_back_past_stays_a_miss():
     past, so a genuine miss is still a miss."""
     store, _, service = build()
     assert await service.resolve_id("a" * 16) is None
+
+
+async def test_polls_offered_before_election_day_are_still_offered_before_it():
+    from datetime import date
+
+    store, parser, _ = build()
+    service = ImportService(store, parser, today=lambda: date(2026, 9, 1))
+    request = make_request()
+    key = service.request_key_for(request)
+    store.claim(key, request)
+    store.offer(key, [make_forecast(election_date="2026-09-13")])
+
+    result = await service.submit(request)
+
+    assert result.state is ImportState.CHOOSE
+    assert result.reused is True
+    assert parser.call_count == 0, "an offer still standing costs nothing to serve"
+
+
+async def test_polls_offered_for_an_election_since_held_are_thrown_away():
+    """Otherwise asking for Sweden 2026 a week after the vote answers
+    "this election hasn't been held yet" with the polls read before it."""
+    from datetime import date
+
+    store, parser, _ = build()
+    service = ImportService(store, parser, today=lambda: date(2026, 9, 20))
+    request = make_request()
+    key = service.request_key_for(request)
+    store.claim(key, request)
+    store.offer(key, [make_forecast(election_date="2026-09-13")])
+
+    result = await service.submit(request)
+
+    assert result.state is not ImportState.CHOOSE, "the stale offer is gone"
+    settled = await settle(service, key)
+    assert settled.state is ImportState.PREVIEW, "the election is read again"
+    assert parser.call_count == 1

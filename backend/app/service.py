@@ -12,6 +12,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 
 import anyio.to_thread
@@ -96,9 +97,10 @@ def identity_of(election: Election) -> str:
 
 
 class ImportService:
-    def __init__(self, store: ElectionStore, parser: ElectionParser):
+    def __init__(self, store: ElectionStore, parser: ElectionParser, *, today=None):
         self._store = store
         self._parser = parser
+        self._today = today or (lambda: datetime.now(UTC).date())
         # Holding task references keeps the event loop from garbage-collecting
         # an import that no caller is awaiting.
         self._tasks: set[asyncio.Task] = set()
@@ -123,9 +125,27 @@ class ImportService:
         key = self.request_key_for(request)
         claim = await self._in_thread(self._store.peek, key)
         joined = self._joined(key, claim)
+        if joined is not None and self._choice_has_been_held(claim):
+            # The election has happened since these polls were offered; only
+            # :meth:`submit` may throw the stale offer away, under the claim.
+            return None
         if joined is not None:
             log.info("peek request=%s outcome=%s", key[:12], claim.outcome.value)
         return joined
+
+    def _choice_has_been_held(self, claim: Claim) -> bool:
+        """Whether an offer of polls is for an election that has since been held.
+
+        The offered forecasts carry the election's own date, so no clock but
+        today's is needed. Anything else — a stored election, a preview, an
+        import under way — is left alone.
+        """
+        job = claim.job
+        if claim.outcome is not ClaimOutcome.ATTACHED or job is None:
+            return False
+        if job.status is not JobStatus.AWAITING_CHOICE or not job.forecasts:
+            return False
+        return all(forecast.election_date < self._today() for forecast in job.forecasts)
 
     @staticmethod
     def _joined(key: str, claim: Claim) -> ImportResult | None:
@@ -176,6 +196,16 @@ class ImportService:
         )
 
         joined = self._joined(key, claim)
+        if joined is not None and self._choice_has_been_held(claim):
+            # An upcoming election's polls were offered before election day and
+            # nobody chose one. Offering them again now would answer a request
+            # for a held election with "this election hasn't been held yet",
+            # for as long as the job lived. Throw the offer away and read the
+            # election again.
+            log.info("stale choice request=%s: the election has been held", key[:12])
+            await self._in_thread(self._store.discard, key)
+            claim = await self._in_thread(self._store.claim, key, request)
+            joined = self._joined(key, claim)
         if joined is not None:
             return joined
 
