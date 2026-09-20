@@ -384,6 +384,8 @@ variables from `--set-env-vars` and Secret Manager.
 | `OUTREACH_ALLOWED_SUBREDDITS` | for posting | — (nothing is allowed) | Comma-separated subreddit names this deployment may post to. Its own list, not the scanner's `OUTREACH_SUBREDDITS`. |
 | `OUTREACH_SUBREDDIT_WEEKLY_CAP` | no | `2` | Posted replies per subreddit per rolling seven days, enforced server-side regardless of what the scanner queued. |
 | `OUTREACH_DAILY_CAP` | no | `3` | Posted replies in total per rolling 24 hours. |
+| `SUPPORT_LINK` | no | — | One donate/sponsor link in the footer (plan 3, C4) — GitHub Sponsors, Ko-fi or MobilePay, the owner's choice. Unset hides it. Only followed by the page when it is `https`. |
+| `SUPPORT_SPONSOR` | no | — | An optional "Supported by …" line under the calculator, shown as plain text. Unset hides it, independently of `SUPPORT_LINK`. |
 | `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
 | `ENV_FILE` | no | nearest `.env` walking up from the working directory | A different file to read variables from. Empty loads none. A path that does not exist is a startup error. |
 | `PORT` | no | `8080` | Set by Cloud Run. |

@@ -63,10 +63,12 @@ from .config import (
     outreach_subreddit_weekly_cap,
     public_base_url,
     refresh_max_per_tick,
+    support_link,
+    support_sponsor,
     usage_report_secret,
     validate_configuration,
 )
-from .identity import normalize_year, request_key
+from .identity import election_hash, normalize_year, request_key
 from .mailer import Mailer, MailUnavailable
 from .observability import configure_logging, io_span, scrub
 from .og_image import render as render_og_image
@@ -395,6 +397,10 @@ class ImportResponse(BaseModel):
 
 class ElectionSummary(BaseModel):
     election_hash: str
+    election_key: str
+    """Identity hash without the forecast tuple (plan 3, B1): a result and
+    every poll of the same election — same nation, state and election date —
+    share this key, so the picker can group them under one row."""
     nation: str
     state: str | None
     election_date: date
@@ -409,6 +415,9 @@ class ElectionSummary(BaseModel):
     def of(cls, stored: StoredElection) -> "ElectionSummary":
         return cls(
             election_hash=stored.election_hash,
+            election_key=election_hash(
+                stored.election.nation, stored.election.state, stored.election.election_date
+            ),
             nation=stored.election.nation,
             state=stored.election.state,
             election_date=stored.election.election_date,
@@ -430,6 +439,10 @@ class PublicConfig(BaseModel):
     """Whether importing needs no secret here: a local run with none configured."""
     issues_url: str = ""
     """Where a wrong figure is reported, empty where no repository is configured."""
+    support_link: str = ""
+    """Donate/sponsor link for the footer (plan 3, C4); empty hides it."""
+    support_sponsor: str = ""
+    """"Supported by …" under the calculator; empty hides that too."""
 
 
 class ElectionRequestResponse(BaseModel):
@@ -468,6 +481,8 @@ def public_config(
         imports_enabled=enabled,
         imports_open=enabled and not admin_secret(),
         issues_url=issues_url(),
+        support_link=support_link(),
+        support_sponsor=support_sponsor(),
     )
 
 
@@ -522,12 +537,28 @@ async def _answer(
     return ImportResponse.of(result)
 
 
+#: Short enough that a newsroom embed (plan 3, C6) still sees a tracked
+#: election's refresh within a few minutes; long enough that the picker's own
+#: repeated polling barely touches the backend. ``ALLOWED_ORIGINS`` is the
+#: CORS half of that story, already enforced by the middleware above.
+PUBLIC_LIST_CACHE_CONTROL = "public, max-age=60"
+
+
 @app.get("/api/elections", response_model=list[ElectionSummary])
 async def list_elections(
+    response: Response,
     service: ImportService = Depends(get_service),
 ) -> list[ElectionSummary]:
-    """Every stored election, to anyone."""
-    return [ElectionSummary.of(stored) for stored in await service.list_elections()]
+    """Every stored election, to anyone, newest election date first.
+
+    Stable enough to embed (plan 3, C6): the shape is ``ElectionSummary``,
+    the order is by ``election_date`` descending, and nothing here requires
+    a secret.
+    """
+    summaries = [ElectionSummary.of(stored) for stored in await service.list_elections()]
+    summaries.sort(key=lambda summary: summary.election_date, reverse=True)
+    response.headers["Cache-Control"] = PUBLIC_LIST_CACHE_CONTROL
+    return summaries
 
 
 @app.get("/api/elections/lookup", response_model=ImportResponse)
@@ -735,13 +766,18 @@ async def _resolve_shared_id(election_hash: str, service: ImportService) -> Stor
 async def get_election(
     election_hash: str,
     background: BackgroundTasks,
+    response: Response,
     service: ImportService = Depends(get_service),
     usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
-    """Fetch a stored election by its hash or a prefix of it. Open to anyone."""
+    """Fetch a stored election by its hash or a prefix of it. Open to anyone.
+
+    Stable enough to embed (plan 3, C6), like ``GET /api/elections``.
+    """
     stored = await _resolve_shared_id(election_hash, service)
     # Only the picker asks for one election by hash, so this is a pick.
     background.add_task(usage.record, UsageEvent.ELECTION_PICKED)
+    response.headers["Cache-Control"] = PUBLIC_LIST_CACHE_CONTROL
     return ImportResponse(
         request_key="",
         state=ImportState.READY,

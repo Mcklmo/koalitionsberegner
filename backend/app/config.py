@@ -592,6 +592,25 @@ def issues_url() -> str:
     return f"https://github.com/{repo}/issues"
 
 
+def support_link() -> str:
+    """Where the footer's donate/sponsor link points; empty hides it (plan 3, C4).
+
+    The owner's choice of GitHub Sponsors, Ko-fi or MobilePay — one link, not a
+    named provider this module would have to validate the shape of. The page
+    only follows it if it is ``https``; see ``js/api.js``'s ``safeSupportLink``.
+    """
+    return _env_str("SUPPORT_LINK")
+
+
+def support_sponsor() -> str:
+    """"Supported by …" under the calculator; empty means nobody is named yet.
+
+    Plain text, shown as text: whatever the owner sets is not a promise this
+    module checks, only a name the page repeats.
+    """
+    return _env_str("SUPPORT_SPONSOR")
+
+
 @lru_cache(maxsize=1)
 def get_reddit_poster():
     """Where an approved reply is actually posted.

@@ -186,6 +186,21 @@ const config = await api.getConfig().catch(() => ({
 }));
 issuesUrl = config.issuesUrl ?? '';
 
+// The donate/sponsor footer link and the "Supported by …" line (plan 3, C4).
+// Both stay hidden until the owner sets them; api.js has already kept the
+// link to only an https address, and the sponsor's name reaches the DOM as
+// text, never as markup.
+const supportLink = byId('support-link');
+if (config.supportLink) {
+  supportLink.href = config.supportLink;
+  supportLink.hidden = false;
+}
+const sponsorNote = byId('sponsor-note');
+if (config.supportSponsor) {
+  sponsorNote.textContent = t('footer.sponsoredBy', { sponsor: config.supportSponsor });
+  sponsorNote.hidden = false;
+}
+
 const importUi = mountImportUi({
   api,
   bundled,

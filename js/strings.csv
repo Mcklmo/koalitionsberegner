@@ -32,6 +32,7 @@ calc.forecastFrom,"Prognose fra {publisher}, {date}","Forecast by {publisher}, {
 calc.finalResult,"Endelig resultat, {date}","Final result, {date}"
 calc.autoImported,Importeret automatisk fra {source}.,Imported automatically from {source}.
 calc.reportProblem,Rapportér et problem,Report a problem
+data.attribution,"Tal fra {source}. CC BY-SA, hvor kilden er Wikipedia.","Figures from {source}. CC BY-SA where the source is Wikipedia."
 calc.largeMajority,Stort flertal ✓,Large majority ✓
 calc.majority,Flertal ✓ (+{over}),Majority ✓ (+{over})
 calc.short,Mangler {missing},{missing} short
@@ -93,6 +94,8 @@ saved.forecast,Prognosen er gemt.,The forecast is saved.
 saved.forecastAlready,Prognosen var allerede gemt.,The forecast was already saved.
 saved.failed,Kunne ikke gemme valget: {message},Couldn't save the election: {message}
 select.failed,Kunne ikke hente valget: {message},Couldn't load the election: {message}
+footer.support,Støt projektet,Support the project
+footer.sponsoredBy,Understøttet af {sponsor},Supported by {sponsor}
 privacy.link,Privatliv,Privacy
 privacy.summary,Privatliv og dine data,Privacy and your data
 privacy.controller,"Koalitionsberegner drives af Moritz Marcus Hönscheidt. Skriv hertil, hvis du vil se, rette eller slette dine oplysninger:","Koalitionsberegner is run by Moritz Marcus Hönscheidt. Write here to see, correct or delete your data:"

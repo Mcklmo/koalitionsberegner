@@ -77,6 +77,7 @@ export function mountCoalitionCalculator(
     verdict: document.getElementById('verdict'),
     footerNote: document.getElementById('footer-note'),
     autoNote: document.getElementById('auto-note'),
+    attributionNote: document.getElementById('attribution-note'),
     names: document.getElementById('names'),
     namesRow: document.getElementById('names-row'),
     ...elements,
@@ -126,6 +127,20 @@ export function mountCoalitionCalculator(
         + (forecast.computed ? ` (${t('seats.computed')})` : '')
       : t('calc.finalResult', { date: formatElectionDate(election.electionDate) }));
   renderAutoNote();
+  renderAttributionNote();
+
+  /**
+   * Names where the figures came from, every election, regardless of provenance
+   * (plan 3, C2). Wikipedia's CC BY-SA licence requires attribution to stay
+   * visible wherever its data is shown; a non-Wikipedia source is named the
+   * same way, without a licence claim that would not be true of it.
+   */
+  function renderAttributionNote() {
+    if (!el.attributionNote) return;
+    el.attributionNote.textContent = '';
+    const { hostname } = new URL(election.sourceUrl);
+    el.attributionNote.append(t('data.attribution', { source: hostname }));
+  }
 
   /**
    * The one line that says nobody checked these figures before they went up.

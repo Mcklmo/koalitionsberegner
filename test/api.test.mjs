@@ -72,10 +72,26 @@ test('listElections maps summaries to camelCase', async () => {
   const listed = await createApiClient({ fetch: fetchImpl }).listElections();
   assert.deepEqual(listed, [
     {
-      electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25',
+      electionHash: 'abc', electionKey: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25',
       title: 'T', totalSeats: 179, forecast: null, provenance: 'manual',
     },
   ]);
+});
+
+test('listElections keeps a server-given election_key, grouping polls under one election', async () => {
+  const { fetchImpl } = fakeFetch([
+    {
+      status: 200,
+      body: [
+        {
+          election_hash: 'abc', election_key: 'grp1', nation: 'Danmark', state: null,
+          election_date: '2026-03-25', title: 'T', total_seats: 179,
+        },
+      ],
+    },
+  ]);
+  const [summary] = await createApiClient({ fetch: fetchImpl }).listElections();
+  assert.equal(summary.electionKey, 'grp1');
 });
 
 test('listElections marks an unread refresh as auto provenance', async () => {
@@ -226,7 +242,36 @@ test('the public config is mapped to camelCase', async () => {
 
   assert.deepEqual(config, {
     requestsEnabled: true, importsEnabled: true, importsOpen: false, issuesUrl: '',
+    supportLink: '', supportSponsor: '',
   });
+});
+
+test('the public config keeps only an https support link, and the sponsor as plain text', async () => {
+  const { fetchImpl } = fakeFetch([
+    {
+      status: 200,
+      body: {
+        requests_enabled: true, imports_enabled: true, imports_open: false,
+        support_link: 'https://ko-fi.com/mcklmo', support_sponsor: 'Ada',
+      },
+    },
+    {
+      status: 200,
+      body: {
+        requests_enabled: true, imports_enabled: true, imports_open: false,
+        support_link: 'javascript:alert(1)', support_sponsor: '',
+      },
+    },
+  ]);
+  const api = createApiClient({ fetch: fetchImpl });
+
+  const first = await api.getConfig();
+  assert.equal(first.supportLink, 'https://ko-fi.com/mcklmo');
+  assert.equal(first.supportSponsor, 'Ada');
+
+  const second = await api.getConfig();
+  assert.equal(second.supportLink, '');
+  assert.equal(second.supportSponsor, '');
 });
 
 test('the public config keeps only an https github.com issues URL', async () => {

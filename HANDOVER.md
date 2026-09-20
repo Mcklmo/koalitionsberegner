@@ -1,56 +1,57 @@
-# Handover: plan 3 sections B, C, D + 2 carried-over items
+# Handover: plan 3 sections B, C, D
 
-## Done
-- Merged plan 3 section A (691a9d0) into this branch.
-- D2: removed dead `Job.owner` / `store.claim(..., owner=)` (always `None` in
-  prod). Left the `owner` DB columns in place (sqlite/firestore), matching the
-  `selected` precedent — just stopped writing meaningful values.
-- Carried-over item 2: IFES ElectionGuide switch. `IFES_ELECTIONGUIDE=on|off`
-  (default off, config.py), `IfesElectionGuide` + `parse_ifes_electionguide`
-  in `app/calendar.py`, wired into `CalendarScanner` and
-  `config.get_calendar_scanner`. Docs updated: `.env.example`,
-  `doc/contribute.md` (env table + the two rollout paragraphs). The parser is
-  explicitly unverified — no code here has ever fetched a real IFES page, on
-  purpose. Tests offline throughout (MockTransport only). 1038 pytest / 238
-  node green.
-
-- Carried-over item 1: daily report "Tracked elections" section. Four new
-  `UsageEvent`s (`tracked_added`, `tracked_refreshed`, `tracked_failed`,
-  `tracked_parked`) recorded in `main.py`'s `run_refresh` (per due row) and
-  `run_calendar_scan` (per row actually added), rendered as a new section in
-  `usage.py`'s `SECTIONS`. `doc/contribute.md`'s stopgap sentence rewritten to
-  say what the report now does; the admin table is still what names *which*
-  row. 1042 pytest / 238 node green.
+## Done (this pass)
+- Section C: LICENSE (AGPL-3.0) + `.assetsignore` (already on disk at
+  handover); README rewrite (pitch intro, Licence, Data and its licence,
+  Funding, Embedding and the API, Contributing sections); `CONTRIBUTING.md`;
+  `.github/ISSUE_TEMPLATE/election-request.md`. Donate/sponsor footer link
+  and "Supported by …" wired end to end (`config.py` → `main.py` →
+  `js/api.js` → `js/main.js` → `index.html`, strings `footer.support`/
+  `footer.sponsoredBy`). Data attribution note wired the same way
+  (`data.attribution` string, `js/app.js`'s `renderAttributionNote`,
+  `#attribution-note`). C6: `GET /api/elections` and `GET
+  /api/elections/{hash}` now send `Cache-Control: public, max-age=60` and
+  are documented as stable/embeddable in the README.
+- B1 (pulled forward because it touches the same `ElectionSummary`):
+  `election_key` — `identity.election_hash` without the forecast tuple — on
+  every summary; `list_elections` sorted by `election_date` descending
+  server-side; `js/api.js`'s `toSummary` maps `electionKey` (falls back to
+  `electionHash` for an older backend). Tests added in `test_api.py` and
+  `test/api.test.mjs`. 1046 pytest / 240 node green.
 
 ## Next concrete step
-Section C (mostly writing): LICENSE (AGPL-3.0) + `.assetsignore` entry +
-README licence line; data attribution (`data.attribution` string under the
-calculator, CC BY-SA paragraph in README) — needs `js/strings.csv` +
-`index.html` in both languages per the house rule; donate/sponsor footer
-link; README rewrite as a pitch; `CONTRIBUTING.md` +
-`.github/ISSUE_TEMPLATE/election-request.md` (label from
-`app.wishlist.LABEL`). Then section D9 (older polls stay in the picker,
-grouped under the election) folded into section B's picker rework — the
-biggest remaining piece: `ElectionSummary.election_key`/`provenance`, a
-search box, grouping, keyboard nav, "ask for it" fallback, default-election
-logic. Consider splitting `js/import-ui.js`'s picker into `js/picker.js` as
-the plan suggests, with `test/picker.test.mjs`.
+Section B, the rest: a search box above the calculator (client-side filter
+on nation/state/title/year/publisher, accent- and case-insensitive),
+grouping by `election_key` (newest poll or result preselected, older ones
+one click deeper — this is D9, folded in per the owner's decision), keyboard
+nav (arrows + enter), the "Not here yet? Ask for it" / "Import it" fallback
+reusing `import-form.js`, and the default-election logic for a plain `/`
+(nearest upcoming tracked election with a stored poll, else the most recent
+result; bundled election is the pre-arrival render and offline fallback;
+shared links bypass it). Split `js/import-ui.js`'s picker into `js/picker.js`
+with `test/picker.test.mjs`, per the plan.
+
+Then Section D: D2 and D9 are done (D9 via the B rework above). D1, D3-D8 are
+explicitly deferred by the plan's own wording — no code needed for this
+pass; leave them as-is in `doc/plans/03-remaining-work.md`.
 
 ## Decisions not to re-litigate
-- Licence: AGPL-3.0. LICENSE goes in `.assetsignore` (like README.md), not
-  the Cloudflare-published set.
+- Licence: AGPL-3.0, `LICENSE` and `CONTRIBUTING.md`/`.github` in
+  `.assetsignore` (not the Cloudflare-published set — same pattern as
+  README.md).
+- Data attribution note shows on every election regardless of provenance,
+  with one fixed string naming the source and noting CC BY-SA "where the
+  source is Wikipedia" — no per-source hostname branching; simpler and still
+  honest.
 - Older polls stay in the picker after a result is final, grouped under the
   election (D9) — implement inside section B's picker rework.
-- IFES: nothing may fetch it; the parser/class is written without ever
-  fetching a real page (that itself would be an IFES read). Documented as
-  unverified against the live site; verify before flipping the switch.
-- D1 (drop `selected`), D3 (rename `USAGE_REPORT_SECRET`), D4-D8: explicitly
-  deferred by the plan's own wording (not this pass's job).
+- `election_key` fallback to `electionHash` client-side keeps a mixed old/new
+  backend from crashing; don't remove it without checking the whole fleet is
+  on the new backend.
 
 ## Dead ends / gotchas
-- `~/.claude/todos/` writes are blocked by the sandbox for this task on
-  purpose — don't retry; track progress in this file instead.
-- Section A already returns refresh/scan counts as HTTP responses
-  (`RefreshRun`, `CalendarScanOut`) but never records `UsageEvent`s for them —
-  the "Tracked elections" report section needs new usage events recorded at
-  those two route handlers.
+- `~/.claude/todos/` writes are blocked on purpose — track progress here.
+- `test/i18n.test.mjs`'s fake DOM in "the calculator speaks English" only
+  registers a handful of element ids; any new element app.js looks up by id
+  must be guarded with `if (!el.xyz) return;` the way `autoNote` already is,
+  or that test's fake `getElementById` returns `undefined` and breaks it.
