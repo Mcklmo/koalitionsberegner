@@ -283,7 +283,7 @@ variables from `--set-env-vars` and Secret Manager.
 | `ORIGIN_SECRET` | no | — | When set (at least 32 characters), only requests carrying it in `X-Origin-Secret` are answered, `/healthz` aside. Set it when a proxy such as Cloudflare fronts the app, so the `run.app` address stops answering on its own. |
 | `FRONTEND_DIR` | no | repo root | Directory holding `index.html`; served at `/` when present. |
 | `ADMIN_SECRET` | required on Cloud Run | — | At least 32 characters, same rule as `ORIGIN_SECRET`. Importing needs `x-admin-secret` to match this value; every other caller gets `403`. With none set, every caller is the owner — right for a local run, refused at boot on Cloud Run. |
-| `PUBLIC_BASE_URL` | no | — | Where this site is reachable, as an absolute URL, no trailing slash. Not read anywhere today; kept for the absolute link [04-reddit-outreach.md](plans/04-reddit-outreach.md)'s approval email needs. |
+| `PUBLIC_BASE_URL` | for the outreach approval email | — | Where this site is reachable, as an absolute URL, no trailing slash. Used to build the `/approve/{token}` link a queued draft is emailed with ([04-reddit-outreach.md](plans/04-reddit-outreach.md)); without it the email carries a relative link instead. |
 | `GITHUB_ISSUES_TOKEN` | for election requests | — | Fine-grained PAT with **Issues: write** on `GITHUB_ISSUES_REPO` and nothing else. Unset means the page is told not to offer requests. Not named `GITHUB_TOKEN` on purpose: GitHub Actions and several agent runtimes export that name, and a token that happens to be in the environment is not a decision to open issues with it. |
 | `GITHUB_ISSUES_REPO` | with `GITHUB_ISSUES_TOKEN` | — | Repository the requests are filed on, as `owner/name`. Set without a token, or in any other shape, it is a startup error rather than a guess. |
 | `SMTP_HOST` | for emailed usage reports | — | Mail server the reports are submitted to, e.g. `smtp.gmail.com`. Set together with the three below, or not at all; a partial set is a startup error. |
@@ -292,6 +292,10 @@ variables from `--set-env-vars` and Secret Manager.
 | `REPORT_EMAIL_TO` | with `SMTP_HOST` | — | Comma-separated addresses the reports go to. |
 | `REPORT_EMAIL_FROM` | no | `SMTP_USERNAME` | The sender address, where the server allows a different one. |
 | `USAGE_REPORT_SECRET` | for scheduled usage reports | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret`. If it is unset, `POST /api/internal/usage-reports` does not exist. |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USERNAME` / `REDDIT_PASSWORD` / `REDDIT_USER_AGENT` | for posting approved outreach replies | — | A script-app OAuth login, all five or none ([04-reddit-outreach.md](plans/04-reddit-outreach.md)). Missing any one leaves the approval queue and email working; only `POST /api/outreach/approval/{token}/send` answers `503`. Never logged, never in a `repr`. |
+| `OUTREACH_ALLOWED_SUBREDDITS` | for posting | — (nothing is allowed) | Comma-separated subreddit names this deployment may post to. Its own list, not the scanner's `OUTREACH_SUBREDDITS`. |
+| `OUTREACH_SUBREDDIT_WEEKLY_CAP` | no | `2` | Posted replies per subreddit per rolling seven days, enforced server-side regardless of what the scanner queued. |
+| `OUTREACH_DAILY_CAP` | no | `3` | Posted replies in total per rolling 24 hours. |
 | `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
 | `ENV_FILE` | no | nearest `.env` walking up from the working directory | A different file to read variables from. Empty loads none. A path that does not exist is a startup error. |
 | `PORT` | no | `8080` | Set by Cloud Run. |

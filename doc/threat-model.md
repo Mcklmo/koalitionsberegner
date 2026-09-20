@@ -262,6 +262,17 @@ a local checkout and never for a deployment: `config.validate_configuration`
 refuses to boot on Cloud Run without one, so a deploy that loses that variable
 fails to start rather than serving every caller as the administrator.
 
+The five `REDDIT_*` credentials (T14) get the same treatment as the Anthropic
+key: read from Secret Manager into `app.reddit` alone, never logged and kept
+out of every `repr` (`RedditCredentials`, `field(repr=False)` on the secret and
+the password). A login failure or a refused comment is worded as one of a
+handful of fixed sentences (`reddit.NOT_CONFIGURED`, `LOGIN_FAILED`,
+`REFUSED`, `RATE_LIMITED`, `UNREACHABLE`, `UNCERTAIN`); Reddit's own response
+body and error codes are logged, never returned. `config.get_reddit_poster`
+mirrors `config.get_wishlist`: any credential missing is `DisabledRedditPoster`
+rather than a half-configured client, and `describe_configuration` reports only
+`"posting"` or `"off"`.
+
 ### T9 — Every page is one the user did not name
 
 Nobody supplies an address any more. The pages an import reads come from
@@ -443,6 +454,67 @@ is more than a handful of small integers.
   generic tags rather than an election's. Trying prefixes to see which exist
   gets a crawler nothing but the same `200` every time.
 
+### T14 — The outreach approval gate
+
+[04-reddit-outreach.md](plans/04-reddit-outreach.md) adds a queue the
+`outreach` plugin fills from Reddit, an emailed one-time link, and a route that
+posts a reply. Two things are untrusted here that are not untrusted anywhere
+else in the app: **Reddit's own text**, read by the plugin and shown back to
+the owner and to the extraction prompt that verified it; and **the approval
+link itself**, which travels by email and can be forwarded, leaked or guessed.
+
+- **An approval link is not an account.** Viewing a draft needs only the token
+  in the link (`GET /api/outreach/approval/{token}`); *sending* it needs
+  `ADMIN_SECRET` as well, in `x-admin-secret`, checked with
+  `hmac.compare_digest` exactly as every other admin route checks it
+  (`main.require_admin`). Someone who intercepts or is forwarded a link can
+  read one draft — a Reddit thread, an excerpt, a proposed reply, nothing about
+  any other user — and can never post it, reject it, or learn whether it was
+  already used, without also holding the secret.
+- **The token is single-use and short-lived.** Only its SHA-256 hash is stored
+  (`app.outreach.hash_token`, `new_token`); the token itself is never written
+  down, the same discipline the (now-removed) session tokens used. Sending,
+  rejecting, or the token simply expiring after `TOKEN_LIFETIME_SECONDS` (72
+  hours) all clear the stored hash (`consume_token=True`), so
+  `get_by_token_hash` cannot find it again — a forwarded or reused link is a
+  `404`, indistinguishable from one that never existed.
+- **Reddit text is fenced, twice.** The plugin's own verification prompt fences
+  the thread the same way an imported page is fenced (T3); nothing it read is
+  ever treated as an instruction. On the server, nothing from the plugin is
+  trusted a second time either: `app.outreach.clean` re-applies the control-
+  and invisible-character checks `schema.clean_text` applies to everything
+  else, and `validate_reply_text` re-checks the reply's length, its one
+  permitted link (the draft's own, never an arbitrary one) and its disclosure
+  footer — because the owner may have edited the text in the approval page
+  before sending, and the plugin's own sanitising never reaches the server.
+  Every field a draft carries reaches the DOM as text (`js/approve.js`), the
+  same rule T6 states for extracted election text.
+- **No Reddit username is ever stored.** The scanner deliberately does not read
+  author names, and `OutreachDraft` has no field for one — see the privacy
+  section's outreach paragraph.
+- **A send that might have gone through is never offered a blind retry.**
+  `app.reddit` distinguishes a request that never reached Reddit (safe to
+  retry) from one whose answer was lost after it was sent
+  (`RedditUnavailable(maybe_posted=True)` — a timeout, a dropped connection, a
+  gateway error). The route consumes the token on that outcome exactly as it
+  does on a confirmed post, so the approval page has nothing left to offer but
+  "check the thread by hand" — never a second click that could double-post.
+  Reddit's own words never reach the page either way; the caller sees one of a
+  handful of fixed sentences (T8).
+- **Etiquette is enforced in code, not left to the owner to remember.** One
+  reply per thread ever (`OutreachStore.thread_posted`), a weekly cap per
+  subreddit and a daily cap in total (`config.outreach_subreddit_weekly_cap`,
+  `outreach_daily_cap`), and nothing posts to a subreddit outside this
+  deployment's own `OUTREACH_ALLOWED_SUBREDDITS` — a separate list from the
+  scanner's `OUTREACH_SUBREDDITS`, so retiring a subreddit on the scanner does
+  not leave it postable on the server. Every refusal is a distinct message
+  naming which limit stopped it, not a silent no.
+- **The page itself is inert.** `/approve/{token}` gets no Open Graph tags and
+  `X-Robots-Tag: noindex` (the Worker sets it on the response; see
+  `worker/index.js`), so a link pasted anywhere, or fetched by a crawler,
+  never unfurls and is never indexed — unlike `/e/*`, which is built to do
+  exactly that.
+
 ## Accepted risks
 
 These are known and deliberately not addressed here:
@@ -522,6 +594,11 @@ These are known and deliberately not addressed here:
 | An internal failure reaches the user as one fixed sentence | `backend/tests/test_service.py` |
 | A request needs no secret, files one issue per election, and never repeats GitHub's words | `backend/tests/test_wishlist.py` |
 | A place name cannot restructure the issue it is written into | `backend/tests/test_wishlist.py` |
+| A consumed, unknown or expired approval token is a `404`, indistinguishably; sending needs the token and the admin secret both | `backend/tests/test_outreach.py` |
+| The etiquette caps, the subreddit allowlist and one-reply-per-thread are enforced server-side | `backend/tests/test_outreach.py` |
+| A reply's length, its one permitted link and its disclosure footer are re-checked on the server, on the (possibly edited) text that is actually sent | `backend/tests/test_outreach.py` |
+| A send that might have posted consumes the token instead of offering a retry; Reddit's own words never reach a caller | `backend/tests/test_reddit.py`, `backend/tests/test_outreach.py` |
+| Reddit credentials are never logged or printed; posting is off, not half-configured, with any one missing | `backend/tests/test_reddit.py` |
 
 The adversarial fixtures themselves are `test/adversarial/`:
 `injected-instructions.html` argues with the agent through five different

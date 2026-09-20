@@ -14,9 +14,13 @@ import dataclasses
 import hmac
 import logging
 import os
+import re
+import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from fastapi import (
     BackgroundTasks,
@@ -39,13 +43,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .config import (
     admin_secret,
     get_mailer,
+    get_outreach_store,
     get_parser,
+    get_reddit_poster,
     get_store,
     get_usage_recorder,
     get_wishlist,
     imports_enabled,
     max_wait_seconds,
     origin_secret,
+    outreach_allowed_subreddits,
+    outreach_daily_cap,
+    outreach_subreddit_weekly_cap,
+    public_base_url,
     usage_report_secret,
     validate_configuration,
 )
@@ -53,6 +63,19 @@ from .identity import normalize_year
 from .mailer import Mailer, MailUnavailable
 from .observability import configure_logging, io_span, scrub
 from .og_image import render as render_og_image
+from .outreach import (
+    DraftStatus,
+    NewDraft,
+    OutreachDraft,
+    OutreachStore,
+    RETRYABLE_STATUSES,
+    TOKEN_LIFETIME_SECONDS,
+    clean as clean_outreach,
+    finalize_reply_text,
+    hash_token,
+    new_token,
+)
+from .reddit import RedditPoster, RedditUnavailable
 from .schema import Election, Forecast, clean_text
 from .service import AmbiguousId, ImportRequest, ImportResult, ImportService, ImportState
 from .share import card as build_card
@@ -232,6 +255,14 @@ def get_usage() -> UsageRecorder:
 
 def get_mailer_provider() -> Mailer:
     return get_mailer()
+
+
+def get_outreach_store_provider() -> OutreachStore:
+    return get_outreach_store()
+
+
+def get_reddit_poster_provider() -> RedditPoster:
+    return get_reddit_poster()
 
 
 # --- the owner --------------------------------------------------------------
@@ -842,6 +873,387 @@ async def preview_usage_report(
     """A usage report as it would be emailed, sent nowhere."""
     _, report = await run_in_threadpool(_usage_report, period, before or usage.today(), usage)
     return report
+
+
+# --- outreach: the approval gate --------------------------------------------
+# doc/plans/04-reddit-outreach.md. The plugin (plugins/outreach/scripts/scan.py)
+# is the only caller of the first route, with the owner's secret; the rest are
+# the owner's browser, reached from the emailed link. Two factors gate a send:
+# the one-time token in the link, and ADMIN_SECRET pasted into this tab
+# (require_admin) — see the plan's "Does this bring Firebase back? No."
+
+#: A reply's parent, Reddit's own shape: t3_<id> for a post, t1_<id> for a
+#: comment. Re-checked here, on what the plugin sent, before it is ever stored.
+_THING_ID = re.compile(r"t[13]_[0-9a-z]{1,16}")
+
+#: An election hash or a prefix of one — the same shape `app.share.valid_id`
+#: accepts, reused rather than duplicated.
+
+
+class OutreachDraftIn(BaseModel):
+    """One accepted find, exactly as ``scan.py`` posts it.
+
+    See doc/plans/04-reddit-outreach.md, "What already exists", for the field
+    table this mirrors. Every free-text field is re-cleaned here — normalised,
+    no control or invisible characters — because nothing that crosses the
+    network is trusted twice, even though the plugin already sanitised it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["reddit"]
+    subreddit: str
+    thing_id: str
+    kind: Literal["post", "comment"]
+    permalink: str
+    title: str
+    excerpt: str
+    election_hash: str
+    election_title: str
+    link: str
+    reply_text: str
+    verification: dict
+    classifier_reason: str
+    created_at: str
+
+    @field_validator("subreddit")
+    @classmethod
+    def _subreddit(cls, value: str) -> str:
+        return clean_outreach(value, field="subreddit", max_len=100)
+
+    @field_validator("thing_id")
+    @classmethod
+    def _thing_id(cls, value: str) -> str:
+        if not isinstance(value, str) or not _THING_ID.fullmatch(value):
+            raise ValueError("thing_id must be a post or comment fullname (t3_… or t1_…)")
+        return value
+
+    @field_validator("permalink", "link")
+    @classmethod
+    def _url_field(cls, value: str, info) -> str:
+        text = clean_outreach(value, field=info.field_name, max_len=2000)
+        if not re.match(r"^https?://", text):
+            raise ValueError(f"{info.field_name} must be an absolute URL")
+        return text
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str) -> str:
+        return clean_outreach(value, field="title", max_len=500)
+
+    @field_validator("excerpt")
+    @classmethod
+    def _excerpt(cls, value: str) -> str:
+        return clean_outreach(value, field="excerpt", max_len=1000)
+
+    @field_validator("election_hash")
+    @classmethod
+    def _election_hash(cls, value: str) -> str:
+        if not isinstance(value, str) or not valid_id(value):
+            raise ValueError("election_hash must be a hex election hash")
+        return value
+
+    @field_validator("election_title")
+    @classmethod
+    def _election_title(cls, value: str) -> str:
+        return clean_outreach(value, field="election_title", max_len=300)
+
+    @field_validator("classifier_reason")
+    @classmethod
+    def _classifier_reason(cls, value: str) -> str:
+        return clean_outreach(value, field="classifier_reason", max_len=1000)
+
+    @field_validator("created_at")
+    @classmethod
+    def _created_at(cls, value: str) -> str:
+        return clean_outreach(value, field="created_at", max_len=64)
+
+
+class OutreachDraftOut(BaseModel):
+    """A queued draft, for the owner's own eyes (``require_admin``)."""
+
+    id: str
+    source: str
+    subreddit: str
+    thing_id: str
+    thread_id: str
+    kind: str
+    permalink: str
+    title: str
+    excerpt: str
+    election_hash: str
+    election_title: str
+    link: str
+    reply_text: str
+    verification: dict
+    classifier_reason: str
+    created_at: str
+    status: DraftStatus
+    emailed_at: float | None = None
+    decided_at: float | None = None
+    posted_at: float | None = None
+    posted_url: str | None = None
+    last_error: str | None = None
+    edited: bool = False
+
+    @classmethod
+    def of(cls, draft: OutreachDraft) -> "OutreachDraftOut":
+        return cls(**{name: getattr(draft, name) for name in cls.model_fields})
+
+
+class OutreachSendBody(BaseModel):
+    """What the owner may change before sending: the text alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply_text: str | None = None
+
+
+#: How long an approval token has been usable when this is queued, in seconds.
+DRAFT_ID_BYTES = 8  # "draft_" + 16 hex characters (doc/plans/04, "Storage").
+ROLLING_WEEK_SECONDS = 7 * 24 * 3600
+ROLLING_DAY_SECONDS = 24 * 3600
+
+
+def _new_draft_id() -> str:
+    return "draft_" + secrets.token_hex(DRAFT_ID_BYTES)
+
+
+def _approval_url(token: str) -> str:
+    base = public_base_url()
+    return f"{base}/approve/{token}" if base else f"/approve/{token}"
+
+
+def _draft_email(draft: NewDraft, token: str) -> tuple[str, str]:
+    subject = f"Approve a reply in r/{draft.subreddit} — {draft.election_title}"
+    body = "\n\n".join((
+        f"Thread: {draft.title}",
+        f"Link: {draft.permalink}",
+        f"Excerpt:\n{draft.excerpt}",
+        f"Proposed reply:\n{draft.reply_text}",
+        f"About: {draft.election_title} ({draft.link})",
+        f"Approve or reject it here: {_approval_url(token)}",
+        "This link works once and expires in 72 hours.",
+    ))
+    return subject, body
+
+
+@app.post("/api/admin/outreach/drafts", status_code=status.HTTP_201_CREATED)
+async def queue_outreach_draft(
+    body: OutreachDraftIn,
+    background: BackgroundTasks,
+    _admin: None = Depends(require_admin),
+    store: OutreachStore = Depends(get_outreach_store_provider),
+    mailer: Mailer = Depends(get_mailer_provider),
+    usage: UsageRecorder = Depends(get_usage),
+) -> dict:
+    """Queue a reply the ``outreach`` plugin found, and email the owner to approve it.
+
+    The plugin is the only caller (``x-admin-secret``, `require_admin`).
+    ``409`` for a ``thing_id`` already queued — the plugin reports that as
+    "already queued" and moves on. ``503`` when nobody could be emailed about
+    it: a draft nobody can approve is not stored.
+    """
+    if not mailer.enabled:
+        raise HTTPException(503, detail="outreach needs the usage-report mailer configured")
+
+    try:
+        reply_text = finalize_reply_text(body.reply_text, own_link=body.link)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from None
+
+    draft = NewDraft(
+        source=body.source,
+        subreddit=body.subreddit,
+        thing_id=body.thing_id,
+        kind=body.kind,
+        permalink=body.permalink,
+        title=body.title,
+        excerpt=body.excerpt,
+        election_hash=body.election_hash,
+        election_title=body.election_title,
+        link=body.link,
+        reply_text=reply_text,
+        verification=body.verification,
+        classifier_reason=body.classifier_reason,
+        created_at=body.created_at,
+    )
+    draft_id = _new_draft_id()
+    token, token_hash = new_token()
+    now = time.time()
+    created = await run_in_threadpool(
+        store.create, draft_id, draft,
+        token_hash=token_hash, token_expires_at=now + TOKEN_LIFETIME_SECONDS, emailed_at=now,
+    )
+    if created is None:
+        raise HTTPException(409, detail="a draft for this thing_id is already queued")
+
+    subject, email_body = _draft_email(draft, token)
+    try:
+        await run_in_threadpool(mailer.send, subject, email_body)
+    except MailUnavailable as exc:
+        await run_in_threadpool(store.delete, draft_id)
+        raise HTTPException(502, detail=str(exc)) from None
+
+    background.add_task(usage.record, UsageEvent.OUTREACH_QUEUED)
+    return {"id": draft_id}
+
+
+@app.get("/api/admin/outreach/drafts", response_model=list[OutreachDraftOut])
+async def list_outreach_drafts(
+    _admin: None = Depends(require_admin),
+    store: OutreachStore = Depends(get_outreach_store_provider),
+) -> list[OutreachDraftOut]:
+    """The queue, for the daily report and for a second look. The owner's alone."""
+    drafts = await run_in_threadpool(store.list_drafts)
+    return [OutreachDraftOut.of(draft) for draft in drafts]
+
+
+async def _outreach_draft_for_token(
+    token: str, store: OutreachStore, usage: UsageRecorder, background: BackgroundTasks
+) -> OutreachDraft:
+    """The draft an approval token names, or the ``404`` every wrong guess gets.
+
+    Unknown, already-consumed and expired tokens all answer identically —
+    never say which. An expiry found here consumes the token and records it,
+    so the same stale link never does this twice.
+    """
+    draft = await run_in_threadpool(store.get_by_token_hash, hash_token(token))
+    if draft is None:
+        raise HTTPException(404, detail="no such approval")
+    if draft.token_expires_at is None or draft.token_expires_at < time.time():
+        await run_in_threadpool(
+            store.set_status, draft.id, DraftStatus.EXPIRED, consume_token=True
+        )
+        background.add_task(usage.record, UsageEvent.OUTREACH_EXPIRED)
+        raise HTTPException(404, detail="no such approval")
+    return draft
+
+
+@app.get("/api/outreach/approval/{token}")
+async def get_outreach_approval(
+    token: str,
+    background: BackgroundTasks,
+    store: OutreachStore = Depends(get_outreach_store_provider),
+    usage: UsageRecorder = Depends(get_usage),
+) -> Response:
+    """The draft a link names: the thread, the reply, what it links to, and
+    when the link stops working. The token alone is enough to view; sending
+    needs `x-admin-secret` as well (`send_outreach_reply`). Never cached, and
+    marked for no search index — an approval link must never unfurl."""
+    draft = await _outreach_draft_for_token(token, store, usage, background)
+    payload = {
+        "subreddit": draft.subreddit,
+        "permalink": draft.permalink,
+        "title": draft.title,
+        "excerpt": draft.excerpt,
+        "reply_text": draft.reply_text,
+        "election_title": draft.election_title,
+        "link": draft.link,
+        "status": draft.status.value,
+        "last_error": draft.last_error,
+        "expires_at": draft.token_expires_at,
+    }
+    return JSONResponse(
+        payload, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"}
+    )
+
+
+@app.post("/api/outreach/approval/{token}/send")
+async def send_outreach_reply(
+    token: str,
+    background: BackgroundTasks,
+    body: OutreachSendBody | None = None,
+    _admin: None = Depends(require_admin),
+    store: OutreachStore = Depends(get_outreach_store_provider),
+    poster: RedditPoster = Depends(get_reddit_poster_provider),
+    usage: UsageRecorder = Depends(get_usage),
+) -> dict:
+    """Post the reply, consuming the link. Two factors: the token and
+    `x-admin-secret` (`require_admin`) — see doc/plans/04-reddit-outreach.md,
+    "Does this bring Firebase back? No."
+
+    Refuses, without changing the draft, when a ceiling in section 5 already
+    stopped it, when the draft is not pending or retryable, or when the
+    (possibly owner-edited) text fails the same checks the plugin already
+    applied. A Reddit failure that may have gone through anyway
+    (`maybe_posted`) consumes the token instead of leaving a retry button:
+    check the thread by hand before trying again, never a blind resend.
+    """
+    draft = await _outreach_draft_for_token(token, store, usage, background)
+
+    if draft.status not in RETRYABLE_STATUSES:
+        raise HTTPException(409, detail=f"this draft is already {draft.status.value}")
+    if draft.subreddit.lower() not in outreach_allowed_subreddits():
+        raise HTTPException(409, detail="this subreddit is not on this deployment's allowed list")
+    if await run_in_threadpool(store.thread_posted, draft.thread_id):
+        raise HTTPException(409, detail="a reply has already been posted in this thread")
+
+    now = time.time()
+    weekly = await run_in_threadpool(
+        store.count_posted, draft.subreddit, now - ROLLING_WEEK_SECONDS
+    )
+    if weekly >= outreach_subreddit_weekly_cap():
+        raise HTTPException(409, detail="this subreddit has reached its weekly reply limit")
+    daily = await run_in_threadpool(store.count_posted_total, now - ROLLING_DAY_SECONDS)
+    if daily >= outreach_daily_cap():
+        raise HTTPException(409, detail="the daily reply limit has been reached")
+
+    edited = bool(
+        body and body.reply_text and body.reply_text.strip() != draft.reply_text.strip()
+    )
+    try:
+        final_text = finalize_reply_text(
+            body.reply_text if body and body.reply_text else draft.reply_text,
+            own_link=draft.link,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from None
+
+    if not poster.enabled:
+        raise HTTPException(503, detail="posting to Reddit is not configured")
+
+    await run_in_threadpool(
+        store.set_status, draft.id, DraftStatus.APPROVED, decided_at=now, edited=edited
+    )
+    background.add_task(usage.record, UsageEvent.OUTREACH_APPROVED)
+
+    try:
+        posted = await poster.comment(draft.thing_id, final_text)
+    except RedditUnavailable as exc:
+        await run_in_threadpool(
+            store.set_status, draft.id, DraftStatus.FAILED,
+            consume_token=exc.maybe_posted, last_error=str(exc),
+        )
+        background.add_task(usage.record, UsageEvent.OUTREACH_FAILED)
+        raise HTTPException(502, detail=str(exc)) from None
+
+    await run_in_threadpool(
+        store.set_status, draft.id, DraftStatus.POSTED, consume_token=True,
+        posted_at=time.time(), posted_url=posted.url,
+    )
+    background.add_task(usage.record, UsageEvent.OUTREACH_POSTED)
+    return {"posted_url": posted.url}
+
+
+@app.post("/api/outreach/approval/{token}/reject")
+async def reject_outreach_reply(
+    token: str,
+    background: BackgroundTasks,
+    _admin: None = Depends(require_admin),
+    store: OutreachStore = Depends(get_outreach_store_provider),
+    usage: UsageRecorder = Depends(get_usage),
+) -> dict:
+    """Decline a queued reply. The owner's alone, the same two factors as sending."""
+    draft = await _outreach_draft_for_token(token, store, usage, background)
+    if draft.status not in RETRYABLE_STATUSES:
+        raise HTTPException(409, detail=f"this draft is already {draft.status.value}")
+    await run_in_threadpool(
+        store.set_status, draft.id, DraftStatus.REJECTED,
+        consume_token=True, decided_at=time.time(),
+    )
+    background.add_task(usage.record, UsageEvent.OUTREACH_REJECTED)
+    return {"status": "rejected"}
 
 
 # Serving the page from this app keeps the API same-origin, which is what the
