@@ -942,6 +942,14 @@ def main(argv: list[str] | None = None) -> int:
         verifier = FakeVerifier({})
         sink: Sink = NullSink()
     else:
+        # Checked before the local pass, not at the first verification: the
+        # classifier can spend an hour on a big thread, and finding out
+        # afterwards that every verification failed wastes all of it.
+        if not (env.get("ANTHROPIC_API_KEY") or Path.home().joinpath(".anthropic").exists()):
+            raise SystemExit(
+                "ANTHROPIC_API_KEY is needed to verify candidates "
+                "(or use --dry-run, which verifies nothing)"
+            )
         verifier = AnthropicVerifier(model=env.get("OUTREACH_VERIFY_MODEL", DEFAULT_VERIFY_MODEL))
         submit = args.submit or "server"
         if submit == "server":
