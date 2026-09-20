@@ -18,7 +18,7 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -40,13 +40,18 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .calendar import CalendarScanner
 from .config import (
     admin_secret,
+    get_calendar_scanner,
     get_mailer,
     get_outreach_store,
     get_parser,
     get_reddit_poster,
+    get_refresh_config,
+    get_refresh_parser,
     get_store,
+    get_tracked_store,
     get_usage_recorder,
     get_wishlist,
     imports_enabled,
@@ -57,10 +62,11 @@ from .config import (
     outreach_daily_cap,
     outreach_subreddit_weekly_cap,
     public_base_url,
+    refresh_max_per_tick,
     usage_report_secret,
     validate_configuration,
 )
-from .identity import normalize_year
+from .identity import normalize_year, request_key
 from .mailer import Mailer, MailUnavailable
 from .observability import configure_logging, io_span, scrub
 from .og_image import render as render_og_image
@@ -78,11 +84,13 @@ from .outreach import (
     new_token,
 )
 from .reddit import RedditPoster, RedditUnavailable
+from .refresh import RefreshService
+from .refresh_config import RefreshConfig
 from .schema import Election, Forecast, clean_text
 from .service import AmbiguousId, ImportRequest, ImportResult, ImportService, ImportState
 from .share import card as build_card
 from .share import image_etag, parse_seats, parse_selection, valid_id
-from .store import StoredElection
+from .store import ElectionStore, StoredElection, TrackedElection, TrackedStatus, TrackedStore
 from .usage import (
     Period,
     UsageEvent,
@@ -265,6 +273,26 @@ def get_outreach_store_provider() -> OutreachStore:
 
 def get_reddit_poster_provider() -> RedditPoster:
     return get_reddit_poster()
+
+
+def get_store_provider() -> ElectionStore:
+    return get_store()
+
+
+def get_tracked_store_provider() -> TrackedStore:
+    return get_tracked_store()
+
+
+def get_refresh_parser_provider():
+    return get_refresh_parser()
+
+
+def get_refresh_config_provider() -> RefreshConfig:
+    return get_refresh_config()
+
+
+def get_calendar_scanner_provider() -> CalendarScanner:
+    return get_calendar_scanner()
 
 
 # --- the owner --------------------------------------------------------------
@@ -882,6 +910,235 @@ async def preview_usage_report(
     """A usage report as it would be emailed, sent nowhere."""
     _, report = await run_in_threadpool(_usage_report, period, before or usage.today(), usage)
     return report
+
+
+# --- tracked elections and their scheduled refresh --------------------------
+# doc/plans/03-remaining-work.md, section A. The Worker's crons call the two
+# ``/api/internal`` routes with ``x-report-secret`` (`require_schedule`); the
+# ``/api/admin`` routes are the owner's own table, reached from no page —
+# there is no admin UI for this yet, only `curl` and `x-admin-secret`.
+
+
+class RefreshRun(BaseModel):
+    """What one refresh tick did. The Worker's cron logs it; nobody else sees it."""
+
+    refreshed: int
+    stored_polls: int
+    stored_results: int
+    finalised: int
+    failed: int
+    skipped_unchanged: int
+
+
+@app.post("/api/internal/refresh", response_model=RefreshRun)
+async def run_refresh(
+    _schedule: None = Depends(require_schedule),
+    tracked_store: TrackedStore = Depends(get_tracked_store_provider),
+    store: ElectionStore = Depends(get_store_provider),
+    parser=Depends(get_refresh_parser_provider),
+    config: RefreshConfig = Depends(get_refresh_config_provider),
+) -> RefreshRun:
+    """Refresh the tracked elections that are due. Called every 30 minutes.
+
+    Sequential and synchronous on purpose (plan 3, A3): Cloud Run throttles
+    CPU after the response unless the service is set to always-on, and the
+    Worker's fetch is content to wait a minute for this one. The cap
+    (``REFRESH_MAX_PER_TICK``) is what keeps one tick inside Cloud Run's own
+    request timeout.
+    """
+    now = datetime.now(UTC)
+    due = await run_in_threadpool(tracked_store.due_tracked, now, refresh_max_per_tick())
+    service = RefreshService(tracked_store, store, parser, config)
+    counts = {
+        "stored_polls": 0, "stored_results": 0, "finalised": 0, "failed": 0, "skipped_unchanged": 0,
+    }
+    for tracked in due:
+        outcome = await service.run(tracked)
+        counts["stored_polls"] += outcome.stored_polls
+        counts["stored_results"] += outcome.stored_results
+        counts["finalised"] += int(outcome.finalised)
+        counts["failed"] += int(outcome.failed)
+        counts["skipped_unchanged"] += int(outcome.skipped_unchanged)
+    return RefreshRun(refreshed=len(due), **counts)
+
+
+class CalendarScanOut(BaseModel):
+    """What a calendar scan proposed. The owner reads this before it runs unwatched."""
+
+    proposed: int
+    tracked: int
+    skipped: dict[str, int]
+    failures: list[str]
+
+
+@app.post("/api/internal/calendar-scan", response_model=CalendarScanOut)
+async def run_calendar_scan(
+    years: str = Query(..., description="Years to scan, comma-separated: 2026,2027"),
+    _schedule: None = Depends(require_schedule),
+    scanner: CalendarScanner = Depends(get_calendar_scanner_provider),
+    tracked_store: TrackedStore = Depends(get_tracked_store_provider),
+) -> CalendarScanOut:
+    """Propose elections to track from Wikidata and Wikipedia's calendars.
+
+    Called once a month by the Worker's cron. Every proposal that survives
+    de-duplication is tracked at once, ``added_by="calendar"``: what needs a
+    human is not whether it gets tracked but whether it should have been
+    (plan 3, A5) — the owner reads the report and untracks what does not
+    belong through :func:`update_tracked_election`.
+    """
+    try:
+        years_wanted = [int(part.strip()) for part in years.split(",") if part.strip()]
+    except ValueError:
+        raise HTTPException(422, detail="years must be a comma-separated list of years") from None
+    if not years_wanted:
+        raise HTTPException(422, detail="years must name at least one year")
+
+    existing = await run_in_threadpool(tracked_store.list_tracked)
+    already_tracked = {row.request_key for row in existing}
+    try:
+        result = await scanner.scan(years_wanted, tracked=already_tracked)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from None
+
+    added = 0
+    for entry in result.entries:
+        new_row = TrackedElection(
+            request_key=entry.request_key, year=entry.year, nation=entry.nation,
+            subnation=entry.state, election_date=entry.election_date,
+            status=TrackedStatus.UPCOMING, added_by="calendar",
+        )
+        if await run_in_threadpool(tracked_store.add_tracked, new_row):
+            added += 1
+    return CalendarScanOut(
+        proposed=len(result.entries), tracked=added, skipped=result.skipped, failures=result.failures
+    )
+
+
+class TrackedOut(BaseModel):
+    """One tracked election, for the owner's table. Nobody else sees this route."""
+
+    request_key: str
+    year: int
+    nation: str
+    subnation: str | None
+    election_date: date | None
+    status: TrackedStatus
+    last_refresh_at: datetime | None
+    next_refresh_at: datetime | None
+    consecutive_failures: int
+    last_error: str | None
+    result_hash: str | None
+    unchanged_reads: int
+    added_by: str
+
+    @classmethod
+    def of(cls, tracked: TrackedElection) -> "TrackedOut":
+        return cls(**{name: getattr(tracked, name) for name in cls.model_fields})
+
+
+@app.get("/api/admin/tracked", response_model=list[TrackedOut])
+async def list_tracked_elections(
+    _admin: None = Depends(require_admin),
+    tracked_store: TrackedStore = Depends(get_tracked_store_provider),
+) -> list[TrackedOut]:
+    """Every tracked election, soonest due first. The owner's alone."""
+    rows = await run_in_threadpool(tracked_store.list_tracked)
+    return [TrackedOut.of(row) for row in rows]
+
+
+class TrackedIn(BaseModel):
+    """A tracked election the owner adds by hand — the rollout's first step (A7)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    year: int
+    nation: str
+    subnation: str | None = None
+    election_date: date
+
+    @field_validator("nation")
+    @classmethod
+    def _nation(cls, value: str) -> str:
+        return clean_text(value, field="nation")
+
+    @field_validator("subnation")
+    @classmethod
+    def _subnation(cls, value: str | None) -> str | None:
+        return None if value is None else clean_text(value, field="subnation")
+
+
+@app.post("/api/admin/tracked", status_code=status.HTTP_201_CREATED, response_model=TrackedOut)
+async def add_tracked_election(
+    body: TrackedIn,
+    _admin: None = Depends(require_admin),
+    tracked_store: TrackedStore = Depends(get_tracked_store_provider),
+) -> TrackedOut:
+    try:
+        year = normalize_year(body.year)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, detail=str(exc)) from None
+    try:
+        key = request_key(year, body.nation, body.subnation)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from None
+    new_row = TrackedElection(
+        request_key=key, year=year, nation=body.nation, subnation=body.subnation,
+        election_date=body.election_date, status=TrackedStatus.UPCOMING, added_by="owner",
+    )
+    added = await run_in_threadpool(tracked_store.add_tracked, new_row)
+    if not added:
+        raise HTTPException(409, detail="this election is already tracked")
+    return TrackedOut.of(new_row)
+
+
+class TrackedPatch(BaseModel):
+    """What the owner may change about a tracked election."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["untracked"] | None = None
+    election_date: date | None = None
+    refresh_now: bool = False
+
+
+@app.put("/api/admin/tracked/{request_key}", response_model=TrackedOut)
+async def update_tracked_election(
+    request_key: str,
+    body: TrackedPatch,
+    _admin: None = Depends(require_admin),
+    tracked_store: TrackedStore = Depends(get_tracked_store_provider),
+) -> TrackedOut:
+    """Untrack it, correct its date, or make it due right now.
+
+    ``refresh_now`` reactivates a parked or corrected row (a park is the
+    scheduler giving up; the owner asking for one more try is not it holding
+    an opinion) by putting it back among the active statuses and clearing
+    ``next_refresh_at`` — which the schedule already reads as "due now"
+    (plan 3, A1).
+    """
+    current = await run_in_threadpool(tracked_store.get_tracked, request_key)
+    if current is None:
+        raise HTTPException(404, detail="no such tracked election")
+
+    fields: dict = {}
+    if body.status == "untracked":
+        fields.update(status=TrackedStatus.UNTRACKED, next_refresh_at=None)
+    if body.election_date is not None:
+        fields["election_date"] = body.election_date
+    if body.refresh_now:
+        if current.status is TrackedStatus.FINAL:
+            raise HTTPException(409, detail="a final election is not read again")
+        fields.setdefault(
+            "status", TrackedStatus.COUNTING if current.result_hash else TrackedStatus.UPCOMING
+        )
+        fields.update(next_refresh_at=None, consecutive_failures=0, last_error=None)
+    if not fields:
+        raise HTTPException(422, detail="nothing to change")
+
+    updated = await run_in_threadpool(tracked_store.update_tracked, request_key, **fields)
+    if updated is None:
+        raise HTTPException(404, detail="no such tracked election")
+    return TrackedOut.of(updated)
 
 
 # --- outreach: the approval gate --------------------------------------------

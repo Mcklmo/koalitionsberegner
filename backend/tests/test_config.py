@@ -15,6 +15,7 @@ def clean_config():
         config.get_store,
         config.get_parser,
         config.get_refresh_parser,
+        config.get_calendar_scanner,
         config.get_search,
         config.get_wikipedia,
         config.get_wishlist,

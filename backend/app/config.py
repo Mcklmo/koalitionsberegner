@@ -237,6 +237,45 @@ def get_refresh_config():
     return load_configured()
 
 
+@lru_cache(maxsize=1)
+def get_calendar_scanner():
+    """Where the monthly calendar scan looks for elections to track (plan 3, A5).
+
+    Wikidata needs no key and is always asked; Wikipedia's calendar articles
+    are asked too when Wikipedia is on, with the same model as the extractor
+    as its fallback for a shaped-differently article. IFES ElectionGuide is
+    not wired in at all: its data use policy allows personal and
+    non-commercial use only, and the owner has not yet confirmed with IFES in
+    writing that a non-profit paying developers from sponsorship counts (see
+    ``doc/contribute.md``); there is nothing here to switch on once that
+    happens without becoming a third source alongside these two.
+    """
+    from .calendar import (
+        AnthropicCalendarExtractor,
+        CalendarScanner,
+        StubCalendarExtractor,
+        Wikidata,
+        WikipediaArticles,
+        WikipediaCalendar,
+    )
+
+    mode = _env_choice("LLM_MODE", LLM_MODES, "mock")
+    contact = _env_str("WIKIPEDIA_CONTACT")
+    wikidata = Wikidata(contact=contact)
+
+    wikipedia = get_wikipedia()
+    wikipedia_source = None
+    if wikipedia is not None:
+        extractor = None
+        if mode == "live":
+            extractor = AnthropicCalendarExtractor()
+        elif mode == "mock":
+            extractor = StubCalendarExtractor()
+        wikipedia_source = WikipediaCalendar(WikipediaArticles(wikipedia), extractor=extractor)
+
+    return CalendarScanner(wikidata=wikidata, wikipedia=wikipedia_source, store=get_store())
+
+
 def search_mode() -> str:
     """Which search engine an import consults besides the resolver, in effect.
 
@@ -661,6 +700,7 @@ def validate_configuration() -> dict[str, str]:
     refresh_max_per_tick()
     get_tracked_store()
     get_refresh_parser()
+    get_calendar_scanner()
     # Not reached by ``get_parser`` when importing is off, and a misspelled
     # SEARCH_MODE or WIKIPEDIA_LANGUAGE must still stop the boot.
     get_search()
