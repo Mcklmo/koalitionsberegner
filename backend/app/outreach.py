@@ -33,6 +33,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from threading import Lock
 from typing import Protocol
+from urllib.parse import urlsplit
 
 #: The footer every posted reply carries. Must read exactly like
 #: ``plugins/outreach/scripts/scan.py``'s ``DISCLOSURE`` — this is what a
@@ -51,29 +52,38 @@ MAX_REPLY_CHARS = 1200
 URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 
 #: The post id inside a Reddit permalink — ``/r/<sub>/comments/<id>/...`` —
-#: whether the permalink names the post itself or a comment under it. This is
-#: what "one reply per thread" is keyed on, not the field the plugin never
-#: sends.
-_THREAD_ID = re.compile(r"/comments/([A-Za-z0-9]+)/")
+#: whether the permalink names the post itself or a comment under it, and
+#: whether or not a trailing slash follows the id (a permalink can end right
+#: there, with nothing after it). This is what "one reply per thread" is keyed
+#: on, not the field the plugin never sends.
+_THREAD_ID = re.compile(r"/comments/([A-Za-z0-9]+)(?=/|\?|#|$)")
 
 #: How long an emailed approval link works, in seconds.
 TOKEN_LIFETIME_SECONDS = 72 * 3600
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+#: Same, but excluding ``\n`` and ``\t`` -- the two control characters real
+#: Reddit text carries (``plugins/outreach/scripts/scan.py``'s ``clean_text``
+#: keeps exactly these). Used for the one field that is Reddit's own prose
+#: rather than something typed into a form.
+_CONTROL_CHARS_ALLOW_NEWLINES = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _CONFUSABLE_CHARS = re.compile(r"[­​‎‏‪-‮  ⁦-⁩﻿]")
 
 
-def clean(value: str, *, field: str, max_len: int) -> str:
+def clean(value: str, *, field: str, max_len: int, allow_newlines: bool = False) -> str:
     """Like :func:`app.schema.clean_text`, but with a caller-chosen length.
 
     Reddit text is longer than anything :mod:`app.schema` bounds to 200
     characters, so this repeats its rules rather than reusing it: normalised,
     no control characters, no invisible or direction-changing ones, and never
-    empty.
+    empty. ``allow_newlines`` permits newlines and tabs, for the one field
+    that carries real Reddit prose (an excerpt) rather than a single line
+    typed into a form.
     """
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a string")
-    if _CONTROL_CHARS.search(value):
+    control_chars = _CONTROL_CHARS_ALLOW_NEWLINES if allow_newlines else _CONTROL_CHARS
+    if control_chars.search(value):
         raise ValueError(f"{field} must not contain control characters")
     if _CONFUSABLE_CHARS.search(value):
         raise ValueError(f"{field} must not contain invisible or direction-changing characters")
@@ -95,9 +105,19 @@ def thread_id(permalink: str) -> str:
     return match.group(1) if match else permalink
 
 
-def _origin(url: str) -> str:
-    match = re.match(r"^https?://[^/]+", url)
-    return match.group(0) if match else url
+def _host(url: str) -> str | None:
+    """The parsed, lowercased host of a URL -- whether or not it carries a
+    scheme, since :data:`URL_PATTERN` also matches bare ``www.`` mentions.
+
+    Parsing the host, rather than checking whether one URL's text starts with
+    another's, is what keeps a lookalike host (``https://<our host>.evil.example/...``)
+    or one that smuggles the real host into userinfo
+    (``https://<our host>@evil.example/...``) from being accepted: both parse
+    to a *different* host than the real one, where a plain ``str.startswith``
+    would have matched them.
+    """
+    parsed = urlsplit(url if "//" in url else "//" + url)
+    return parsed.hostname
 
 
 def validate_reply_text(text: str, *, own_link: str) -> None:
@@ -113,9 +133,9 @@ def validate_reply_text(text: str, *, own_link: str) -> None:
         raise ValueError(f"a reply must be at most {MAX_REPLY_CHARS} characters")
     if not text.endswith(DISCLOSURE):
         raise ValueError("a reply must end with the disclosure")
-    allowed = _origin(own_link)
+    allowed_host = _host(own_link)
     for match in URL_PATTERN.finditer(text):
-        if not match.group(0).startswith(allowed):
+        if _host(match.group(0)) != allowed_host:
             raise ValueError("a reply may carry no URL but the site's own")
 
 
@@ -152,6 +172,17 @@ class DraftStatus(str, Enum):
 #: Statuses from which a send may still be attempted: a fresh draft, or one
 #: whose last attempt did not confirm a post (never one Reddit accepted).
 RETRYABLE_STATUSES = (DraftStatus.PENDING, DraftStatus.FAILED)
+
+#: Statuses from which a reject is still accepted. Everything retryable, plus
+#: ``APPROVED`` -- a draft a `claim` moved there but whose send then hit
+#: something other than a clean :class:`RedditUnavailable` (a client
+#: disconnect, a cancelled request, a pod restart, an unhandled bug) never
+#: gets a further status update, so without this an owner would find both
+#: ``/send`` and ``/reject`` refusing forever with no way to close it out. This
+#: does not reopen it to a blind retry: ``/send`` still only accepts
+#: ``RETRYABLE_STATUSES``, so the one thing an owner can do with a stranded
+#: ``APPROVED`` draft is reject it, never resend it.
+REJECTABLE_STATUSES = RETRYABLE_STATUSES + (DraftStatus.APPROVED,)
 
 
 @dataclass(frozen=True)
@@ -232,6 +263,21 @@ class OutreachStore(Protocol):
         """Move a draft to ``status``, and set any of the timestamp/result
         fields the caller passes. ``consume_token`` clears the stored hash so
         the link cannot be replayed."""
+        ...
+
+    def claim(
+        self, draft_id: str, *, decided_at: float, edited: bool = False
+    ) -> OutreachDraft | None:
+        """Atomically move a draft from a retryable status to ``APPROVED``, or
+        do nothing. ``None`` when the draft was not found or was not in
+        ``RETRYABLE_STATUSES`` at the moment this ran -- the caller's ``409``.
+
+        This is the compare-and-swap that makes two overlapping ``/send``
+        requests for the same token safe: whichever wins the race is the only
+        one that ever reaches ``poster.comment``. Implementations must make
+        the read-and-write one atomic operation (sqlite's ``BEGIN IMMEDIATE``,
+        a Firestore transaction), not a read followed by a separate write.
+        """
         ...
 
     def delete(self, draft_id: str) -> None:
@@ -317,6 +363,19 @@ class InMemoryOutreachStore:
                 updates["token_hash"] = None
                 updates["token_expires_at"] = None
             self._drafts[draft_id] = replace(draft, **updates)
+
+    def claim(
+        self, draft_id: str, *, decided_at: float, edited: bool = False
+    ) -> OutreachDraft | None:
+        with self._lock:
+            draft = self._drafts.get(draft_id)
+            if draft is None or draft.status not in RETRYABLE_STATUSES:
+                return None
+            updated = replace(
+                draft, status=DraftStatus.APPROVED, decided_at=decided_at, edited=edited
+            )
+            self._drafts[draft_id] = updated
+            return updated
 
     def delete(self, draft_id: str) -> None:
         with self._lock:

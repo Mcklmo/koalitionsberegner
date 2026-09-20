@@ -11,16 +11,27 @@ anyway consumes the link instead of ever offering a blind retry.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.background import BackgroundTasks
 
 from app import main
 from app.mailer import MailUnavailable
-from app.outreach import DISCLOSURE, DraftStatus, InMemoryOutreachStore
+from app.outreach import (
+    DISCLOSURE,
+    DraftStatus,
+    InMemoryOutreachStore,
+    clean,
+    thread_id,
+    validate_reply_text,
+)
 from app.reddit import FakeRedditPoster, RedditUnavailable
+from app.usage import InMemoryUsageStore, UsageRecorder
 
 pytestmark = pytest.mark.anyio
 
@@ -77,6 +88,16 @@ class DisabledFakeMailer:
         raise MailUnavailable("outreach mail is not configured")
 
 
+class FakeUsage:
+    """Records event names in order, in place of the real usage store."""
+
+    def __init__(self):
+        self.recorded: list[str] = []
+
+    def record(self, event) -> None:
+        self.recorded.append(event.value if hasattr(event, "value") else event)
+
+
 @pytest.fixture
 def store():
     return InMemoryOutreachStore()
@@ -93,7 +114,12 @@ def poster():
 
 
 @pytest.fixture
-def client(store, mailer, poster, monkeypatch):
+def usage():
+    return FakeUsage()
+
+
+@pytest.fixture
+def client(store, mailer, poster, usage, monkeypatch):
     monkeypatch.setenv("ADMIN_SECRET", ADMIN_SECRET)
     monkeypatch.setenv("OUTREACH_ALLOWED_SUBREDDITS", "denmark")
     monkeypatch.setenv("OUTREACH_SUBREDDIT_WEEKLY_CAP", "2")
@@ -102,6 +128,7 @@ def client(store, mailer, poster, monkeypatch):
     overrides[main.get_outreach_store_provider] = lambda: store
     overrides[main.get_mailer_provider] = lambda: mailer
     overrides[main.get_reddit_poster_provider] = lambda: poster
+    overrides[main.get_usage] = lambda: usage
     with TestClient(main.app) as test_client:
         yield test_client
     overrides.clear()
@@ -120,6 +147,61 @@ def token_from(mailer: FakeMailer) -> str:
     match = re.search(r"/approve/([^\s]+)", body)
     assert match, body
     return match.group(1)
+
+
+# --- clean(): control characters -------------------------------------------
+
+def test_clean_rejects_newlines_by_default():
+    with pytest.raises(ValueError, match="control characters"):
+        clean("line one\nline two", field="title", max_len=100)
+
+
+def test_clean_allows_newlines_and_tabs_when_asked():
+    text = "Paragraph one.\n\nParagraph two,\twith a tab."
+    assert clean(text, field="excerpt", max_len=200, allow_newlines=True) == text
+
+
+def test_clean_still_rejects_other_control_characters_with_newlines_allowed():
+    with pytest.raises(ValueError, match="control characters"):
+        clean("bell\x07here", field="excerpt", max_len=200, allow_newlines=True)
+
+
+# --- thread_id(): the trailing slash is optional ----------------------------
+
+def test_thread_id_with_a_trailing_slash():
+    assert thread_id("https://www.reddit.com/r/denmark/comments/abc123/a_title/") == "abc123"
+
+
+def test_thread_id_with_no_trailing_slash():
+    assert thread_id("https://www.reddit.com/r/denmark/comments/abc123") == "abc123"
+
+
+def test_thread_id_with_a_query_string_and_no_trailing_slash():
+    assert thread_id("https://www.reddit.com/r/denmark/comments/abc123?context=3") == "abc123"
+
+
+# --- validate_reply_text(): only the site's own host, not a lookalike ------
+
+OWN_LINK = "https://koalitionsberegner.moritzmarcus.com/e/" + "0" * 16
+
+
+def test_a_reply_to_our_own_link_is_accepted():
+    text = f"See {OWN_LINK}" + DISCLOSURE
+    validate_reply_text(text, own_link=OWN_LINK)  # does not raise
+
+
+def test_a_subdomain_lookalike_host_is_refused():
+    evil = "https://koalitionsberegner.moritzmarcus.com.evil.example/x"
+    text = f"See {evil}" + DISCLOSURE
+    with pytest.raises(ValueError, match="no URL but the site's own"):
+        validate_reply_text(text, own_link=OWN_LINK)
+
+
+def test_a_userinfo_lookalike_host_is_refused():
+    evil = "https://koalitionsberegner.moritzmarcus.com@evil.example/x"
+    text = f"See {evil}" + DISCLOSURE
+    with pytest.raises(ValueError, match="no URL but the site's own"):
+        validate_reply_text(text, own_link=OWN_LINK)
 
 
 # --- queueing -----------------------------------------------------------------
@@ -145,6 +227,36 @@ def test_a_draft_is_queued_emailed_and_readable_from_the_link(client, mailer, st
     assert payload["reply_text"] == REPLY
     assert payload["election_title"] == "Denmark 2026"
     assert payload["status"] == "pending"
+
+
+def test_a_multi_line_excerpt_is_queued_and_readable(client, mailer):
+    # Real Reddit excerpts have line breaks (scan.py's own clean_text keeps
+    # them); this used to 422 before control-character checking allowed \n.
+    excerpt = "First paragraph of the thread.\n\nSecond paragraph, quoting someone else."
+    queued = queue(client, excerpt=excerpt)
+
+    token = token_from(mailer)
+    viewed = client.get(f"/api/outreach/approval/{token}")
+    assert viewed.status_code == 200
+    assert viewed.json()["excerpt"] == excerpt
+
+    listed = client.get("/api/admin/outreach/drafts", headers=ADMIN).json()
+    assert listed[0]["excerpt"] == excerpt
+    assert listed[0]["id"] == queued["id"]
+
+
+def test_an_excerpt_with_other_control_characters_is_still_refused(client):
+    bad = {**DRAFT_BODY, "excerpt": "before\x07after"}
+    refused = client.post("/api/admin/outreach/drafts", json=bad, headers=ADMIN)
+    assert refused.status_code == 422
+
+
+def test_a_subreddit_is_normalised_to_lowercase_on_the_way_in(client, mailer, store):
+    queued = queue(client, subreddit="Denmark")
+
+    assert store.get(queued["id"]).subreddit == "denmark"
+    subject, _ = mailer.sent[0]
+    assert subject == "Approve a reply in r/denmark — Denmark 2026"
 
 
 def test_queueing_needs_the_admin_secret(client, mailer):
@@ -223,6 +335,18 @@ def test_a_link_older_than_72_hours_is_404(client, mailer, store):
 
     assert expired.status_code == 404
     assert store.get(queued["id"]).status is DraftStatus.EXPIRED
+
+
+def test_an_expiry_is_recorded_even_though_the_route_then_raises(client, mailer, store, usage):
+    # background.add_task scheduled right before an HTTPException is raised is
+    # silently dropped by FastAPI, so this must be recorded synchronously.
+    queued = queue(client)
+    token = token_from(mailer)
+    store.set_status(queued["id"], DraftStatus.PENDING, token_expires_at=time.time() - 1)
+
+    client.get(f"/api/outreach/approval/{token}")
+
+    assert "outreach_expired" in usage.recorded
 
 
 def test_sending_without_the_secret_is_refused(client, mailer, poster):
@@ -325,6 +449,91 @@ def test_an_ordinary_failure_keeps_the_link_for_one_retry(client, mailer, poster
     retried = client.post(f"/api/outreach/approval/{token}/send", headers=ADMIN)
     assert retried.status_code == 200
     assert store.get(queued["id"]).status is DraftStatus.POSTED
+
+
+def test_approved_and_failed_are_both_recorded_even_though_the_route_raises(
+    client, mailer, poster, usage
+):
+    # background.add_task scheduled before send_outreach_reply raises the 502
+    # is silently dropped by FastAPI, so both events must be synchronous.
+    queue(client)
+    token = token_from(mailer)
+    poster.fail_with = RedditUnavailable("Reddit refused the reply.")
+
+    client.post(f"/api/outreach/approval/{token}/send", headers=ADMIN)
+
+    assert "outreach_approved" in usage.recorded
+    assert "outreach_failed" in usage.recorded
+
+
+def test_a_posted_reply_is_recorded_too(client, mailer, usage):
+    queue(client)
+    token = token_from(mailer)
+
+    client.post(f"/api/outreach/approval/{token}/send", headers=ADMIN)
+
+    assert usage.recorded == ["outreach_queued", "outreach_approved", "outreach_posted"]
+
+
+class ExplodingPoster:
+    """Something other than RedditUnavailable going wrong mid-send -- a bug,
+    a cancelled request, a client disconnect -- none of which the route's
+    ``except RedditUnavailable`` catches."""
+
+    enabled = True
+
+    async def comment(self, thing_id, text):
+        raise RuntimeError("something other than a Reddit refusal broke")
+
+
+def test_an_unexpected_failure_strands_the_draft_at_approved_but_reject_recovers_it(
+    client, mailer, store
+):
+    queued = queue(client)
+    token = token_from(mailer)
+    main.app.dependency_overrides[main.get_reddit_poster_provider] = lambda: ExplodingPoster()
+
+    with pytest.raises(RuntimeError):
+        client.post(f"/api/outreach/approval/{token}/send", headers=ADMIN)
+
+    stranded = store.get(queued["id"])
+    assert stranded.status is DraftStatus.APPROVED
+
+    # The link still resolves -- it was never consumed by the crash.
+    assert client.get(f"/api/outreach/approval/{token}").status_code == 200
+
+    # Not retryable: APPROVED is not in RETRYABLE_STATUSES, so no blind resend.
+    refused = client.post(f"/api/outreach/approval/{token}/send", headers=ADMIN)
+    assert refused.status_code == 409
+
+    # But it is no longer stuck: reject is accepted from APPROVED too.
+    rejected = client.post(f"/api/outreach/approval/{token}/reject", headers=ADMIN)
+    assert rejected.status_code == 200
+    assert store.get(queued["id"]).status is DraftStatus.REJECTED
+
+
+async def test_concurrent_sends_for_the_same_draft_post_at_most_once(client, mailer, poster, store):
+    queue(client)
+    token = token_from(mailer)
+    real_usage = main.get_usage()
+
+    async def attempt():
+        try:
+            return await main.send_outreach_reply(
+                token, BackgroundTasks(), None, None, store, poster, real_usage,
+            )
+        except HTTPException as exc:
+            return exc
+
+    results = await asyncio.gather(*(attempt() for _ in range(6)))
+
+    successes = [r for r in results if isinstance(r, dict)]
+    refusals = [r for r in results if isinstance(r, HTTPException)]
+    assert len(successes) == 1, results
+    assert len(refusals) == 5
+    assert all(r.status_code == 409 for r in refusals)
+    assert poster.posted == [("t3_abc123", REPLY)]
+    assert store.get_by_token_hash(main.hash_token(token)) is None, "the token was consumed once"
 
 
 # --- rejecting ------------------------------------------------------------

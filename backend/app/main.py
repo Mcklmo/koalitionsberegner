@@ -68,6 +68,7 @@ from .outreach import (
     NewDraft,
     OutreachDraft,
     OutreachStore,
+    REJECTABLE_STATUSES,
     RETRYABLE_STATUSES,
     TOKEN_LIFETIME_SECONDS,
     clean as clean_outreach,
@@ -919,7 +920,11 @@ class OutreachDraftIn(BaseModel):
     @field_validator("subreddit")
     @classmethod
     def _subreddit(cls, value: str) -> str:
-        return clean_outreach(value, field="subreddit", max_len=100)
+        # Lowercased once, here, so every later comparison -- the allowed
+        # list, thread etiquette's per-subreddit cap -- agrees on the same
+        # spelling. Before this, "Denmark" and "denmark" were stored as two
+        # different subreddits and counted separately against the weekly cap.
+        return clean_outreach(value, field="subreddit", max_len=100).lower()
 
     @field_validator("thing_id")
     @classmethod
@@ -944,7 +949,11 @@ class OutreachDraftIn(BaseModel):
     @field_validator("excerpt")
     @classmethod
     def _excerpt(cls, value: str) -> str:
-        return clean_outreach(value, field="excerpt", max_len=1000)
+        # The only field that carries Reddit's own prose rather than a single
+        # line typed into a form, so it is the only one that keeps the
+        # newlines and tabs scan.py's own clean_text lets through -- without
+        # this, real multi-paragraph excerpts 422 here on nearly every draft.
+        return clean_outreach(value, field="excerpt", max_len=1000, allow_newlines=True)
 
     @field_validator("election_hash")
     @classmethod
@@ -1110,13 +1119,19 @@ async def list_outreach_drafts(
 
 
 async def _outreach_draft_for_token(
-    token: str, store: OutreachStore, usage: UsageRecorder, background: BackgroundTasks
+    token: str, store: OutreachStore, usage: UsageRecorder
 ) -> OutreachDraft:
     """The draft an approval token names, or the ``404`` every wrong guess gets.
 
     Unknown, already-consumed and expired tokens all answer identically —
     never say which. An expiry found here consumes the token and records it,
     so the same stale link never does this twice.
+
+    The usage event is recorded synchronously, not via ``BackgroundTasks``:
+    this helper is called right before its caller may itself raise (a ``409``
+    from a status or etiquette check), and FastAPI drops a request's
+    background tasks entirely when the endpoint raises instead of returning —
+    a task scheduled here would silently never run.
     """
     draft = await run_in_threadpool(store.get_by_token_hash, hash_token(token))
     if draft is None:
@@ -1125,7 +1140,7 @@ async def _outreach_draft_for_token(
         await run_in_threadpool(
             store.set_status, draft.id, DraftStatus.EXPIRED, consume_token=True
         )
-        background.add_task(usage.record, UsageEvent.OUTREACH_EXPIRED)
+        await run_in_threadpool(usage.record, UsageEvent.OUTREACH_EXPIRED)
         raise HTTPException(404, detail="no such approval")
     return draft
 
@@ -1141,7 +1156,7 @@ async def get_outreach_approval(
     when the link stops working. The token alone is enough to view; sending
     needs `x-admin-secret` as well (`send_outreach_reply`). Never cached, and
     marked for no search index — an approval link must never unfurl."""
-    draft = await _outreach_draft_for_token(token, store, usage, background)
+    draft = await _outreach_draft_for_token(token, store, usage)
     payload = {
         "subreddit": draft.subreddit,
         "permalink": draft.permalink,
@@ -1179,12 +1194,18 @@ async def send_outreach_reply(
     applied. A Reddit failure that may have gone through anyway
     (`maybe_posted`) consumes the token instead of leaving a retry button:
     check the thread by hand before trying again, never a blind resend.
+
+    The checks above this point read the draft the caller already holds, so
+    two overlapping requests for the same token both pass them; what actually
+    keeps them from both posting is `store.claim`, an atomic compare-and-swap
+    from a retryable status to `APPROVED` that at most one caller can win.
+    The loser gets this route's ordinary `409`, never reaching `poster`.
     """
-    draft = await _outreach_draft_for_token(token, store, usage, background)
+    draft = await _outreach_draft_for_token(token, store, usage)
 
     if draft.status not in RETRYABLE_STATUSES:
         raise HTTPException(409, detail=f"this draft is already {draft.status.value}")
-    if draft.subreddit.lower() not in outreach_allowed_subreddits():
+    if draft.subreddit not in outreach_allowed_subreddits():
         raise HTTPException(409, detail="this subreddit is not on this deployment's allowed list")
     if await run_in_threadpool(store.thread_posted, draft.thread_id):
         raise HTTPException(409, detail="a reply has already been posted in this thread")
@@ -1213,10 +1234,14 @@ async def send_outreach_reply(
     if not poster.enabled:
         raise HTTPException(503, detail="posting to Reddit is not configured")
 
-    await run_in_threadpool(
-        store.set_status, draft.id, DraftStatus.APPROVED, decided_at=now, edited=edited
-    )
-    background.add_task(usage.record, UsageEvent.OUTREACH_APPROVED)
+    claimed = await run_in_threadpool(store.claim, draft.id, decided_at=now, edited=edited)
+    if claimed is None:
+        raise HTTPException(409, detail="this draft is already being sent or was already decided")
+
+    # Recorded synchronously, not via BackgroundTasks: a failure below raises
+    # rather than returns, and FastAPI discards a request's background tasks
+    # entirely when the endpoint raises (see _outreach_draft_for_token).
+    await run_in_threadpool(usage.record, UsageEvent.OUTREACH_APPROVED)
 
     try:
         posted = await poster.comment(draft.thing_id, final_text)
@@ -1225,7 +1250,7 @@ async def send_outreach_reply(
             store.set_status, draft.id, DraftStatus.FAILED,
             consume_token=exc.maybe_posted, last_error=str(exc),
         )
-        background.add_task(usage.record, UsageEvent.OUTREACH_FAILED)
+        await run_in_threadpool(usage.record, UsageEvent.OUTREACH_FAILED)
         raise HTTPException(502, detail=str(exc)) from None
 
     await run_in_threadpool(
@@ -1244,9 +1269,18 @@ async def reject_outreach_reply(
     store: OutreachStore = Depends(get_outreach_store_provider),
     usage: UsageRecorder = Depends(get_usage),
 ) -> dict:
-    """Decline a queued reply. The owner's alone, the same two factors as sending."""
-    draft = await _outreach_draft_for_token(token, store, usage, background)
-    if draft.status not in RETRYABLE_STATUSES:
+    """Decline a queued reply. The owner's alone, the same two factors as sending.
+
+    Also accepted from `APPROVED`: a claimed draft whose send then hit
+    anything other than a clean `RedditUnavailable` (a client disconnect, a
+    cancelled request, a pod restart) never gets a further status update on
+    its own, and without this the owner would find both this route and
+    `/send` refusing forever with no way to close it out. `/send` itself still
+    only accepts `RETRYABLE_STATUSES`, so this never reopens a path to
+    resending — only to rejecting.
+    """
+    draft = await _outreach_draft_for_token(token, store, usage)
+    if draft.status not in REJECTABLE_STATUSES:
         raise HTTPException(409, detail=f"this draft is already {draft.status.value}")
     await run_in_threadpool(
         store.set_status, draft.id, DraftStatus.REJECTED,

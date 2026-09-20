@@ -471,6 +471,21 @@ link itself**, which travels by email and can be forwarded, leaked or guessed.
   read one draft — a Reddit thread, an excerpt, a proposed reply, nothing about
   any other user — and can never post it, reject it, or learn whether it was
   already used, without also holding the secret.
+- **The token sits in the URL, so Cloud Run's request logs carry it.** All
+  three routes name it in the path (`GET /api/outreach/approval/{token}`, and
+  the same path with `/send` or `/reject`), and Cloud Run records the full
+  request path for every call, as would any proxy in front of it. The worst
+  case of a leaked token, on its own, is exactly what "not an account" above
+  already grants: one draft's contents — the reply, the excerpt, the thread it
+  answers, what it links to — readable by repeating `GET` as many times as
+  wanted, until the token is used or the 72-hour expiry claims it; `GET`
+  itself changes nothing except on that expiry. It gets nothing else: `send`
+  and `reject` both still need `x-admin-secret`, checked the same way as every
+  other admin route, and that secret is already worth more than a token — it
+  is what gates `/api/elections/import`, which spends money, and every other
+  admin route in this file. Accepted rather than fixed: a bare token
+  discloses a drafted reply to a public Reddit thread, never a way to post,
+  reject, or spend anything.
 - **The token is single-use and short-lived.** Only its SHA-256 hash is stored
   (`app.outreach.hash_token`, `new_token`); the token itself is never written
   down, the same discipline the (now-removed) session tokens used. Sending,

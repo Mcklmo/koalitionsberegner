@@ -9,6 +9,7 @@ down for the elections.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -158,3 +159,56 @@ def test_count_posted_is_windowed_by_subreddit_and_time(db):
     assert store.count_posted("germany", since=now - 3600) == 0
     assert store.count_posted_total(since=now - 3600) == 1
     assert store.count_posted_total(since=now - (9 * 24 * 3600)) == 2
+
+
+def test_claim_moves_a_retryable_draft_to_approved(db):
+    store = open_store(db)
+    store.create("draft_1", make_draft(), token_hash="h", token_expires_at=1, emailed_at=1)
+
+    claimed = store.claim("draft_1", decided_at=42.0, edited=True)
+
+    assert claimed.status is DraftStatus.APPROVED
+    assert claimed.decided_at == 42.0
+    assert claimed.edited is True
+    assert store.get("draft_1").status is DraftStatus.APPROVED
+
+
+def test_claim_refuses_a_draft_that_is_not_retryable(db):
+    store = open_store(db)
+    store.create("draft_1", make_draft(), token_hash="h", token_expires_at=1, emailed_at=1)
+    store.set_status("draft_1", DraftStatus.POSTED, consume_token=True, posted_at=1.0)
+
+    assert store.claim("draft_1", decided_at=42.0) is None
+    assert store.get("draft_1").status is DraftStatus.POSTED, "claim changed nothing"
+
+
+def test_claim_refuses_an_unknown_draft(db):
+    store = open_store(db)
+    assert store.claim("nope", decided_at=1.0) is None
+
+
+def test_concurrent_claims_on_the_same_draft_let_exactly_one_through(db):
+    # Two overlapping /send requests for the same token both used to read the
+    # same PENDING status and both post; claim is the compare-and-swap that
+    # is meant to stop that, so this pins down that only one caller ever wins
+    # it even when several threads race the same row at once.
+    store = open_store(db)
+    store.create("draft_1", make_draft(), token_hash="h", token_expires_at=1, emailed_at=1)
+
+    results: list = []
+    results_lock = threading.Lock()
+
+    def attempt():
+        claimed = store.claim("draft_1", decided_at=time.time())
+        with results_lock:
+            results.append(claimed)
+
+    threads = [threading.Thread(target=attempt) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    successes = [r for r in results if r is not None]
+    assert len(successes) == 1, results
+    assert store.get("draft_1").status is DraftStatus.APPROVED

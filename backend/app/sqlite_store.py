@@ -23,7 +23,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .observability import io_span
-from .outreach import DraftStatus, NewDraft, OutreachDraft, thread_id as _draft_thread_id
+from .outreach import (
+    RETRYABLE_STATUSES,
+    DraftStatus,
+    NewDraft,
+    OutreachDraft,
+    thread_id as _draft_thread_id,
+)
 from .schema import Election
 from .store import (
     DEFAULT_STALE_AFTER_SECONDS,
@@ -643,6 +649,30 @@ class SqliteOutreachStore:
                     f"UPDATE outreach_drafts SET {assignment} WHERE id = ?",
                     (*columns.values(), draft_id),
                 )
+
+    def claim(
+        self, draft_id: str, *, decided_at: float, edited: bool = False
+    ) -> OutreachDraft | None:
+        with io_span(log, "sqlite", "outreach-claim", id=draft_id) as span:
+            with self._write() as conn:
+                # BEGIN IMMEDIATE (taken by ``self._write()``) holds sqlite's
+                # write lock for the whole read-then-write below, so no other
+                # claim on this row can interleave: exactly one caller ever
+                # sees a retryable status and moves it to APPROVED.
+                row = conn.execute(
+                    "SELECT status FROM outreach_drafts WHERE id = ?", (draft_id,)
+                ).fetchone()
+                retryable = {s.value for s in RETRYABLE_STATUSES}
+                if row is None or row["status"] not in retryable:
+                    span["claimed"] = False
+                    return None
+                conn.execute(
+                    "UPDATE outreach_drafts SET status = ?, decided_at = ?, edited = ?"
+                    " WHERE id = ?",
+                    (DraftStatus.APPROVED.value, decided_at, int(edited), draft_id),
+                )
+                span["claimed"] = True
+                return self._get(conn, draft_id)
 
     def delete(self, draft_id: str) -> None:
         with io_span(log, "sqlite", "outreach-delete", id=draft_id):

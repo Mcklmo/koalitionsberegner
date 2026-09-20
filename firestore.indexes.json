@@ -1,0 +1,22 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "outreach_drafts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "subreddit", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "posted_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "outreach_drafts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "posted_at", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

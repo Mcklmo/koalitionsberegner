@@ -209,13 +209,34 @@ they are labelled in the list, the preview and the calculator's footer.
 2. A Firestore database in **Native mode** — single-flight parsing relies on its
    transactions. The `elections`, `extraction_jobs`, `pages`, `usage_daily`
    and `usage_reports` collections are created on demand.
-3. A service account for the Cloud Run revision holding `roles/datastore.user`,
+3. Two composite indexes for `outreach_drafts`, before the first outreach send
+   on this project — without them `FirestoreOutreachStore.count_posted` and
+   `count_posted_total` 500 with `FAILED_PRECONDITION`, and the etiquette caps
+   in `doc/plans/04-reddit-outreach.md` never run:
+   ```sh
+   gcloud firestore indexes composite create --collection-group=outreach_drafts \
+     --field-config field-path=subreddit,order=ascending \
+     --field-config field-path=status,order=ascending \
+     --field-config field-path=posted_at,order=ascending
+
+   gcloud firestore indexes composite create --collection-group=outreach_drafts \
+     --field-config field-path=status,order=ascending \
+     --field-config field-path=posted_at,order=ascending
+   ```
+   Add `--database=NAME` to both if `FIRESTORE_DATABASE` is not `(default)`.
+   `thread_posted`'s query (`thread_id ==` and `status ==`, two equalities and
+   no range filter) needs no composite index — Firestore serves that from its
+   automatic single-field indexes, the one case exempt from this. The same two
+   indexes are defined in `firestore.indexes.json` at the repo root, for a
+   deploy that uses the Firebase CLI instead (`firebase deploy --only
+   firestore:indexes`).
+4. A service account for the Cloud Run revision holding `roles/datastore.user`,
    plus `roles/secretmanager.secretAccessor` once `LLM_MODE=live` or
    `ADMIN_SECRET` is mounted from Secret Manager.
-4. For live extraction: an Anthropic API key in Secret Manager, mounted as
+5. For live extraction: an Anthropic API key in Secret Manager, mounted as
    `ANTHROPIC_API_KEY` (`--set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest`).
    The agent runs `claude-opus-5` server-side, so the key never reaches the browser.
-5. `ADMIN_SECRET` in Secret Manager, mounted the same way. The boot refuses to
+6. `ADMIN_SECRET` in Secret Manager, mounted the same way. The boot refuses to
    start on Cloud Run without it — see [Modes](#modes).
 
 The root `Dockerfile` builds one image serving both the API and the page:

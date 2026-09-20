@@ -17,7 +17,7 @@ import time
 from google.cloud import firestore
 
 from .observability import io_span
-from .outreach import DraftStatus, NewDraft, OutreachDraft
+from .outreach import RETRYABLE_STATUSES, DraftStatus, NewDraft, OutreachDraft
 from .outreach import thread_id as _draft_thread_id
 from .schema import Election
 from .store import (
@@ -531,6 +531,32 @@ class FirestoreOutreachStore:
                 updates["token_hash"] = None
                 updates["token_expires_at"] = None
             self._draft_ref(draft_id).set(updates, merge=True)
+
+    def claim(
+        self, draft_id: str, *, decided_at: float, edited: bool = False
+    ) -> OutreachDraft | None:
+        draft_ref = self._draft_ref(draft_id)
+        retryable = {s.value for s in RETRYABLE_STATUSES}
+
+        @firestore.transactional
+        def _claim(transaction):
+            snapshot = draft_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            data = snapshot.to_dict()
+            if data.get("status") not in retryable:
+                return None
+            updates = {
+                "status": DraftStatus.APPROVED.value, "decided_at": decided_at, "edited": edited,
+            }
+            transaction.update(draft_ref, updates)
+            data.update(updates)
+            return _draft_from_doc(draft_id, data)
+
+        with io_span(log, "firestore", "outreach-claim", id=draft_id) as span:
+            claimed = _claim(self._db.transaction())
+            span["claimed"] = claimed is not None
+            return claimed
 
     def delete(self, draft_id: str) -> None:
         with io_span(log, "firestore", "outreach-delete", id=draft_id):
