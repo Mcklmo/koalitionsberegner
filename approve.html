@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="da">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Belt and braces: the Worker also sets X-Robots-Tag: noindex on this
+       page's response (worker/index.js), so this holds even if the page is
+       ever fetched some other way. An approval link must never be indexed or
+       unfurled. -->
+  <meta name="robots" content="noindex, nofollow">
+  <title>Koalitionsberegner — outreach</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #fff;
+      color: #111;
+      padding: 1.5rem;
+      max-width: 560px;
+      margin: 0 auto
+    }
+
+    @media(prefers-color-scheme:dark) {
+      body {
+        background: #1a1a1a;
+        color: #eee
+      }
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 500;
+      margin-bottom: 1rem
+    }
+
+    .field {
+      margin-bottom: 1rem
+    }
+
+    .field-label {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: #888;
+      margin-bottom: 4px
+    }
+
+    .field-value {
+      font-size: 14px;
+      white-space: pre-wrap;
+      word-break: break-word
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 8rem;
+      font: inherit;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: transparent;
+      color: inherit
+    }
+
+    input[type="password"] {
+      width: 100%;
+      font: inherit;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: transparent;
+      color: inherit
+    }
+
+    a {
+      color: inherit
+    }
+
+    button {
+      font: inherit;
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      margin-right: 8px;
+      margin-top: 4px
+    }
+
+    button.primary {
+      background: #111;
+      color: #fff
+    }
+
+    @media(prefers-color-scheme:dark) {
+      button.primary {
+        background: #eee;
+        color: #111
+      }
+    }
+
+    button.secondary {
+      background: transparent;
+      border: 1px solid #999
+    }
+
+    button:disabled {
+      opacity: .5;
+      cursor: default
+    }
+
+    .msg {
+      font-size: 13px;
+      margin-top: .75rem
+    }
+
+    .msg-error {
+      color: #c0392b
+    }
+
+    .msg-ok {
+      color: #2e7d32
+    }
+
+    .msg-info {
+      color: #666
+    }
+
+    [hidden] {
+      display: none !important
+    }
+  </style>
+</head>
+
+<body>
+  <h1 data-i18n="outreach.title">Godkend et Reddit-svar</h1>
+
+  <p class="msg msg-info" id="outreach-loading" data-i18n="outreach.loading">Henter…</p>
+  <p class="msg msg-error" id="outreach-not-found" data-i18n="outreach.notFound" hidden>
+    Dette link virker ikke længere. Det kan allerede være brugt, afvist eller udløbet.</p>
+
+  <form id="outreach-form" hidden>
+    <div class="field">
+      <div class="field-label" data-i18n="outreach.subredditLabel">Subreddit</div>
+      <div class="field-value" id="outreach-subreddit"></div>
+    </div>
+    <div class="field">
+      <div class="field-label" data-i18n="outreach.threadLabel">Tråd</div>
+      <div class="field-value"><a id="outreach-permalink" target="_blank" rel="noopener"></a></div>
+    </div>
+    <div class="field">
+      <div class="field-label" data-i18n="outreach.excerptLabel">Uddrag</div>
+      <div class="field-value" id="outreach-excerpt"></div>
+    </div>
+    <div class="field">
+      <div class="field-label" data-i18n="outreach.electionLabel">Om</div>
+      <div class="field-value"><a id="outreach-election" target="_blank" rel="noopener"></a></div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="outreach-reply" data-i18n="outreach.replyLabel">
+        Foreslået svar (du kan redigere det før afsendelse)</label>
+      <textarea id="outreach-reply"></textarea>
+    </div>
+    <div class="field">
+      <label class="field-label" for="outreach-secret" data-i18n="admin.label">Administratorens nøgle</label>
+      <input id="outreach-secret" type="password" autocomplete="current-password">
+    </div>
+    <button class="primary" id="outreach-send" type="button" data-i18n="outreach.send">Send svaret</button>
+    <button class="secondary" id="outreach-reject" type="button" data-i18n="outreach.reject">Afvis</button>
+    <p class="msg msg-info" data-i18n="outreach.onceNote">Dette link virker én gang.</p>
+    <p class="msg" id="outreach-message"></p>
+  </form>
+
+  <script type="module" src="/js/approve.js"></script>
+</body>
+
+</html>

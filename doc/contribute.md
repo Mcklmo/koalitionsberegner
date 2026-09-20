@@ -209,13 +209,34 @@ they are labelled in the list, the preview and the calculator's footer.
 2. A Firestore database in **Native mode** — single-flight parsing relies on its
    transactions. The `elections`, `extraction_jobs`, `pages`, `usage_daily`
    and `usage_reports` collections are created on demand.
-3. A service account for the Cloud Run revision holding `roles/datastore.user`,
+3. Two composite indexes for `outreach_drafts`, before the first outreach send
+   on this project — without them `FirestoreOutreachStore.count_posted` and
+   `count_posted_total` 500 with `FAILED_PRECONDITION`, and the etiquette caps
+   in `doc/plans/04-reddit-outreach.md` never run:
+   ```sh
+   gcloud firestore indexes composite create --collection-group=outreach_drafts \
+     --field-config field-path=subreddit,order=ascending \
+     --field-config field-path=status,order=ascending \
+     --field-config field-path=posted_at,order=ascending
+
+   gcloud firestore indexes composite create --collection-group=outreach_drafts \
+     --field-config field-path=status,order=ascending \
+     --field-config field-path=posted_at,order=ascending
+   ```
+   Add `--database=NAME` to both if `FIRESTORE_DATABASE` is not `(default)`.
+   `thread_posted`'s query (`thread_id ==` and `status ==`, two equalities and
+   no range filter) needs no composite index — Firestore serves that from its
+   automatic single-field indexes, the one case exempt from this. The same two
+   indexes are defined in `firestore.indexes.json` at the repo root, for a
+   deploy that uses the Firebase CLI instead (`firebase deploy --only
+   firestore:indexes`).
+4. A service account for the Cloud Run revision holding `roles/datastore.user`,
    plus `roles/secretmanager.secretAccessor` once `LLM_MODE=live` or
    `ADMIN_SECRET` is mounted from Secret Manager.
-4. For live extraction: an Anthropic API key in Secret Manager, mounted as
+5. For live extraction: an Anthropic API key in Secret Manager, mounted as
    `ANTHROPIC_API_KEY` (`--set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest`).
    The agent runs `claude-opus-5` server-side, so the key never reaches the browser.
-5. `ADMIN_SECRET` in Secret Manager, mounted the same way. The boot refuses to
+6. `ADMIN_SECRET` in Secret Manager, mounted the same way. The boot refuses to
    start on Cloud Run without it — see [Modes](#modes).
 
 The root `Dockerfile` builds one image serving both the API and the page:
@@ -283,7 +304,7 @@ variables from `--set-env-vars` and Secret Manager.
 | `ORIGIN_SECRET` | no | — | When set (at least 32 characters), only requests carrying it in `X-Origin-Secret` are answered, `/healthz` aside. Set it when a proxy such as Cloudflare fronts the app, so the `run.app` address stops answering on its own. |
 | `FRONTEND_DIR` | no | repo root | Directory holding `index.html`; served at `/` when present. |
 | `ADMIN_SECRET` | required on Cloud Run | — | At least 32 characters, same rule as `ORIGIN_SECRET`. Importing needs `x-admin-secret` to match this value; every other caller gets `403`. With none set, every caller is the owner — right for a local run, refused at boot on Cloud Run. |
-| `PUBLIC_BASE_URL` | no | — | Where this site is reachable, as an absolute URL, no trailing slash. Not read anywhere today; kept for the absolute link [04-reddit-outreach.md](plans/04-reddit-outreach.md)'s approval email needs. |
+| `PUBLIC_BASE_URL` | for the outreach approval email | — | Where this site is reachable, as an absolute URL, no trailing slash. Used to build the `/approve/{token}` link a queued draft is emailed with ([04-reddit-outreach.md](plans/04-reddit-outreach.md)); without it the email carries a relative link instead. |
 | `GITHUB_ISSUES_TOKEN` | for election requests | — | Fine-grained PAT with **Issues: write** on `GITHUB_ISSUES_REPO` and nothing else. Unset means the page is told not to offer requests. Not named `GITHUB_TOKEN` on purpose: GitHub Actions and several agent runtimes export that name, and a token that happens to be in the environment is not a decision to open issues with it. |
 | `GITHUB_ISSUES_REPO` | with `GITHUB_ISSUES_TOKEN` | — | Repository the requests are filed on, as `owner/name`. Set without a token, or in any other shape, it is a startup error rather than a guess. |
 | `SMTP_HOST` | for emailed usage reports | — | Mail server the reports are submitted to, e.g. `smtp.gmail.com`. Set together with the three below, or not at all; a partial set is a startup error. |
@@ -292,6 +313,10 @@ variables from `--set-env-vars` and Secret Manager.
 | `REPORT_EMAIL_TO` | with `SMTP_HOST` | — | Comma-separated addresses the reports go to. |
 | `REPORT_EMAIL_FROM` | no | `SMTP_USERNAME` | The sender address, where the server allows a different one. |
 | `USAGE_REPORT_SECRET` | for scheduled usage reports | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret`. If it is unset, `POST /api/internal/usage-reports` does not exist. |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USERNAME` / `REDDIT_PASSWORD` / `REDDIT_USER_AGENT` | for posting approved outreach replies | — | A script-app OAuth login, all five or none ([04-reddit-outreach.md](plans/04-reddit-outreach.md)). Missing any one leaves the approval queue and email working; only `POST /api/outreach/approval/{token}/send` answers `503`. Never logged, never in a `repr`. |
+| `OUTREACH_ALLOWED_SUBREDDITS` | for posting | — (nothing is allowed) | Comma-separated subreddit names this deployment may post to. Its own list, not the scanner's `OUTREACH_SUBREDDITS`. |
+| `OUTREACH_SUBREDDIT_WEEKLY_CAP` | no | `2` | Posted replies per subreddit per rolling seven days, enforced server-side regardless of what the scanner queued. |
+| `OUTREACH_DAILY_CAP` | no | `3` | Posted replies in total per rolling 24 hours. |
 | `LOG_LEVEL` | no | `INFO` | Level for the `app.*` loggers. Every call out — page fetch, extraction agent, Firestore — logs a `start` line and a matching `ok`/`failed` line with a duration; `WARNING` keeps only the failures. |
 | `ENV_FILE` | no | nearest `.env` walking up from the working directory | A different file to read variables from. Empty loads none. A path that does not exist is a startup error. |
 | `PORT` | no | `8080` | Set by Cloud Run. |

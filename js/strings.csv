@@ -102,4 +102,18 @@ privacy.requests,"Beder du om et valg, oprettes det som et offentligt issue på 
 privacy.imports,"Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig.","When an election is imported, public results pages are sent to Anthropic to read the numbers. Those pages contain no information about you."
 privacy.transfers,"Tjenestens data opbevares hos Google Cloud i Finland. Google og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.","The service's data is stored with Google Cloud in Finland. Google and Cloudflare may also process personal data in the United States under the EU-U.S. Data Privacy Framework or the EU's standard contractual clauses. GitHub and Anthropic receive no information about you."
 privacy.rights,"Du har ret til indsigt, berigtigelse, sletning, begrænsning, dataportabilitet og til at gøre indsigelse. Vi træffer ingen automatiske afgørelser om dig. Du kan klage til Datatilsynet (datatilsynet.dk).","You have the right to access, rectification, erasure, restriction, data portability and to object. We make no automated decisions about you. You can complain to the Danish Data Protection Agency, Datatilsynet (datatilsynet.dk)."
+privacy.outreach,"Vi kan svare på offentlige Reddit-indlæg om et valg her. Kun linket, overskriften og et uddrag gemmes, og hvert svar er læst og godkendt af os, før det sendes. Der indsamles ingen Reddit-brugernavne.","We may reply to public Reddit posts about an election on this site. Only the link, the title and an excerpt are stored, and every reply is read and approved by us before it is sent. No Reddit usernames are collected."
 privacy.updated,Senest opdateret 19. september 2026,Last updated 19 September 2026
+outreach.title,Godkend et Reddit-svar,Approve a Reddit reply
+outreach.loading,Henter…,Loading…
+outreach.notFound,"Dette link virker ikke længere. Det kan allerede være brugt, afvist eller udløbet.","This link no longer works. It may already have been used, rejected or have expired."
+outreach.subredditLabel,Subreddit,Subreddit
+outreach.threadLabel,Tråd,Thread
+outreach.excerptLabel,Uddrag,Excerpt
+outreach.electionLabel,Om,About
+outreach.replyLabel,Foreslået svar (du kan redigere det før afsendelse),Proposed reply (you may edit it before sending)
+outreach.send,Send svaret,Send the reply
+outreach.reject,Afvis,Reject
+outreach.onceNote,Dette link virker én gang.,This link works once.
+outreach.sent,Sendt. Svaret er nu offentliggjort.,Sent. The reply has been posted.
+outreach.rejected,Afvist. Intet blev sendt.,Rejected. Nothing was sent.

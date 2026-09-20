@@ -42,7 +42,7 @@ def test_nothing_but_the_page_is_published():
         path.name for path in ROOT.iterdir()
         if not any(fnmatch(path.name, pattern) for pattern in ignored)
     }
-    assert published <= {"index.html", "js", "_headers"}, (
-        f"{sorted(published - {'index.html', 'js', '_headers'})} would become public URLs — "
-        "add them to .assetsignore"
+    assert published <= {"index.html", "js", "_headers", "approve.html"}, (
+        f"{sorted(published - {'index.html', 'js', '_headers', 'approve.html'})} would become "
+        "public URLs — add them to .assetsignore"
     )

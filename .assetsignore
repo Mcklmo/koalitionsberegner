@@ -16,6 +16,7 @@
 Dockerfile
 README.md
 wrangler.jsonc
+firestore.indexes.json
 backend
 worker
 data

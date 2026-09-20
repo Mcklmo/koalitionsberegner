@@ -23,6 +23,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .observability import io_span
+from .outreach import (
+    RETRYABLE_STATUSES,
+    DraftStatus,
+    NewDraft,
+    OutreachDraft,
+    thread_id as _draft_thread_id,
+)
 from .schema import Election
 from .store import (
     DEFAULT_STALE_AFTER_SECONDS,
@@ -66,6 +73,33 @@ CREATE TABLE IF NOT EXISTS import_results (
     request_key   TEXT PRIMARY KEY,
     election_hash TEXT NOT NULL,
     linked_at     REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS outreach_drafts (
+    id                TEXT PRIMARY KEY,
+    thing_id          TEXT NOT NULL UNIQUE,
+    thread_id         TEXT NOT NULL,
+    source            TEXT NOT NULL,
+    subreddit         TEXT NOT NULL,
+    kind              TEXT NOT NULL,
+    permalink         TEXT NOT NULL,
+    title             TEXT NOT NULL,
+    excerpt           TEXT NOT NULL,
+    election_hash     TEXT NOT NULL,
+    election_title    TEXT NOT NULL,
+    link              TEXT NOT NULL,
+    reply_text        TEXT NOT NULL,
+    verification      TEXT NOT NULL,
+    classifier_reason TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    status            TEXT NOT NULL,
+    token_hash        TEXT,
+    token_expires_at  REAL,
+    emailed_at        REAL,
+    decided_at        REAL,
+    posted_at         REAL,
+    posted_url        TEXT,
+    last_error        TEXT,
+    edited            INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -467,3 +501,208 @@ class SqliteElectionStore:
                      row["started_at"] if row else self._clock(),
                      row["attempt"] if row else 1, error[:1000]),
                 )
+
+
+def _draft_from_row(row: sqlite3.Row) -> OutreachDraft:
+    return OutreachDraft(
+        id=row["id"],
+        source=row["source"],
+        subreddit=row["subreddit"],
+        thing_id=row["thing_id"],
+        thread_id=row["thread_id"],
+        kind=row["kind"],
+        permalink=row["permalink"],
+        title=row["title"],
+        excerpt=row["excerpt"],
+        election_hash=row["election_hash"],
+        election_title=row["election_title"],
+        link=row["link"],
+        reply_text=row["reply_text"],
+        verification=json.loads(row["verification"]),
+        classifier_reason=row["classifier_reason"],
+        created_at=row["created_at"],
+        status=DraftStatus(row["status"]),
+        token_hash=row["token_hash"],
+        token_expires_at=row["token_expires_at"],
+        emailed_at=row["emailed_at"],
+        decided_at=row["decided_at"],
+        posted_at=row["posted_at"],
+        posted_url=row["posted_url"],
+        last_error=row["last_error"],
+        edited=bool(row["edited"]),
+    )
+
+
+class SqliteOutreachStore:
+    """The outreach approval queue, in the same kind of file as the elections.
+
+    A separate connection from :class:`SqliteElectionStore` even when it is
+    the same file — SQLite allows several connections to one database, and the
+    two stores have no operation that must be atomic across both of them.
+    """
+
+    def __init__(self, path: str | Path, *, clock=time.time):
+        self._path = str(path)
+        if self._path != ":memory:":
+            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        self._clock = clock
+        self._local = threading.local()
+        with io_span(log, "sqlite", "migrate-outreach", path=self._path):
+            self._connect().executescript(SCHEMA)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self._path, isolation_level=None, timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._local.conn = conn
+        return conn
+
+    @contextmanager
+    def _write(self):
+        conn = self._connect()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
+
+    def close(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
+    def create(
+        self, draft_id: str, draft: NewDraft, *, token_hash: str, token_expires_at: float,
+        emailed_at: float,
+    ) -> OutreachDraft | None:
+        with io_span(log, "sqlite", "outreach-create", thing_id=draft.thing_id) as span:
+            with self._write() as conn:
+                existing = conn.execute(
+                    "SELECT 1 FROM outreach_drafts WHERE thing_id = ?", (draft.thing_id,)
+                ).fetchone()
+                if existing:
+                    span["duplicate"] = True
+                    return None
+                conn.execute(
+                    "INSERT INTO outreach_drafts (id, thing_id, thread_id, source, subreddit,"
+                    " kind, permalink, title, excerpt, election_hash, election_title, link,"
+                    " reply_text, verification, classifier_reason, created_at, status,"
+                    " token_hash, token_expires_at, emailed_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        draft_id, draft.thing_id, _draft_thread_id(draft.permalink), draft.source,
+                        draft.subreddit, draft.kind, draft.permalink, draft.title, draft.excerpt,
+                        draft.election_hash, draft.election_title, draft.link, draft.reply_text,
+                        json.dumps(draft.verification), draft.classifier_reason, draft.created_at,
+                        DraftStatus.PENDING.value, token_hash, token_expires_at, emailed_at,
+                    ),
+                )
+                span["duplicate"] = False
+                return self._get(conn, draft_id)
+
+    def _get(self, conn: sqlite3.Connection, draft_id: str) -> OutreachDraft | None:
+        row = conn.execute("SELECT * FROM outreach_drafts WHERE id = ?", (draft_id,)).fetchone()
+        return _draft_from_row(row) if row else None
+
+    def get(self, draft_id: str) -> OutreachDraft | None:
+        with io_span(log, "sqlite", "outreach-get", id=draft_id) as span:
+            found = self._get(self._connect(), draft_id)
+            span["found"] = found is not None
+            return found
+
+    def get_by_token_hash(self, token_hash: str) -> OutreachDraft | None:
+        with io_span(log, "sqlite", "outreach-get-by-token") as span:
+            row = self._connect().execute(
+                "SELECT * FROM outreach_drafts WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
+            span["found"] = row is not None
+            return _draft_from_row(row) if row else None
+
+    def list_drafts(self) -> list[OutreachDraft]:
+        with io_span(log, "sqlite", "outreach-list") as span:
+            rows = self._connect().execute(
+                "SELECT * FROM outreach_drafts ORDER BY created_at"
+            ).fetchall()
+            span["count"] = len(rows)
+            return [_draft_from_row(row) for row in rows]
+
+    def set_status(
+        self, draft_id: str, status: DraftStatus, *, consume_token: bool = False, **fields
+    ) -> None:
+        with io_span(log, "sqlite", "outreach-set-status", id=draft_id, status=status.value):
+            columns = dict(fields)
+            columns["status"] = status.value
+            if consume_token:
+                columns["token_hash"] = None
+                columns["token_expires_at"] = None
+            assignment = ", ".join(f"{name} = ?" for name in columns)
+            with self._write() as conn:
+                conn.execute(
+                    f"UPDATE outreach_drafts SET {assignment} WHERE id = ?",
+                    (*columns.values(), draft_id),
+                )
+
+    def claim(
+        self, draft_id: str, *, decided_at: float, edited: bool = False
+    ) -> OutreachDraft | None:
+        with io_span(log, "sqlite", "outreach-claim", id=draft_id) as span:
+            with self._write() as conn:
+                # BEGIN IMMEDIATE (taken by ``self._write()``) holds sqlite's
+                # write lock for the whole read-then-write below, so no other
+                # claim on this row can interleave: exactly one caller ever
+                # sees a retryable status and moves it to APPROVED.
+                row = conn.execute(
+                    "SELECT status FROM outreach_drafts WHERE id = ?", (draft_id,)
+                ).fetchone()
+                retryable = {s.value for s in RETRYABLE_STATUSES}
+                if row is None or row["status"] not in retryable:
+                    span["claimed"] = False
+                    return None
+                conn.execute(
+                    "UPDATE outreach_drafts SET status = ?, decided_at = ?, edited = ?"
+                    " WHERE id = ?",
+                    (DraftStatus.APPROVED.value, decided_at, int(edited), draft_id),
+                )
+                span["claimed"] = True
+                return self._get(conn, draft_id)
+
+    def delete(self, draft_id: str) -> None:
+        with io_span(log, "sqlite", "outreach-delete", id=draft_id):
+            with self._write() as conn:
+                conn.execute("DELETE FROM outreach_drafts WHERE id = ?", (draft_id,))
+
+    def thread_posted(self, thread_id: str) -> bool:
+        with io_span(log, "sqlite", "outreach-thread-posted") as span:
+            row = self._connect().execute(
+                "SELECT 1 FROM outreach_drafts WHERE thread_id = ? AND status = ? LIMIT 1",
+                (thread_id, DraftStatus.POSTED.value),
+            ).fetchone()
+            span["posted"] = row is not None
+            return row is not None
+
+    def count_posted(self, subreddit: str, since: float) -> int:
+        with io_span(log, "sqlite", "outreach-count-posted", subreddit=subreddit) as span:
+            row = self._connect().execute(
+                "SELECT COUNT(*) AS n FROM outreach_drafts"
+                " WHERE subreddit = ? AND status = ? AND posted_at >= ?",
+                (subreddit, DraftStatus.POSTED.value, since),
+            ).fetchone()
+            span["count"] = row["n"]
+            return int(row["n"])
+
+    def count_posted_total(self, since: float) -> int:
+        with io_span(log, "sqlite", "outreach-count-posted-total") as span:
+            row = self._connect().execute(
+                "SELECT COUNT(*) AS n FROM outreach_drafts WHERE status = ? AND posted_at >= ?",
+                (DraftStatus.POSTED.value, since),
+            ).fetchone()
+            span["count"] = row["n"]
+            return int(row["n"])

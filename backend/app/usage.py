@@ -51,6 +51,12 @@ class UsageEvent(str, Enum):
     REQUEST_FILED = "request_filed"
     REQUEST_DUPLICATE = "request_duplicate"
     REQUEST_ALREADY_IMPORTED = "request_already_imported"
+    OUTREACH_QUEUED = "outreach_queued"
+    OUTREACH_APPROVED = "outreach_approved"
+    OUTREACH_REJECTED = "outreach_rejected"
+    OUTREACH_POSTED = "outreach_posted"
+    OUTREACH_FAILED = "outreach_failed"
+    OUTREACH_EXPIRED = "outreach_expired"
 
 
 def language_bucket(accept_language: str | None) -> str:
@@ -247,6 +253,14 @@ SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("Filed as a new issue", E.REQUEST_FILED.value),
         ("Already requested", E.REQUEST_DUPLICATE.value),
         ("Already imported", E.REQUEST_ALREADY_IMPORTED.value),
+    )),
+    ("Outreach", (
+        ("Drafts queued", E.OUTREACH_QUEUED.value),
+        ("Approved and sent", E.OUTREACH_APPROVED.value),
+        ("Rejected", E.OUTREACH_REJECTED.value),
+        ("Posted", E.OUTREACH_POSTED.value),
+        ("Failed to post", E.OUTREACH_FAILED.value),
+        ("Expired unapproved", E.OUTREACH_EXPIRED.value),
     )),
 )
 
