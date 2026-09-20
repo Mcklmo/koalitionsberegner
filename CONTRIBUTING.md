@@ -49,9 +49,10 @@ allocation is exactly the kind of code that looks right and is off by one.
   Both suites run offline — nothing here needs a live LLM key or a real
   Wikipedia fetch to pass.
 - `js/strings.csv` and `index.html` change together: every `data-i18n`
-  attribute and every `t('key')` call needs a row in the sheet, in both
-  Danish and English (`test/i18n.test.mjs` checks this). Wording never lives
-  in a `.js` file directly.
+  attribute and every `t('key')` call needs a row in the sheet, with a text
+  in every language column — Danish, English and German
+  (`test/i18n.test.mjs` checks this). Wording never lives in a `.js` file
+  directly.
 - Untrusted text — anything that came from an imported page — reaches the
   DOM as text, never as markup. This is load-bearing; see the threat model.
 

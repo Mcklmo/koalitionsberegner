@@ -1,130 +1,130 @@
-key,da,en
-language.name,Dansk,English
-language.label,Sprog,Language
-picker.label,Valg,Election
-picker.forecast,{where} · prognose {label},{where} · forecast {label}
-picker.searchPlaceholder,"Søg efter land, region eller år","Search by country, region or year"
-picker.noMatches,Intet valg matcher.,No election matches.
-picker.askForIt,Ikke her endnu? Spørg efter det,Not here yet? Ask for it
-picker.importIt,Ikke her endnu? Importér det,Not here yet? Import it
-picker.askedInline,"Bedt om — se importpanelet nedenfor.","Asked for — see the import panel below."
-picker.olderPolls,"{count} {count, plural, one {ældre meningsmåling} other {ældre meningsmålinger}}","{count} {count, plural, one {older poll} other {older polls}}"
-names.label,Partinavne,Party names
-names.local,Originalsprog,Original language
-names.english,Engelsk,English
-reset,Ryd alle,Clear all
-share.button,Del,Share
-share.copied,Linket er kopieret,Link copied
-share.stale,"Tallene er ændret siden linket blev lavet. Dit valg af partier er bevaret.","The numbers have changed since this link was made. Your choice of parties is kept."
-share.unknown,"Linket kunne ikke findes. Her er standardvalget i stedet.","That link could not be found. Here is the default election instead."
-share.unavailable,Kunne ikke kopiere linket.,Couldn't copy the link.
-date,{day}. {monthName} {year},{day} {monthName} {year}
-month.1,januar,January
-month.2,februar,February
-month.3,marts,March
-month.4,april,April
-month.5,maj,May
-month.6,juni,June
-month.7,juli,July
-month.8,august,August
-month.9,september,September
-month.10,oktober,October
-month.11,november,November
-month.12,december,December
-calc.subtitle,Vælg partier og se om de tilsammen opnår flertal ({majority}+ ud af {total} mandater),Pick parties and see whether together they reach a majority ({majority}+ of {total} seats)
-calc.totalOf,af {total} mandater,of {total} seats
-calc.majorityNeeds,Flertal kræver {majority} mandater,A majority needs {majority} seats
-calc.forecastFrom,"Prognose fra {publisher}, {date}","Forecast by {publisher}, {date}"
-calc.finalResult,"Endelig resultat, {date}","Final result, {date}"
-calc.autoImported,Importeret automatisk fra {source}.,Imported automatically from {source}.
-calc.reportProblem,Rapportér et problem,Report a problem
-data.attribution,"Tal fra {source}. CC BY-SA, hvor kilden er Wikipedia.","Figures from {source}. CC BY-SA where the source is Wikipedia."
-calc.largeMajority,Stort flertal ✓,Large majority ✓
-calc.majority,Flertal ✓ (+{over}),Majority ✓ (+{over})
-calc.short,Mangler {missing},{missing} short
-seats,{count} mandater,"{count} {count, plural, one {seat} other {seats}}"
-seats.computed,mandater beregnet ud fra stemmeandele,seats calculated from vote shares
-import.summary,Importér et valg,Import an election
-import.year,Valgår,Election year
-import.nation,Land,Country
-import.nationPlaceholder,Danmark,Denmark
-import.subnation,Region (kun ved regionale valg),Region (regional elections only)
-import.subnationPlaceholder,fx Sachsen-Anhalt,e.g. Saxony-Anhalt
-import.hint,"Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt endnu, kan du vælge mellem de seneste meningsmålinger.","Typos are fine. We find the election and show which one we found — and where the numbers come from — before anything is saved. If the election hasn't been held yet, you can choose from the latest opinion polls."
-import.submit,Hent valgresultat,Get the results
-request.submit,Ønsk valget,Request the election
-import.unavailable,Her kan der hverken importeres eller ønskes valg lige nu.,Elections can't be imported or requested here right now.
-admin.label,Administratorens nøgle,Administrator's secret
-admin.save,Gem nøglen,Save the secret
-admin.forget,Glem nøglen,Forget the secret
-admin.saved,"Nøglen er gemt, indtil fanen lukkes. Formularen importerer nu.",The secret is kept until this tab closes. The form now imports.
-admin.forgotten,Nøglen er glemt. Formularen ønsker nu valg i stedet.,The secret is forgotten. The form now requests elections instead.
-admin.notSaved,Browseren vil ikke gemme nøglen. Tillad lagring for siden og prøv igen.,The browser won't keep the secret. Allow storage for this site and try again.
-admin.wrongSecret,Nøglen blev afvist og er glemt. Indtast den igen under #admin.,The secret was refused and has been forgotten. Enter it again under #admin.
-form.yearMissing,Angiv valgåret.,Enter the election year.
-form.yearInvalid,Året skal være et årstal mellem {min} og {max}.,The year must be between {min} and {max}.
-form.nationMissing,Angiv landet.,Enter the country.
-import.requestNote,"Mangler dit valg? Vi skriver det op som et ønske, og det bliver importeret senere. Det kræver ingen konto.","Missing an election? We note it down as a request, and it is imported later. No account needed."
-import.remaining,"{remaining} {remaining, plural, one {import} other {importer}} tilbage denne måned.","{remaining} {remaining, plural, one {import} other {imports}} left this month."
-import.alreadyImported,Dette valg er allerede importeret.,This election has already been imported.
-import.alreadyImportedPick,Dette valg er allerede importeret. Vælg det i listen ovenfor.,This election has already been imported. Pick it in the list above.
-import.failed,Kunne ikke finde valgresultatet: {error},Couldn't find the results: {error}
-import.pending,Behandling er stadig i gang. Prøv igen om lidt.,Still processing. Try again in a moment.
-busy.checking,Tjekker…,Checking…
-busy.fetching,Henter…,Fetching…
-busy.requesting,Sender ønske…,Sending request…
-error.unexpected,Uventet fejl: {message},Unexpected error: {message}
-archive.unreachable,Valgarkivet kan ikke nås — viser kun det indbyggede valg.,The election archive can't be reached — showing only the built-in election.
-request.refusal.unavailable,Ønskelisten er ikke tilgængelig lige nu. Prøv igen senere.,Requests aren't available right now. Please try again later.
-request.duplicate,Det valg er der allerede et ønske om (#{number}).,That election has already been requested (#{number}).
-request.filed,Ønsket er noteret som #{number}.,Your request is noted as #{number}.
-request.byHand,Valget bliver importeret manuelt.,The election will be imported by hand.
-request.link,Se ønsket,See the request
-request.failed,Kunne ikke sende ønsket: {message},Couldn't send the request: {message}
-preview.forecastFor,Prognose fra {label} for valget {identity},Forecast by {label} for the election {identity}
-preview.majorityAt,flertal ved {majority},majority at {majority}
-preview.sourceComputed,Stemmeandelene er læst fra {url}; mandaterne er beregnet ud fra dem og er et skøn.,The vote shares were read from {url}; the seats are calculated from them and are an estimate.
-preview.source,Tallene er læst fra {url},The numbers were read from {url}
-preview.check,"Kontrollér at det er det rigtige valg, og at tallene passer, før du gemmer.",Check that this is the right election and that the numbers are right before you save.
-preview.confirm,Gem valget,Save the election
-preview.backToList,Tilbage til listen,Back to the list
-discard,Forkast,Discard
-discarded,Forkastet. Intet blev gemt.,Discarded. Nothing was saved.
-choices.hint,"Vælg en meningsmåling. Du ser tallene, før noget gemmes.",Pick an opinion poll. You'll see the numbers before anything is saved.
-choices.title,{where} · valget afholdes senest {date},{where} · election due by {date}
-choices.message,Valget er ikke afholdt endnu. Vælg en meningsmåling at regne på.,This election hasn't been held yet. Pick an opinion poll to work with.
-choices.check,"Kontrollér tallene, før du gemmer prognosen.",Check the numbers before you save the forecast.
-saved.election,Valget er gemt.,The election is saved.
-saved.electionAlready,Valget var allerede gemt.,The election was already saved.
-saved.forecast,Prognosen er gemt.,The forecast is saved.
-saved.forecastAlready,Prognosen var allerede gemt.,The forecast was already saved.
-saved.failed,Kunne ikke gemme valget: {message},Couldn't save the election: {message}
-select.failed,Kunne ikke hente valget: {message},Couldn't load the election: {message}
-footer.support,Støt projektet,Support the project
-footer.sponsoredBy,Understøttet af {sponsor},Supported by {sponsor}
-privacy.link,Privatliv,Privacy
-privacy.summary,Privatliv og dine data,Privacy and your data
-privacy.controller,"Koalitionsberegner drives af Moritz Marcus Hönscheidt. Skriv hertil, hvis du vil se, rette eller slette dine oplysninger:","Koalitionsberegner is run by Moritz Marcus Hönscheidt. Write here to see, correct or delete your data:"
-privacy.logs,"For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f).","To deliver and protect the service, Cloudflare and Google Cloud process technical logs, including IP addresses. They are normally kept for 30 days (legitimate interest, Art. 6(1)(f))."
-privacy.statistics,"Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). Der bruges ingen cookies eller sporing i browseren til dette.","We count how often the page and its features are used, as numbers per day without any information about who (legitimate interest). No cookies or browser tracking are used for this."
-privacy.browser,Dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.,Your display choices (language and party names) are kept only in your own browser.
-privacy.shareLinks,"Et link indeholder kun valgets id og de valgte partier, intet om dig. At åbne det, eller at en platform laver en forhåndsvisning af det, henter siden og — ved en forhåndsvisning — billedet, ligesom ved ethvert andet sideopkald. Hvor mange forhåndsvisninger af delte links der bygges — højst én pr. link pr. time, inklusive crawlere — tælles som et tal pr. dag.","A link holds only the election's id and the chosen parties, nothing about you. Opening it, or a platform generating a preview of it, fetches the page and — for a preview — the image, the same way any other page load does. How many shared-link previews are built — at most one per link per hour, crawlers included — is counted as a number per day."
-privacy.requests,"Beder du om et valg, oprettes det som et offentligt issue på GitHub. Det nævner kun valget og ikke dig.","If you ask for an election, it is filed as a public issue on GitHub. It names only the election, not you."
-privacy.imports,"Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig.","When an election is imported, public results pages are sent to Anthropic to read the numbers. Those pages contain no information about you."
-privacy.transfers,"Tjenestens data opbevares hos Google Cloud i Finland. Google og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.","The service's data is stored with Google Cloud in Finland. Google and Cloudflare may also process personal data in the United States under the EU-U.S. Data Privacy Framework or the EU's standard contractual clauses. GitHub and Anthropic receive no information about you."
-privacy.rights,"Du har ret til indsigt, berigtigelse, sletning, begrænsning, dataportabilitet og til at gøre indsigelse. Vi træffer ingen automatiske afgørelser om dig. Du kan klage til Datatilsynet (datatilsynet.dk).","You have the right to access, rectification, erasure, restriction, data portability and to object. We make no automated decisions about you. You can complain to the Danish Data Protection Agency, Datatilsynet (datatilsynet.dk)."
-privacy.outreach,"Vi kan svare på offentlige Reddit-indlæg om et valg her. Kun linket, overskriften og et uddrag gemmes, og hvert svar er læst og godkendt af os, før det sendes. Der indsamles ingen Reddit-brugernavne.","We may reply to public Reddit posts about an election on this site. Only the link, the title and an excerpt are stored, and every reply is read and approved by us before it is sent. No Reddit usernames are collected."
-privacy.updated,Senest opdateret 19. september 2026,Last updated 19 September 2026
-outreach.title,Godkend et Reddit-svar,Approve a Reddit reply
-outreach.loading,Henter…,Loading…
-outreach.notFound,"Dette link virker ikke længere. Det kan allerede være brugt, afvist eller udløbet.","This link no longer works. It may already have been used, rejected or have expired."
-outreach.subredditLabel,Subreddit,Subreddit
-outreach.threadLabel,Tråd,Thread
-outreach.excerptLabel,Uddrag,Excerpt
-outreach.electionLabel,Om,About
-outreach.replyLabel,Foreslået svar (du kan redigere det før afsendelse),Proposed reply (you may edit it before sending)
-outreach.send,Send svaret,Send the reply
-outreach.reject,Afvis,Reject
-outreach.onceNote,Dette link virker én gang.,This link works once.
-outreach.sent,Sendt. Svaret er nu offentliggjort.,Sent. The reply has been posted.
-outreach.rejected,Afvist. Intet blev sendt.,Rejected. Nothing was sent.
+key,da,en,de
+language.name,Dansk,English,Deutsch
+language.label,Sprog,Language,Sprache
+picker.label,Valg,Election,Wahl
+picker.forecast,{where} · prognose {label},{where} · forecast {label},{where} · Prognose {label}
+picker.searchPlaceholder,"Søg efter land, region eller år","Search by country, region or year","Nach Land, Region oder Jahr suchen"
+picker.noMatches,Intet valg matcher.,No election matches.,Keine Wahl passt.
+picker.askForIt,Ikke her endnu? Spørg efter det,Not here yet? Ask for it,Noch nicht dabei? Danach fragen
+picker.importIt,Ikke her endnu? Importér det,Not here yet? Import it,Noch nicht dabei? Importieren
+picker.askedInline,"Bedt om — se importpanelet nedenfor.","Asked for — see the import panel below.",Angefragt — siehe das Importfeld unten.
+picker.olderPolls,"{count} {count, plural, one {ældre meningsmåling} other {ældre meningsmålinger}}","{count} {count, plural, one {older poll} other {older polls}}","{count} {count, plural, one {ältere Umfrage} other {ältere Umfragen}}"
+names.label,Partinavne,Party names,Parteinamen
+names.local,Originalsprog,Original language,Originalsprache
+names.english,Engelsk,English,Englisch
+reset,Ryd alle,Clear all,Alles zurücksetzen
+share.button,Del,Share,Teilen
+share.copied,Linket er kopieret,Link copied,Link kopiert
+share.stale,"Tallene er ændret siden linket blev lavet. Dit valg af partier er bevaret.","The numbers have changed since this link was made. Your choice of parties is kept.","Die Zahlen haben sich geändert, seit dieser Link erstellt wurde. Deine Auswahl der Parteien bleibt erhalten."
+share.unknown,"Linket kunne ikke findes. Her er standardvalget i stedet.","That link could not be found. Here is the default election instead.",Dieser Link wurde nicht gefunden. Hier ist stattdessen die Standardwahl.
+share.unavailable,Kunne ikke kopiere linket.,Couldn't copy the link.,Der Link konnte nicht kopiert werden.
+date,{day}. {monthName} {year},{day} {monthName} {year},{day}. {monthName} {year}
+month.1,januar,January,Januar
+month.2,februar,February,Februar
+month.3,marts,March,März
+month.4,april,April,April
+month.5,maj,May,Mai
+month.6,juni,June,Juni
+month.7,juli,July,Juli
+month.8,august,August,August
+month.9,september,September,September
+month.10,oktober,October,Oktober
+month.11,november,November,November
+month.12,december,December,Dezember
+calc.subtitle,Vælg partier og se om de tilsammen opnår flertal ({majority}+ ud af {total} mandater),Pick parties and see whether together they reach a majority ({majority}+ of {total} seats),"Parteien auswählen und sehen, ob sie zusammen eine Mehrheit erreichen ({majority}+ von {total} Sitzen)"
+calc.totalOf,af {total} mandater,of {total} seats,von {total} Sitzen
+calc.majorityNeeds,Flertal kræver {majority} mandater,A majority needs {majority} seats,Für eine Mehrheit sind {majority} Sitze nötig
+calc.forecastFrom,"Prognose fra {publisher}, {date}","Forecast by {publisher}, {date}","Prognose von {publisher}, {date}"
+calc.finalResult,"Endelig resultat, {date}","Final result, {date}","Endgültiges Ergebnis, {date}"
+calc.autoImported,Importeret automatisk fra {source}.,Imported automatically from {source}.,Automatisch aus {source} importiert.
+calc.reportProblem,Rapportér et problem,Report a problem,Ein Problem melden
+data.attribution,"Tal fra {source}. CC BY-SA, hvor kilden er Wikipedia.","Figures from {source}. CC BY-SA where the source is Wikipedia.","Zahlen aus {source}. CC BY-SA, wo die Quelle Wikipedia ist."
+calc.largeMajority,Stort flertal ✓,Large majority ✓,Große Mehrheit ✓
+calc.majority,Flertal ✓ (+{over}),Majority ✓ (+{over}),Mehrheit ✓ (+{over})
+calc.short,Mangler {missing},{missing} short,"{missing} {missing, plural, one {fehlt} other {fehlen}}"
+seats,{count} mandater,"{count} {count, plural, one {seat} other {seats}}","{count} {count, plural, one {Sitz} other {Sitze}}"
+seats.computed,mandater beregnet ud fra stemmeandele,seats calculated from vote shares,Sitze aus Stimmenanteilen berechnet
+import.summary,Importér et valg,Import an election,Eine Wahl importieren
+import.year,Valgår,Election year,Wahljahr
+import.nation,Land,Country,Land
+import.nationPlaceholder,Danmark,Denmark,Dänemark
+import.subnation,Region (kun ved regionale valg),Region (regional elections only),Region (nur bei Regionalwahlen)
+import.subnationPlaceholder,fx Sachsen-Anhalt,e.g. Saxony-Anhalt,z. B. Sachsen-Anhalt
+import.hint,"Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt endnu, kan du vælge mellem de seneste meningsmålinger.","Typos are fine. We find the election and show which one we found — and where the numbers come from — before anything is saved. If the election hasn't been held yet, you can choose from the latest opinion polls.","Tippfehler sind kein Problem. Wir finden die Wahl und zeigen, welche wir gefunden haben — und woher die Zahlen stammen —, bevor etwas gespeichert wird. Hat die Wahl noch nicht stattgefunden, kannst du aus den neuesten Umfragen wählen."
+import.submit,Hent valgresultat,Get the results,Wahlergebnis holen
+request.submit,Ønsk valget,Request the election,Wahl anfragen
+import.unavailable,Her kan der hverken importeres eller ønskes valg lige nu.,Elections can't be imported or requested here right now.,Hier können derzeit weder Wahlen importiert noch angefragt werden.
+admin.label,Administratorens nøgle,Administrator's secret,Administratorschlüssel
+admin.save,Gem nøglen,Save the secret,Schlüssel speichern
+admin.forget,Glem nøglen,Forget the secret,Schlüssel vergessen
+admin.saved,"Nøglen er gemt, indtil fanen lukkes. Formularen importerer nu.",The secret is kept until this tab closes. The form now imports.,"Der Schlüssel bleibt gespeichert, bis dieser Tab geschlossen wird. Das Formular importiert jetzt."
+admin.forgotten,Nøglen er glemt. Formularen ønsker nu valg i stedet.,The secret is forgotten. The form now requests elections instead.,Der Schlüssel ist vergessen. Das Formular fragt Wahlen jetzt stattdessen an.
+admin.notSaved,Browseren vil ikke gemme nøglen. Tillad lagring for siden og prøv igen.,The browser won't keep the secret. Allow storage for this site and try again.,Der Browser will den Schlüssel nicht speichern. Erlaube Speicherung für diese Seite und versuche es erneut.
+admin.wrongSecret,Nøglen blev afvist og er glemt. Indtast den igen under #admin.,The secret was refused and has been forgotten. Enter it again under #admin.,Der Schlüssel wurde abgelehnt und ist vergessen. Gib ihn unter #admin erneut ein.
+form.yearMissing,Angiv valgåret.,Enter the election year.,Gib das Wahljahr an.
+form.yearInvalid,Året skal være et årstal mellem {min} og {max}.,The year must be between {min} and {max}.,Das Jahr muss zwischen {min} und {max} liegen.
+form.nationMissing,Angiv landet.,Enter the country.,Gib das Land an.
+import.requestNote,"Mangler dit valg? Vi skriver det op som et ønske, og det bliver importeret senere. Det kræver ingen konto.","Missing an election? We note it down as a request, and it is imported later. No account needed.","Fehlt deine Wahl? Wir notieren sie als Wunsch, und sie wird später importiert. Ein Konto ist nicht nötig."
+import.remaining,"{remaining} {remaining, plural, one {import} other {importer}} tilbage denne måned.","{remaining} {remaining, plural, one {import} other {imports}} left this month.","{remaining} {remaining, plural, one {Import} other {Importe}} in diesem Monat übrig."
+import.alreadyImported,Dette valg er allerede importeret.,This election has already been imported.,Diese Wahl ist bereits importiert.
+import.alreadyImportedPick,Dette valg er allerede importeret. Vælg det i listen ovenfor.,This election has already been imported. Pick it in the list above.,Diese Wahl ist bereits importiert. Wähle sie in der Liste oben aus.
+import.failed,Kunne ikke finde valgresultatet: {error},Couldn't find the results: {error},Das Wahlergebnis konnte nicht gefunden werden: {error}
+import.pending,Behandling er stadig i gang. Prøv igen om lidt.,Still processing. Try again in a moment.,Die Verarbeitung läuft noch. Versuche es gleich noch einmal.
+busy.checking,Tjekker…,Checking…,Prüfe…
+busy.fetching,Henter…,Fetching…,Hole…
+busy.requesting,Sender ønske…,Sending request…,Anfrage wird gesendet…
+error.unexpected,Uventet fejl: {message},Unexpected error: {message},Unerwarteter Fehler: {message}
+archive.unreachable,Valgarkivet kan ikke nås — viser kun det indbyggede valg.,The election archive can't be reached — showing only the built-in election.,Das Wahlarchiv ist nicht erreichbar — es wird nur die eingebaute Wahl gezeigt.
+request.refusal.unavailable,Ønskelisten er ikke tilgængelig lige nu. Prøv igen senere.,Requests aren't available right now. Please try again later.,Anfragen sind derzeit nicht möglich. Versuche es später erneut.
+request.duplicate,Det valg er der allerede et ønske om (#{number}).,That election has already been requested (#{number}).,Diese Wahl wurde bereits angefragt (#{number}).
+request.filed,Ønsket er noteret som #{number}.,Your request is noted as #{number}.,Deine Anfrage ist als #{number} notiert.
+request.byHand,Valget bliver importeret manuelt.,The election will be imported by hand.,Die Wahl wird von Hand importiert.
+request.link,Se ønsket,See the request,Anfrage ansehen
+request.failed,Kunne ikke sende ønsket: {message},Couldn't send the request: {message},Die Anfrage konnte nicht gesendet werden: {message}
+preview.forecastFor,Prognose fra {label} for valget {identity},Forecast by {label} for the election {identity},Prognose von {label} für die Wahl {identity}
+preview.majorityAt,flertal ved {majority},majority at {majority},Mehrheit bei {majority}
+preview.sourceComputed,Stemmeandelene er læst fra {url}; mandaterne er beregnet ud fra dem og er et skøn.,The vote shares were read from {url}; the seats are calculated from them and are an estimate.,Die Stimmenanteile stammen aus {url}; die Sitze sind daraus berechnet und sind eine Schätzung.
+preview.source,Tallene er læst fra {url},The numbers were read from {url},Die Zahlen stammen aus {url}
+preview.check,"Kontrollér at det er det rigtige valg, og at tallene passer, før du gemmer.",Check that this is the right election and that the numbers are right before you save.,"Prüfe, ob es die richtige Wahl ist und die Zahlen stimmen, bevor du speicherst."
+preview.confirm,Gem valget,Save the election,Wahl speichern
+preview.backToList,Tilbage til listen,Back to the list,Zurück zur Liste
+discard,Forkast,Discard,Verwerfen
+discarded,Forkastet. Intet blev gemt.,Discarded. Nothing was saved.,Verworfen. Es wurde nichts gespeichert.
+choices.hint,"Vælg en meningsmåling. Du ser tallene, før noget gemmes.",Pick an opinion poll. You'll see the numbers before anything is saved.,"Wähle eine Umfrage. Du siehst die Zahlen, bevor etwas gespeichert wird."
+choices.title,{where} · valget afholdes senest {date},{where} · election due by {date},{where} · Wahl spätestens am {date}
+choices.message,Valget er ikke afholdt endnu. Vælg en meningsmåling at regne på.,This election hasn't been held yet. Pick an opinion poll to work with.,Diese Wahl hat noch nicht stattgefunden. Wähle eine Umfrage zum Rechnen.
+choices.check,"Kontrollér tallene, før du gemmer prognosen.",Check the numbers before you save the forecast.,"Prüfe die Zahlen, bevor du die Prognose speicherst."
+saved.election,Valget er gemt.,The election is saved.,Die Wahl ist gespeichert.
+saved.electionAlready,Valget var allerede gemt.,The election was already saved.,Die Wahl war bereits gespeichert.
+saved.forecast,Prognosen er gemt.,The forecast is saved.,Die Prognose ist gespeichert.
+saved.forecastAlready,Prognosen var allerede gemt.,The forecast was already saved.,Die Prognose war bereits gespeichert.
+saved.failed,Kunne ikke gemme valget: {message},Couldn't save the election: {message},Die Wahl konnte nicht gespeichert werden: {message}
+select.failed,Kunne ikke hente valget: {message},Couldn't load the election: {message},Die Wahl konnte nicht geladen werden: {message}
+footer.support,Støt projektet,Support the project,Das Projekt unterstützen
+footer.sponsoredBy,Understøttet af {sponsor},Supported by {sponsor},Unterstützt von {sponsor}
+privacy.link,Privatliv,Privacy,Datenschutz
+privacy.summary,Privatliv og dine data,Privacy and your data,Datenschutz und deine Daten
+privacy.controller,"Koalitionsberegner drives af Moritz Marcus Hönscheidt. Skriv hertil, hvis du vil se, rette eller slette dine oplysninger:","Koalitionsberegner is run by Moritz Marcus Hönscheidt. Write here to see, correct or delete your data:","Koalitionsberegner wird von Moritz Marcus Hönscheidt betrieben. Schreib hierhin, wenn du deine Daten einsehen, berichtigen oder löschen möchtest:"
+privacy.logs,"For at levere og beskytte tjenesten behandler Cloudflare og Google Cloud tekniske logs, herunder IP-adresser. De opbevares normalt i 30 dage (legitim interesse, art. 6, stk. 1, litra f).","To deliver and protect the service, Cloudflare and Google Cloud process technical logs, including IP addresses. They are normally kept for 30 days (legitimate interest, Art. 6(1)(f)).","Um den Dienst bereitzustellen und zu schützen, verarbeiten Cloudflare und Google Cloud technische Logs, einschließlich IP-Adressen. Sie werden in der Regel 30 Tage aufbewahrt (berechtigtes Interesse, Art. 6 Abs. 1 lit. f DSGVO)."
+privacy.statistics,"Vi tæller, hvor ofte siden og dens funktioner bruges, som tal pr. dag uden oplysninger om hvem (legitim interesse). Der bruges ingen cookies eller sporing i browseren til dette.","We count how often the page and its features are used, as numbers per day without any information about who (legitimate interest). No cookies or browser tracking are used for this.","Wir zählen, wie oft die Seite und ihre Funktionen genutzt werden, als Zahlen pro Tag ohne Angaben dazu, wer das tut (berechtigtes Interesse). Dafür werden keine Cookies und kein Tracking im Browser eingesetzt."
+privacy.browser,Dine visningsvalg (sprog og partinavne) gemmes kun i din egen browser.,Your display choices (language and party names) are kept only in your own browser.,Deine Anzeigeeinstellungen (Sprache und Parteinamen) werden nur in deinem eigenen Browser gespeichert.
+privacy.shareLinks,"Et link indeholder kun valgets id og de valgte partier, intet om dig. At åbne det, eller at en platform laver en forhåndsvisning af det, henter siden og — ved en forhåndsvisning — billedet, ligesom ved ethvert andet sideopkald. Hvor mange forhåndsvisninger af delte links der bygges — højst én pr. link pr. time, inklusive crawlere — tælles som et tal pr. dag.","A link holds only the election's id and the chosen parties, nothing about you. Opening it, or a platform generating a preview of it, fetches the page and — for a preview — the image, the same way any other page load does. How many shared-link previews are built — at most one per link per hour, crawlers included — is counted as a number per day.","Ein Link enthält nur die ID der Wahl und die ausgewählten Parteien, nichts über dich. Ihn zu öffnen — oder dass eine Plattform eine Vorschau davon erzeugt — lädt die Seite und, bei einer Vorschau, das Bild, genau wie jeder andere Seitenaufruf. Wie viele Vorschauen geteilter Links erzeugt werden — höchstens eine pro Link und Stunde, Crawler eingeschlossen —, wird als Zahl pro Tag gezählt."
+privacy.requests,"Beder du om et valg, oprettes det som et offentligt issue på GitHub. Det nævner kun valget og ikke dig.","If you ask for an election, it is filed as a public issue on GitHub. It names only the election, not you.","Fragst du nach einer Wahl, wird sie als öffentliches Issue auf GitHub angelegt. Es nennt nur die Wahl und nicht dich."
+privacy.imports,"Når et valg importeres, sendes offentlige resultatsider til Anthropic, som aflæser tallene. Siderne indeholder ingen oplysninger om dig.","When an election is imported, public results pages are sent to Anthropic to read the numbers. Those pages contain no information about you.","Wird eine Wahl importiert, werden öffentliche Ergebnisseiten an Anthropic gesendet, das die Zahlen ausliest. Diese Seiten enthalten keine Angaben über dich."
+privacy.transfers,"Tjenestens data opbevares hos Google Cloud i Finland. Google og Cloudflare kan også behandle personoplysninger i USA under EU-U.S. Data Privacy Framework eller EU's standardkontraktbestemmelser. GitHub og Anthropic får ingen oplysninger om dig.","The service's data is stored with Google Cloud in Finland. Google and Cloudflare may also process personal data in the United States under the EU-U.S. Data Privacy Framework or the EU's standard contractual clauses. GitHub and Anthropic receive no information about you.","Die Daten des Dienstes werden bei Google Cloud in Finnland gespeichert. Google und Cloudflare können personenbezogene Daten auch in den USA verarbeiten, im Rahmen des EU-U.S. Data Privacy Framework oder der Standardvertragsklauseln der EU. GitHub und Anthropic erhalten keine Angaben über dich."
+privacy.rights,"Du har ret til indsigt, berigtigelse, sletning, begrænsning, dataportabilitet og til at gøre indsigelse. Vi træffer ingen automatiske afgørelser om dig. Du kan klage til Datatilsynet (datatilsynet.dk).","You have the right to access, rectification, erasure, restriction, data portability and to object. We make no automated decisions about you. You can complain to the Danish Data Protection Agency, Datatilsynet (datatilsynet.dk).","Du hast das Recht auf Auskunft, Berichtigung, Löschung, Einschränkung, Datenübertragbarkeit und Widerspruch. Wir treffen keine automatisierten Entscheidungen über dich. Du kannst dich bei der dänischen Datenschutzbehörde Datatilsynet (datatilsynet.dk) beschweren."
+privacy.outreach,"Vi kan svare på offentlige Reddit-indlæg om et valg her. Kun linket, overskriften og et uddrag gemmes, og hvert svar er læst og godkendt af os, før det sendes. Der indsamles ingen Reddit-brugernavne.","We may reply to public Reddit posts about an election on this site. Only the link, the title and an excerpt are stored, and every reply is read and approved by us before it is sent. No Reddit usernames are collected.","Wir können auf öffentliche Reddit-Beiträge über eine Wahl hier antworten. Gespeichert werden nur der Link, der Titel und ein Auszug, und jede Antwort wird von uns gelesen und freigegeben, bevor sie gesendet wird. Reddit-Benutzernamen werden nicht erfasst."
+privacy.updated,Senest opdateret 19. september 2026,Last updated 19 September 2026,Zuletzt aktualisiert am 19. September 2026
+outreach.title,Godkend et Reddit-svar,Approve a Reddit reply,Eine Reddit-Antwort freigeben
+outreach.loading,Henter…,Loading…,Lädt…
+outreach.notFound,"Dette link virker ikke længere. Det kan allerede være brugt, afvist eller udløbet.","This link no longer works. It may already have been used, rejected or have expired.","Dieser Link funktioniert nicht mehr. Er wurde vielleicht schon verwendet, abgelehnt oder ist abgelaufen."
+outreach.subredditLabel,Subreddit,Subreddit,Subreddit
+outreach.threadLabel,Tråd,Thread,Thread
+outreach.excerptLabel,Uddrag,Excerpt,Auszug
+outreach.electionLabel,Om,About,Über
+outreach.replyLabel,Foreslået svar (du kan redigere det før afsendelse),Proposed reply (you may edit it before sending),Vorgeschlagene Antwort (du kannst sie vor dem Senden bearbeiten)
+outreach.send,Send svaret,Send the reply,Antwort senden
+outreach.reject,Afvis,Reject,Ablehnen
+outreach.onceNote,Dette link virker én gang.,This link works once.,Dieser Link funktioniert einmal.
+outreach.sent,Sendt. Svaret er nu offentliggjort.,Sent. The reply has been posted.,Gesendet. Die Antwort ist jetzt veröffentlicht.
+outreach.rejected,Afvist. Intet blev sendt.,Rejected. Nothing was sent.,Abgelehnt. Es wurde nichts gesendet.

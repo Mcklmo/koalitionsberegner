@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import './strings.mjs';
-import { detectLanguage, languageName, languages, parseStrings, setLanguage, t } from '../js/i18n.js';
+import { detectLanguage, formatDate, languageName, languages, parseStrings, setLanguage, t } from '../js/i18n.js';
 import { mountCoalitionCalculator } from '../js/app.js';
 import { toElection } from '../js/api.js';
 
@@ -18,10 +18,11 @@ const shipped = parseStrings(read('../js/strings.csv'));
 /** Whether every language in the shipped sheet has `key`. */
 const everywhere = (key) => languages().every((locale) => key in shipped.strings[locale]);
 
-test('the shipped sheet parses, with Danish and English, each naming itself', () => {
-  assert.deepEqual(languages().slice().sort(), ['da', 'en']);
+test('the shipped sheet parses, with Danish, English and German, each naming itself', () => {
+  assert.deepEqual(languages().slice().sort(), ['da', 'de', 'en']);
   assert.equal(languageName('da'), 'Dansk');
   assert.equal(languageName('en'), 'English');
+  assert.equal(languageName('de'), 'Deutsch');
 });
 
 test('every text the markup asks for exists', () => {
@@ -109,11 +110,12 @@ for (const [what, sheet, error] of [
   });
 }
 
-test('a Danish browser gets Danish, any other English, and a saved choice wins', () => {
+test('a browser gets its own language where the sheet has it, any other English, and a saved choice wins', () => {
   assert.equal(detectLanguage({ browser: 'da-DK' }), 'da');
   assert.equal(detectLanguage({ browser: 'da' }), 'da');
   assert.equal(detectLanguage({ browser: 'en-US' }), 'en');
-  assert.equal(detectLanguage({ browser: 'de-DE' }), 'en');
+  assert.equal(detectLanguage({ browser: 'de-DE' }), 'de');
+  assert.equal(detectLanguage({ browser: 'fr-FR' }), 'en');
   assert.equal(detectLanguage({}), 'en');
   assert.equal(detectLanguage({ saved: 'da', browser: 'en-GB' }), 'da');
   assert.equal(detectLanguage({ saved: 'en', browser: 'da-DK' }), 'en');
@@ -163,6 +165,16 @@ test('the calculator speaks English', () => {
   assert.equal(byId['total-of'].textContent, 'of 10 seats');
   assert.equal(byId['footer-note'].textContent, 'A majority needs 6 seats · Final result, 23 February 2025');
   assert.equal(byId.verdict.textContent, '6 short');
+});
+
+test('the calculator speaks German, plurals and dates included', () => {
+  setLanguage('de', { remember: false });
+  assert.equal(t('calc.totalOf', { total: 10 }), 'von 10 Sitzen');
+  assert.equal(t('seats', { count: 1 }), '1 Sitz');
+  assert.equal(t('seats', { count: 2 }), '2 Sitze');
+  assert.equal(t('calc.short', { missing: 1 }), '1 fehlt');
+  assert.equal(t('calc.short', { missing: 6 }), '6 fehlen');
+  assert.equal(formatDate({ day: 23, month: 2, year: 2025 }), '23. Februar 2025');
 });
 
 test('a chosen language is remembered, and a test can choose without leaving a trace', () => {

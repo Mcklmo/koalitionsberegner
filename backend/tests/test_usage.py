@@ -87,13 +87,14 @@ def test_week_and_month_ends_add_their_reports_to_the_daily_one():
         ("da-DK,da;q=0.9,en;q=0.8", "da"),
         ("en-GB", "en"),
         ("DA", "da"),
-        ("de-DE,en;q=0.5", "other"),
+        ("de-DE,en;q=0.5", "de"),
+        ("fr-FR,en;q=0.5", "other"),
         ("", "other"),
         (None, "other"),
         ("x" * 500, "other"),
     ],
 )
-def test_a_browser_language_lands_in_one_of_three_counters(header, bucket):
+def test_a_browser_language_lands_in_a_counter_for_a_language_the_page_speaks(header, bucket):
     assert language_bucket(header) == bucket
 
 
@@ -462,8 +463,9 @@ def save(client, body=BODY):
 def test_a_page_load_is_counted_by_the_language_the_browser_asks_for(client, usage):
     client.get("/api/config", headers={"accept-language": "da-DK,da;q=0.9"})
     client.get("/api/config", headers={"accept-language": "de-DE"})
+    client.get("/api/config", headers={"accept-language": "fr-FR"})
 
-    assert counted(usage) == {"page_load_da": 1, "page_load_other": 1}
+    assert counted(usage) == {"page_load_da": 1, "page_load_de": 1, "page_load_other": 1}
 
 
 def test_an_import_is_counted_from_its_start_to_it_being_saved_and_picked(client, usage):

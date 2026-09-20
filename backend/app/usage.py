@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 #: Languages the page speaks; every other browser language is counted as one.
 #: A fixed list rather than whatever the header says, so a caller cannot mint a
 #: new counter per request.
-PAGE_LANGUAGES = ("da", "en")
+PAGE_LANGUAGES = ("da", "en", "de")
 
 
 class UsageEvent(str, Enum):
@@ -68,7 +68,7 @@ class UsageEvent(str, Enum):
 
 
 def language_bucket(accept_language: str | None) -> str:
-    """The page language a browser prefers: ``da``, ``en``, or ``other``."""
+    """The page language a browser prefers: ``da``, ``en``, ``de``, or ``other``."""
     first = (accept_language or "").split(",")[0].split(";")[0].strip()
     primary = first.split("-")[0].lower()
     return primary if primary in PAGE_LANGUAGES else "other"
@@ -243,6 +243,7 @@ SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ("Visitors", (
         ("Page loads, Danish", "page_load_da"),
         ("Page loads, English", "page_load_en"),
+        ("Page loads, German", "page_load_de"),
         ("Page loads, other languages", "page_load_other"),
     )),
     ("Elections", (
