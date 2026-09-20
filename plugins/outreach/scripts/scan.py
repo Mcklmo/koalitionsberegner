@@ -287,7 +287,10 @@ class FileSource:
     def posts(self, subreddit: str, limit: int) -> list[Candidate]:
         out = []
         for row in self._data.get("posts", []):
-            if row.get("subreddit", subreddit) != subreddit:
+            # Reddit spells a subreddit's name as its owner chose ("Sverige");
+            # the scanner works in lower case. A file saved from Reddit's own
+            # JSON must not be filtered away over that.
+            if row.get("subreddit", subreddit).casefold() != subreddit.casefold():
                 continue
             out.append(Candidate(
                 kind="post", id=row["id"], thread_id=row["id"], subreddit=subreddit,

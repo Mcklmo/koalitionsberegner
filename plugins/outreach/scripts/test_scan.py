@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import from_reddit_json  # noqa: E402
 import scan  # noqa: E402
 from scan import (  # noqa: E402
     DISCLOSURE,
@@ -333,3 +334,45 @@ def test_every_request_names_this_client():
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         scan.http_json("GET", "https://example.test/x", headers={"User-Agent": "mine/1.0"})
     assert seen.get("User-agent") == "mine/1.0", "a caller's own name wins"
+
+
+# --- from_reddit_json --------------------------------------------------------
+
+LISTING = [
+    {"data": {"children": [{"kind": "t3", "data": {
+        "id": "1wfjm8e", "subreddit": "Sverige", "title": "Att 81% röstar på ett parti",
+        "selftext": "Brödtext.", "permalink": "/r/Sverige/comments/1wfjm8e/att_81/",
+        "created_utc": 1789000000.0, "num_comments": 42,
+    }}]}},
+    {"data": {"children": [
+        {"kind": "t1", "data": {"id": "abc123", "body": "Ett svar.",
+                                "permalink": "/r/Sverige/comments/1wfjm8e/att_81/abc123/",
+                                "created_utc": 1789000100.0}},
+        {"kind": "more", "data": {"id": "xxx"}},
+        {"kind": "t1", "data": {"id": "empty", "body": "", "permalink": "/x/", "created_utc": 1}},
+    ]}},
+]
+
+
+def test_a_saved_thread_becomes_a_posts_file():
+    converted = from_reddit_json.convert(LISTING)
+
+    assert converted["posts"][0]["id"] == "1wfjm8e"
+    assert converted["posts"][0]["permalink"].startswith("https://www.reddit.com/r/Sverige/")
+    assert [c["id"] for c in converted["comments"]["1wfjm8e"]] == ["abc123"], \
+        "'load more' and empty bodies are not comments to answer"
+
+
+def test_a_thread_with_no_comments_leaves_the_block_out():
+    converted = from_reddit_json.convert([LISTING[0], {"data": {"children": []}}])
+
+    assert "comments" not in converted
+
+
+def test_the_scanner_reads_that_file_whatever_the_name_s_case(tmp_path):
+    path = tmp_path / "thread.json"
+    path.write_text(json.dumps(from_reddit_json.convert(LISTING)), encoding="utf-8")
+
+    posts = scan.FileSource(path).posts("sverige", limit=10)
+
+    assert [p.id for p in posts] == ["1wfjm8e"], "Reddit says Sverige, the scanner says sverige"

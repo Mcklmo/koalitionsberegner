@@ -54,3 +54,20 @@ Put these in the environment or in `plugins/outreach/.env` (gitignored):
 ```sh
 uv run --with pytest --with pydantic --with anthropic pytest plugins/outreach/scripts
 ```
+
+## Try it on one thread you picked
+
+Reddit answers a scripted fetch with `403`, but serves the same JSON to a
+logged-in browser. Open the post with `.json` on the end
+(`https://www.reddit.com/r/Sverige/comments/<id>/.json`), save the page, and:
+
+```sh
+python3 plugins/outreach/scripts/from_reddit_json.py saved.json -o thread.json
+OUTREACH_SUBREDDITS=Sverige plugins/outreach/scripts/scan.py \
+  --posts-file thread.json --submit stdout --state none
+```
+
+The converter keeps the post and its top-level comments, dropping Reddit's
+"load more" rows. `--submit stdout` prints the draft instead of queueing it, and
+`--state none` leaves the thread unseen, so a later real run still considers it.
+Neither command posts anything.
