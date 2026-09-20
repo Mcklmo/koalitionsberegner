@@ -94,9 +94,32 @@ function setShareTarget(electionHash) {
   if (!currentId) history.replaceState(null, '', buildPath({ id: null }));
 }
 
+// Filled in once the config and the picker's list have arrived. The bundled
+// election renders before either exists, and it is one a person put in the
+// repository, so the defaults are the truth until then.
+let issuesUrl = '';
+let summaries = () => [];
+
+/**
+ * How this election got into the store, so the calculator knows whether to say
+ * that nobody checked it. The picker's list is where provenance lives; a hash
+ * nothing in the list matches — the bundled election above all — is one a
+ * person put there.
+ */
+function provenanceOf(electionHash) {
+  if (!electionHash) return 'manual';
+  return summaries().find((summary) => summary.electionHash === electionHash)
+    ?.provenance ?? 'manual';
+}
+
 /** Re-render the calculator for a different election. */
-function render(election, { initialSelection = [] } = {}) {
-  calculator = mountCoalitionCalculator(election, {}, { initialSelection, onChange: syncUrl });
+function render(election, { initialSelection = [], electionHash = null } = {}) {
+  calculator = mountCoalitionCalculator(election, {}, {
+    initialSelection,
+    onChange: syncUrl,
+    provenance: provenanceOf(electionHash),
+    issuesUrl,
+  });
 }
 
 // The bundled election renders immediately, so the page works with no backend.
@@ -148,7 +171,7 @@ function enableShareForBundled() {
 function selectElection(election, electionHash) {
   setShareNote('');
   setShareTarget(electionHash);
-  render(election);
+  render(election, { electionHash });
   // The bundled election has no hash of its own; look for its stored twin so
   // the share button still works when the archive already holds it.
   if (!electionHash) enableShareForBundled();
@@ -161,6 +184,7 @@ const config = await api.getConfig().catch(() => ({
   importsEnabled: false,
   importsOpen: false,
 }));
+issuesUrl = config.issuesUrl ?? '';
 
 const importUi = mountImportUi({
   api,
@@ -193,6 +217,7 @@ const importUi = mountImportUi({
     pickerRow: byId('picker-row'),
   },
 });
+summaries = () => importUi.summaries();
 
 const adminUi = mountAdmin({
   onChange: (isAdmin) => importUi.setAdmin(isAdmin),
@@ -218,7 +243,7 @@ if (link) {
     if (!result.election) throw new Error('no election in the response');
     byId('picker').value = result.electionHash;
     setShareTarget(result.electionHash);
-    render(result.election, { initialSelection: link.indices });
+    render(result.election, { initialSelection: link.indices, electionHash: result.electionHash });
     const total = calculator.total();
     setShareNote(link.seats !== null && link.seats !== total ? t('share.stale') : '');
   } catch {

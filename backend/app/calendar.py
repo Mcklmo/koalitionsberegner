@@ -575,9 +575,7 @@ class WikipediaArticles:
         self._wikipedia = wikipedia
 
     async def read(self, title: str) -> tuple[str, str]:
-        # ``_article`` is the one method that returns the parsed HTML; making it
-        # public is a change to wikipedia.py, left for when this is wired in.
-        article = await self._wikipedia._article(self._wikipedia.host, title)
+        article = await self._wikipedia.article(self._wikipedia.host, title)
         return article.url, article.html
 
 

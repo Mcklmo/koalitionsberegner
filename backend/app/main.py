@@ -50,6 +50,7 @@ from .config import (
     get_usage_recorder,
     get_wishlist,
     imports_enabled,
+    issues_url,
     max_wait_seconds,
     origin_secret,
     outreach_allowed_subreddits,
@@ -399,6 +400,8 @@ class PublicConfig(BaseModel):
     """Whether this deployment imports at all; the owner still needs the secret."""
     imports_open: bool
     """Whether importing needs no secret here: a local run with none configured."""
+    issues_url: str = ""
+    """Where a wrong figure is reported, empty where no repository is configured."""
 
 
 class ElectionRequestResponse(BaseModel):
@@ -436,6 +439,7 @@ def public_config(
         requests_enabled=wishlist.enabled,
         imports_enabled=enabled,
         imports_open=enabled and not admin_secret(),
+        issues_url=issues_url(),
     )
 
 

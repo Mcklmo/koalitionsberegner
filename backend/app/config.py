@@ -504,6 +504,22 @@ def get_wishlist() -> Wishlist:
     return GithubWishlist(token, owner=owner, repo=name)
 
 
+def issues_url() -> str:
+    """This repository's issue tracker, as a browsable URL; empty when unset.
+
+    Not a credential and not the API address :class:`app.wishlist.GithubWishlist`
+    posts to — the page needs somewhere to send a visitor who spots a wrong
+    number in an election nobody confirmed (plan 3, A1). Empty leaves the
+    footnote without its link rather than guessing a repository.
+    """
+    repo = _env_str("GITHUB_ISSUES_REPO")
+    if not repo:
+        return ""
+    if not _REPO_PATTERN.match(repo):
+        raise ConfigError(f"GITHUB_ISSUES_REPO must be owner/name, not {repo!r}")
+    return f"https://github.com/{repo}/issues"
+
+
 @lru_cache(maxsize=1)
 def get_reddit_poster():
     """Where an approved reply is actually posted.

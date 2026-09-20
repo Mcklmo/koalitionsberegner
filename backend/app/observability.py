@@ -35,7 +35,7 @@ MAX_VALUE_CHARS = 200
 #: called several times per import, and saying nothing the import's own lines
 #: do not already say. They are still there at ``LOG_LEVEL=DEBUG``.
 NOTABLE_SYSTEMS = frozenset(
-    {"anthropic", "google", "wikipedia", "page", "import", "smtp", "reddit"}
+    {"anthropic", "google", "wikipedia", "wikidata", "page", "import", "smtp", "reddit"}
 )
 
 

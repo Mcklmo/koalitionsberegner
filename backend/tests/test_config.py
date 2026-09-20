@@ -269,3 +269,17 @@ def test_cloud_run_refuses_to_boot_without_an_admin_secret(monkeypatch, clean_co
 
     monkeypatch.setenv("ADMIN_SECRET", "a" * 32)
     validate_configuration()
+
+
+def test_the_issues_url_is_built_from_the_same_repository_the_wishlist_files_against(monkeypatch):
+    from app.config import ConfigError, issues_url
+
+    monkeypatch.delenv("GITHUB_ISSUES_REPO", raising=False)
+    assert issues_url() == ""
+
+    monkeypatch.setenv("GITHUB_ISSUES_REPO", "owner/repo")
+    assert issues_url() == "https://github.com/owner/repo/issues"
+
+    monkeypatch.setenv("GITHUB_ISSUES_REPO", "not a repo")
+    with pytest.raises(ConfigError, match="must be owner/name"):
+        issues_url()

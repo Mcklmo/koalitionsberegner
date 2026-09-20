@@ -71,8 +71,27 @@ test('listElections maps summaries to camelCase', async () => {
   ]);
   const listed = await createApiClient({ fetch: fetchImpl }).listElections();
   assert.deepEqual(listed, [
-    { electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179, forecast: null },
+    {
+      electionHash: 'abc', nation: 'Danmark', state: null, electionDate: '2026-03-25',
+      title: 'T', totalSeats: 179, forecast: null, provenance: 'manual',
+    },
   ]);
+});
+
+test('listElections marks an unread refresh as auto provenance', async () => {
+  const { fetchImpl } = fakeFetch([
+    {
+      status: 200,
+      body: [
+        {
+          election_hash: 'abc', nation: 'Danmark', state: null, election_date: '2026-03-25',
+          title: 'T', total_seats: 179, provenance: 'auto',
+        },
+      ],
+    },
+  ]);
+  const [summary] = await createApiClient({ fetch: fetchImpl }).listElections();
+  assert.equal(summary.provenance, 'auto');
 });
 
 test('lookup asks about the year and the place', async () => {
@@ -205,7 +224,32 @@ test('the public config is mapped to camelCase', async () => {
 
   const config = await createApiClient({ fetch: fetchImpl }).getConfig();
 
-  assert.deepEqual(config, { requestsEnabled: true, importsEnabled: true, importsOpen: false });
+  assert.deepEqual(config, {
+    requestsEnabled: true, importsEnabled: true, importsOpen: false, issuesUrl: '',
+  });
+});
+
+test('the public config keeps only an https github.com issues URL', async () => {
+  const { fetchImpl } = fakeFetch([
+    {
+      status: 200,
+      body: {
+        requests_enabled: true, imports_enabled: true, imports_open: false,
+        issues_url: 'https://github.com/owner/repo/issues',
+      },
+    },
+    {
+      status: 200,
+      body: {
+        requests_enabled: true, imports_enabled: true, imports_open: false,
+        issues_url: 'javascript:alert(1)',
+      },
+    },
+  ]);
+  const api = createApiClient({ fetch: fetchImpl });
+
+  assert.equal((await api.getConfig()).issuesUrl, 'https://github.com/owner/repo/issues');
+  assert.equal((await api.getConfig()).issuesUrl, '');
 });
 
 test('a refused import surfaces the status the page needs to explain it', async () => {

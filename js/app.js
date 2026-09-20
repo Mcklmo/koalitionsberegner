@@ -52,9 +52,17 @@ const supermajorityOf = (totalSeats) => Math.floor(totalSeats * 2 / 3);
  * @param {(indices: number[], total: number) => void} [options.onChange] Called once on mount
  *   and again after every change, with the selection as flattened positions (ascending) and the
  *   seat total, so a caller can keep a shared link's URL in sync.
+ * @param {string} [options.provenance] `'auto'` for an election the scheduled refresh stored
+ *   with nobody reading it first; anything else is treated as confirmed.
+ * @param {string} [options.issuesUrl] Where a problem with the figures is reported, as
+ *   `https://github.com/<owner>/<name>/issues`. Empty means no link is offered.
  * @returns {{ clearAll: () => void, selection: () => number[], total: () => number }}
  */
-export function mountCoalitionCalculator(election, elements = {}, { initialSelection = [], onChange } = {}) {
+export function mountCoalitionCalculator(
+  election,
+  elements = {},
+  { initialSelection = [], onChange, provenance = 'manual', issuesUrl = '' } = {},
+) {
   if (!isValidatedElection(election)) {
     throw new TypeError('mountCoalitionCalculator requires an election from validateElection()');
   }
@@ -68,6 +76,7 @@ export function mountCoalitionCalculator(election, elements = {}, { initialSelec
     totalOf: document.getElementById('total-of'),
     verdict: document.getElementById('verdict'),
     footerNote: document.getElementById('footer-note'),
+    autoNote: document.getElementById('auto-note'),
     names: document.getElementById('names'),
     namesRow: document.getElementById('names-row'),
     ...elements,
@@ -116,6 +125,40 @@ export function mountCoalitionCalculator(election, elements = {}, { initialSelec
       ? t('calc.forecastFrom', { publisher: forecast.publisher, date: formatElectionDate(forecast.publishedOn) })
         + (forecast.computed ? ` (${t('seats.computed')})` : '')
       : t('calc.finalResult', { date: formatElectionDate(election.electionDate) }));
+  renderAutoNote();
+
+  /**
+   * The one line that says nobody checked these figures before they went up.
+   *
+   * Only for `provenance === 'auto'`: the scheduled refresh stores an election
+   * without anyone confirming it (doc/plans/03-remaining-work.md, A1), and the
+   * honest answer to that is to say so and make reporting it one click. The
+   * source is the election's own `sourceUrl`, which `election.js` has already
+   * validated as an absolute http(s) address, and everything reaches the DOM
+   * as text or as a URL-encoded query parameter — never as markup.
+   */
+  function renderAutoNote() {
+    if (!el.autoNote) return;
+    el.autoNote.textContent = '';
+    el.autoNote.hidden = provenance !== 'auto';
+    if (el.autoNote.hidden) return;
+
+    const { hostname } = new URL(election.sourceUrl);
+    el.autoNote.append(t('calc.autoImported', { source: hostname }));
+    if (!issuesUrl) return;
+    const report = document.createElement('a');
+    const url = new URL(`${issuesUrl.replace(/\/+$/, '')}/new`);
+    url.searchParams.set('labels', 'data-problem');
+    url.searchParams.set('title', election.title);
+    // The address is the only thing a page reader could act on, so it names
+    // the election and nothing that was read off the source page.
+    url.searchParams.set('body', election.sourceUrl);
+    report.href = url.toString();
+    report.rel = 'noopener noreferrer';
+    report.target = '_blank';
+    report.textContent = t('calc.reportProblem');
+    el.autoNote.append(' ', report);
+  }
 
   function render() {
     el.list.innerHTML = '';

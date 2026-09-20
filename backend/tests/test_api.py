@@ -474,7 +474,9 @@ def test_reading_and_looking_up_need_no_secret(client, secret):
 def test_the_page_is_told_whether_it_may_import(client, monkeypatch):
     monkeypatch.delenv("ADMIN_SECRET", raising=False)
     local = client.get("/api/config").json()
-    assert local == {"requests_enabled": False, "imports_enabled": True, "imports_open": True}
+    assert local == {
+        "requests_enabled": False, "imports_enabled": True, "imports_open": True, "issues_url": "",
+    }
 
     monkeypatch.setenv("ADMIN_SECRET", SECRET)
     deployed = client.get("/api/config").json()

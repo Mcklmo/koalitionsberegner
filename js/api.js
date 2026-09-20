@@ -86,6 +86,10 @@ function toSummary(row) {
     title: row.title,
     totalSeats: row.total_seats,
     forecast: toForecast(row.forecast),
+    // 'auto' means the scheduled refresh stored it and nobody read it first
+    // (doc/plans/03-remaining-work.md, A1). Anything unrecognised is treated
+    // as confirmed, so an older backend does not footnote every election.
+    provenance: row.provenance === 'auto' ? 'auto' : 'manual',
   };
 }
 
@@ -97,7 +101,21 @@ function toConfig(body) {
     importsEnabled: Boolean(body.imports_enabled),
     // Whether importing needs no secret here: a local run with none configured.
     importsOpen: Boolean(body.imports_open),
+    // This repository's issue tracker, for reporting a wrong figure. Only an
+    // https address on github.com is kept: it becomes a link on the page, and
+    // the page does not follow a scheme it did not expect.
+    issuesUrl: safeIssuesUrl(body.issues_url),
   };
+}
+
+function safeIssuesUrl(value) {
+  if (typeof value !== 'string' || !value) return '';
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'github.com' ? url.toString() : '';
+  } catch {
+    return '';
+  }
 }
 
 /** Where an election request was written down. */

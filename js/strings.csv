@@ -30,6 +30,8 @@ calc.totalOf,af {total} mandater,of {total} seats
 calc.majorityNeeds,Flertal kræver {majority} mandater,A majority needs {majority} seats
 calc.forecastFrom,"Prognose fra {publisher}, {date}","Forecast by {publisher}, {date}"
 calc.finalResult,"Endelig resultat, {date}","Final result, {date}"
+calc.autoImported,Importeret automatisk fra {source}.,Imported automatically from {source}.
+calc.reportProblem,Rapportér et problem,Report a problem
 calc.largeMajority,Stort flertal ✓,Large majority ✓
 calc.majority,Flertal ✓ (+{over}),Majority ✓ (+{over})
 calc.short,Mangler {missing},{missing} short
