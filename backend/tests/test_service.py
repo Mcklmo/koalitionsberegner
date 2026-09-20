@@ -428,3 +428,19 @@ async def test_polls_offered_for_an_election_since_held_are_thrown_away():
     settled = await settle(service, key)
     assert settled.state is ImportState.PREVIEW, "the election is read again"
     assert parser.call_count == 1
+
+
+async def test_the_lookup_forgets_polls_offered_for_an_election_since_held():
+    """`GET /api/elections/lookup` asks `status`, not `peek` — the page never
+    got as far as submitting, so the offer has to expire here too."""
+    from datetime import date
+
+    store, _, _ = build()
+    service = ImportService(store, CountingParser(), today=lambda: date(2026, 9, 20))
+    request = make_request()
+    key = service.request_key_for(request)
+    store.claim(key, request)
+    store.offer(key, [make_forecast(election_date="2026-09-13")])
+
+    assert (await service.status(key)).state is ImportState.UNKNOWN
+    assert await service.peek(request) is None

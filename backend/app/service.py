@@ -21,7 +21,15 @@ from .identity import election_hash, request_key
 from .observability import io_span, scrub
 from .parser import ElectionParser, ParseError
 from .schema import Election
-from .store import Claim, ClaimOutcome, ElectionStore, ImportRequest, JobStatus, StoredElection
+from .store import (
+    Claim,
+    ClaimOutcome,
+    ElectionStore,
+    ImportRequest,
+    Job,
+    JobStatus,
+    StoredElection,
+)
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +133,7 @@ class ImportService:
         key = self.request_key_for(request)
         claim = await self._in_thread(self._store.peek, key)
         joined = self._joined(key, claim)
-        if joined is not None and self._choice_has_been_held(claim):
+        if joined is not None and self._offer_is_stale(claim.job):
             # The election has happened since these polls were offered; only
             # :meth:`submit` may throw the stale offer away, under the claim.
             return None
@@ -133,17 +141,18 @@ class ImportService:
             log.info("peek request=%s outcome=%s", key[:12], claim.outcome.value)
         return joined
 
-    def _choice_has_been_held(self, claim: Claim) -> bool:
+    def _offer_is_stale(self, job: Job | None) -> bool:
         """Whether an offer of polls is for an election that has since been held.
 
         The offered forecasts carry the election's own date, so no clock but
         today's is needed. Anything else — a stored election, a preview, an
         import under way — is left alone.
+
+        Every way in asks: :meth:`status` (what the page's lookup calls),
+        :meth:`peek` and :meth:`submit`. Only :meth:`submit` may throw the
+        offer away, because only it holds the claim.
         """
-        job = claim.job
-        if claim.outcome is not ClaimOutcome.ATTACHED or job is None:
-            return False
-        if job.status is not JobStatus.AWAITING_CHOICE or not job.forecasts:
+        if job is None or job.status is not JobStatus.AWAITING_CHOICE or not job.forecasts:
             return False
         return all(forecast.election_date < self._today() for forecast in job.forecasts)
 
@@ -196,7 +205,7 @@ class ImportService:
         )
 
         joined = self._joined(key, claim)
-        if joined is not None and self._choice_has_been_held(claim):
+        if joined is not None and self._offer_is_stale(claim.job):
             # An upcoming election's polls were offered before election day and
             # nobody chose one. Offering them again now would answer a request
             # for a held election with "this election hasn't been held yet",
@@ -319,6 +328,10 @@ class ImportService:
                 election_hash=identity_of(job.result), attempt=job.attempt,
             )
         if job.status is JobStatus.AWAITING_CHOICE:
+            if self._offer_is_stale(job):
+                # The election has been held since these polls were offered.
+                # Unknown, so the page offers to import it: the seats exist now.
+                return ImportResult(key, ImportState.UNKNOWN)
             return ImportResult(
                 key, ImportState.CHOOSE, forecasts=job.forecasts, attempt=job.attempt
             )
