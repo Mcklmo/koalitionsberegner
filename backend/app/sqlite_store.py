@@ -155,7 +155,6 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         forecasts=tuple(
             Election.model_validate(item) for item in json.loads(row["forecasts"])
         ) if row["forecasts"] else (),
-        owner=row["owner"],
     )
 
 
@@ -356,9 +355,7 @@ class SqliteElectionStore:
             span["outcome"] = peeked.outcome.value
             return peeked
 
-    def claim(
-        self, request_key: str, request: ImportRequest, owner: str | None = None
-    ) -> Claim:
+    def claim(self, request_key: str, request: ImportRequest) -> Claim:
         with io_span(log, "sqlite", "claim", request=request_key[:12]) as span:
             with self._write() as conn:
                 peeked = self._peek(conn, request_key)
@@ -373,17 +370,16 @@ class SqliteElectionStore:
                     query=request.describe(),
                     started_at=self._clock(),
                     attempt=(job.attempt + 1) if job else 1,
-                    owner=owner,
                 )
                 conn.execute(
                     "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
-                    " error, result, owner) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)"
+                    " error, result) VALUES (?, ?, ?, ?, ?, NULL, NULL)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     " query=excluded.query, started_at=excluded.started_at,"
                     " attempt=excluded.attempt, error=NULL, result=NULL, forecasts=NULL,"
-                    " owner=excluded.owner",
+                    " owner=NULL",
                     (request_key, new_job.status.value, new_job.query,
-                     new_job.started_at, new_job.attempt, new_job.owner),
+                     new_job.started_at, new_job.attempt),
                 )
                 span["attempt"] = new_job.attempt
                 return Claim(ClaimOutcome.STARTED, request_key, job=new_job)

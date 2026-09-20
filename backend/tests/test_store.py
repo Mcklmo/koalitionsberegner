@@ -195,41 +195,6 @@ def test_nothing_stored_is_no_match(store):
     assert store.find_by_place(2026, "Danmark") is None
 
 
-def test_the_account_that_started_an_attempt_stays_on_it(store):
-    """Who may throw a preview away is decided by this, so staging must keep it."""
-    claim = store.claim(KEY, make_request(), "uid-1")
-    assert claim.job.owner == "uid-1"
-
-    store.stage(KEY, make_election())
-
-    assert store.get_job(KEY).owner == "uid-1"
-
-
-def test_a_new_attempt_belongs_to_whoever_started_it(store):
-    store.claim(KEY, make_request(), "uid-1")
-    store.fail(KEY, "no seats")
-
-    store.claim(KEY, make_request(), "uid-2")
-
-    assert store.get_job(KEY).owner == "uid-2"
-
-
-@pytest.mark.parametrize("finish", ["saved", "linked", "failed"])
-def test_an_attempt_that_is_over_no_longer_names_its_account(store, finish):
-    """Nothing is left to throw away, so who started it is not kept either."""
-    store.claim(KEY, make_request(), "uid-1")
-    if finish == "saved":
-        store.stage(KEY, make_election())
-        store.confirm(KEY, HASH)
-    elif finish == "linked":
-        saved(store, key="o" * 64)
-        store.link(KEY, HASH)
-    else:
-        store.fail(KEY, "no seats")
-
-    assert store.get_job(KEY).owner is None
-
-
 # --- peeking: the claim decision without the claim -------------------------
 
 def test_peeking_decides_like_a_claim_but_claims_nothing(store):

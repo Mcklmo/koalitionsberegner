@@ -94,11 +94,6 @@ class Job:
     """The extracted election awaiting confirmation; never served as stored."""
     forecasts: tuple[Election, ...] = ()
     """The polls of an upcoming election, awaiting the user's choice; newest first."""
-    owner: str | None = None
-    """The account that started this attempt — and paid for it, so the only one
-    besides an administrator who may throw its result away. Cleared once the
-    attempt is over — saved, linked or failed: nothing is left to throw away
-    then, and a lasting note of who imported what would serve no one."""
 
 
 @dataclass(frozen=True)
@@ -220,9 +215,7 @@ class ElectionStore(Protocol):
         """The election hash this request produced, if it has produced one."""
         ...
 
-    def claim(
-        self, request_key: str, request: ImportRequest, owner: str | None = None
-    ) -> Claim: ...
+    def claim(self, request_key: str, request: ImportRequest) -> Claim: ...
 
     def peek(self, request_key: str) -> Claim:
         """What :meth:`claim` would decide right now, without claiming anything.
@@ -381,9 +374,7 @@ class InMemoryElectionStore:
         with self._lock:
             return self._peek_locked(request_key)
 
-    def claim(
-        self, request_key: str, request: ImportRequest, owner: str | None = None
-    ) -> Claim:
+    def claim(self, request_key: str, request: ImportRequest) -> Claim:
         with self._lock:
             peeked = self._peek_locked(request_key)
             if peeked.outcome is not ClaimOutcome.STARTED:
@@ -395,7 +386,6 @@ class InMemoryElectionStore:
                 query=request.describe(),
                 started_at=self._clock(),
                 attempt=(job.attempt + 1) if job else 1,
-                owner=owner,
             )
             self._jobs[request_key] = new_job
             return Claim(ClaimOutcome.STARTED, request_key, job=new_job)
@@ -410,7 +400,6 @@ class InMemoryElectionStore:
                 # Restart the lease so the user gets a full window to confirm.
                 started_at=self._clock(),
                 attempt=job.attempt if job else 1,
-                owner=job.owner if job else None,
                 result=election,
             )
 
@@ -450,7 +439,6 @@ class InMemoryElectionStore:
                 # Restart the lease so the user gets a full window to choose.
                 started_at=self._clock(),
                 attempt=job.attempt if job else 1,
-                owner=job.owner if job else None,
                 forecasts=tuple(forecasts),
             )
 
