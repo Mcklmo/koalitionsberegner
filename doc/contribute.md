@@ -216,16 +216,16 @@ they are labelled in the list, the preview and the calculator's footer.
    the etiquette caps in `doc/plans/04-reddit-outreach.md` and the schedule
    in `doc/plans/03-remaining-work.md` (section A) never run:
    ```sh
-   gcloud firestore indexes composite create --collection-group=outreach_drafts \
+   gcloud firestore indexes composite create --database=main --collection-group=outreach_drafts \
      --field-config field-path=subreddit,order=ascending \
      --field-config field-path=status,order=ascending \
      --field-config field-path=posted_at,order=ascending
 
-   gcloud firestore indexes composite create --collection-group=outreach_drafts \
+   gcloud firestore indexes composite create --database=main --collection-group=outreach_drafts \
      --field-config field-path=status,order=ascending \
      --field-config field-path=posted_at,order=ascending
 
-   gcloud firestore indexes composite create --collection-group=tracked_elections \
+   gcloud firestore indexes composite create --database=main --collection-group=tracked_elections \
      --field-config field-path=status,order=ascending \
      --field-config field-path=next_refresh_at,order=ascending
    ```
