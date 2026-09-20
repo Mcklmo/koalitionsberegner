@@ -163,6 +163,8 @@ export function mountPicker({
   const expanded = new Set();
   let activeIndex = -1;
   let note = '';
+  /** The rendered option rows, so moving the highlight never rebuilds them. */
+  let rows = [];
 
   const bundledGroup = () => (bundled
     ? { key: LOCAL_VALUE, primary: { electionHash: LOCAL_VALUE, title: bundled.title, nation: bundled.nation, state: bundled.state, electionDate: bundled.electionDate, forecast: null }, older: [] }
@@ -190,6 +192,7 @@ export function mountPicker({
 
   function render() {
     el.results.innerHTML = '';
+    rows = [];
     let rowIndex = 0;
 
     if (note) {
@@ -217,6 +220,7 @@ export function mountPicker({
         const thisIndex = rowIndex;
         row.addEventListener('mouseenter', () => setActive(thisIndex));
         row.addEventListener('click', () => choose(group.primary));
+        rows.push(row);
         el.results.appendChild(row);
         rowIndex += 1;
 
@@ -247,9 +251,18 @@ export function mountPicker({
     el.input.setAttribute('aria-expanded', 'true');
   }
 
+  /**
+   * Moving the highlight touches the classes of the rows already on screen.
+   * Re-rendering here would remove the row under the pointer between its
+   * `mousedown` and its `mouseup`, and a click needs both on the same element
+   * — which is why hovering a row used to swallow the click that chose it.
+   */
   function setActive(index) {
     activeIndex = index;
-    render();
+    rows.forEach((row, i) => {
+      if (i === index) row.classList.add('active');
+      else row.classList.remove('active');
+    });
   }
 
   function close() {
@@ -322,6 +335,12 @@ export function mountPicker({
   el.input.addEventListener('input', onInput);
   el.input.addEventListener('focus', onFocus);
   el.input.addEventListener('keydown', onKeydown);
+  // Keep the focus in the box while a row is being clicked, so the blur below
+  // cannot close the list out from under that click.
+  el.results.addEventListener('mousedown', (event) => event.preventDefault?.());
+  // Anything else the visitor clicks or tabs to closes the list; without this
+  // it stayed open over the page for good.
+  el.input.addEventListener('blur', close);
 
   return {
     /** Fetch the list from the API; failures leave the previous list in place. */

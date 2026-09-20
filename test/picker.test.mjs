@@ -177,6 +177,9 @@ function node(tag = 'div') {
         const names = self.className ? self.className.split(' ') : [];
         self.className = [...new Set([...names, name])].join(' ');
       },
+      remove(name) {
+        self.className = self.className.split(' ').filter((n) => n && n !== name).join(' ');
+      },
     },
     setAttribute(name, value) { self.attrs[name] = value; },
     getAttribute(name) { return self.attrs[name]; },
@@ -352,4 +355,49 @@ test('no match, and importing is allowed, offers "import it" instead', async () 
   el.input.value = 'nowhere 2030';
   await el.input.dispatch('input');
   assert.match(el.results.children[0].textContent, /Importér det/);
+});
+
+// --- the list stays clickable, and closes again ------------------------------
+
+test('hovering a row keeps the very same element, so its click still lands', async () => {
+  // A click needs mousedown and mouseup on one element. Re-rendering on
+  // mouseenter replaced the row between them, and choosing an election by
+  // mouse did nothing at all.
+  const { el, api, picker, selected } = harness({
+    summaries: [poll({ electionHash: 'a' }), poll({ electionHash: 'b', electionKey: 'k2' })],
+  });
+  await picker.refresh(api);
+  await el.input.dispatch('focus');
+
+  const second = el.results.children[1];
+  await second.dispatch('mouseenter');
+
+  assert.equal(el.results.children[1], second, 'the hovered row is not rebuilt');
+  assert.match(second.className, /active/);
+  assert.equal(el.results.children[0].className.includes('active'), false);
+
+  await second.dispatch('click');
+  assert.deepEqual(selected.map((s) => s[1]), ['b']);
+  assert.equal(el.results.hidden, true, 'choosing closes the list');
+});
+
+test('leaving the search box closes the list', async () => {
+  const { el, api, picker } = harness({ summaries: [poll({ electionHash: 'a' })] });
+  await picker.refresh(api);
+  await el.input.dispatch('focus');
+  assert.equal(el.results.hidden, false);
+
+  await el.input.dispatch('blur');
+  assert.equal(el.results.hidden, true);
+  assert.equal(el.input.getAttribute('aria-expanded'), 'false');
+});
+
+test('pressing the mouse on the list keeps the focus, so the blur cannot close it first', async () => {
+  const { el, api, picker } = harness({ summaries: [poll({ electionHash: 'a' })] });
+  await picker.refresh(api);
+  await el.input.dispatch('focus');
+
+  let prevented = false;
+  await el.results.dispatch('mousedown', { preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
 });
