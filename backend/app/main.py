@@ -994,7 +994,14 @@ async def run_refresh(
         "stored_polls": 0, "stored_results": 0, "finalised": 0, "failed": 0, "skipped_unchanged": 0,
     }
     for tracked in due:
-        outcome = await service.run(tracked)
+        try:
+            outcome = await service.run(tracked)
+        except Exception:  # noqa: BLE001 - one row's surprise must not sink the tick or the route
+            log.exception("refresh %s raised outside RefreshService.run", tracked.request_key[:12])
+            counts["failed"] += 1
+            await run_in_threadpool(usage.record, UsageEvent.TRACKED_REFRESHED)
+            await run_in_threadpool(usage.record, UsageEvent.TRACKED_FAILED)
+            continue
         counts["stored_polls"] += outcome.stored_polls
         counts["stored_results"] += outcome.stored_results
         counts["finalised"] += int(outcome.finalised)

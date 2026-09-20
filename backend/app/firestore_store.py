@@ -636,20 +636,39 @@ class FirestoreOutreachStore:
 TRACKED_COLUMNS = (
     "year", "nation", "subnation", "election_date", "resolved", "status",
     "last_refresh_at", "next_refresh_at", "consecutive_failures", "last_error",
-    "result_hash", "result_digest", "unchanged_reads", "source_digest",
+    "result_hash", "result_digest", "first_result_at", "unchanged_reads", "source_digest",
     "lease_until", "added_by",
 )
 
 
 def _tracked_value(name: str, value):
     """One field of a tracked election as Firestore holds it."""
-    if name in ("last_refresh_at", "next_refresh_at", "lease_until"):
+    if name in ("last_refresh_at", "next_refresh_at", "lease_until", "first_result_at"):
         return to_epoch(value)
     if name == "election_date":
         return value.isoformat() if value is not None else None
     if name == "status":
         return TrackedStatus(value).value
     return value
+
+
+def pushed_next_refresh_at(current: float | None, lease_until: float) -> float:
+    """Where ``next_refresh_at`` goes the instant a lease is taken.
+
+    Unlike SQLite's ``due_tracked``, which filters ``lease_until`` in the
+    ``WHERE`` clause itself, Firestore's query can only order and ``LIMIT``
+    (see :meth:`FirestoreTrackedStore.due_tracked`) — an inequality on a
+    second field would either need a composite index keyed to *this* call's
+    ``now``, or drop the never-scheduled rows the same way an inequality on
+    ``next_refresh_at`` already would. So a leased row is pushed to sort
+    *after* the rows still worth trying, for as long as the lease lasts,
+    rather than merely marked unavailable once fetched (plan 3 review,
+    finding 7): otherwise it keeps a slot at the head of ``ORDER BY
+    next_refresh_at LIMIT`` for the whole lease, and an overlapping tick's
+    query never even reaches the rows genuinely due behind it. Never pulls a
+    row that was already scheduled *later* than the lease back earlier.
+    """
+    return lease_until if current is None else max(float(current), lease_until)
 
 
 def _tracked_from_doc(request_key: str, data: dict) -> TrackedElection:
@@ -668,6 +687,7 @@ def _tracked_from_doc(request_key: str, data: dict) -> TrackedElection:
         last_error=data.get("last_error"),
         result_hash=data.get("result_hash"),
         result_digest=data.get("result_digest"),
+        first_result_at=from_epoch(data.get("first_result_at")),
         unchanged_reads=int(data.get("unchanged_reads", 0)),
         source_digest=data.get("source_digest"),
         lease_until=from_epoch(data.get("lease_until")),
@@ -759,16 +779,19 @@ class FirestoreTrackedStore:
 
     def lease(self, request_key: str, until: datetime) -> TrackedElection | None:
         ref, clock = self._ref(request_key), self._clock
+        new_until = to_epoch(until)
 
         @firestore.transactional
         def _lease(transaction):
             snapshot = ref.get(transaction=transaction)
             if not snapshot.exists:
                 return False
-            held = snapshot.to_dict().get("lease_until")
+            data = snapshot.to_dict()
+            held = data.get("lease_until")
             if held is not None and float(held) > clock():
                 return False
-            transaction.update(ref, {"lease_until": to_epoch(until)})
+            pushed = pushed_next_refresh_at(data.get("next_refresh_at"), new_until)
+            transaction.update(ref, {"lease_until": new_until, "next_refresh_at": pushed})
             return True
 
         with io_span(log, "firestore", "lease", request=request_key[:12]) as span:

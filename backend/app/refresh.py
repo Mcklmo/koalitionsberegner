@@ -25,7 +25,10 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Literal
+
+import anyio.to_thread
 
 from .identity import election_hash, normalize_date
 from .observability import io_span
@@ -115,10 +118,33 @@ class RefreshService:
         self._config = config
         self._clock = clock
 
+    async def _in_thread(self, fn, *args, **kwargs):
+        """Firestore's client is blocking; keep it off the event loop.
+
+        The same seam as :meth:`ImportService._in_thread` (plan 3 review,
+        finding 1): every store call this service makes goes through here, so
+        one tick of a handful of rows costs a handful of worker threads, never
+        a handful of blocking gRPC calls made straight from the event loop —
+        which would stall every other request this container is serving.
+        """
+        call = fn if not kwargs else partial(fn, **kwargs)
+        return await anyio.to_thread.run_sync(call, *args)
+
     async def run(self, tracked: TrackedElection) -> Outcome:
         """Refresh one row. Never raises: every failure is reported in the ``Outcome``."""
         now = self._clock()
-        leased = self._tracked.lease(tracked.request_key, until=now + timedelta(seconds=LEASE_SECONDS))
+        try:
+            leased = await self._in_thread(
+                self._tracked.lease, tracked.request_key, now + timedelta(seconds=LEASE_SECONDS)
+            )
+        except Exception as exc:  # noqa: BLE001 - leasing itself must not sink the tick
+            from .service import _user_message
+
+            message = _user_message(exc)
+            log.warning("refresh %s could not be leased: %s", tracked.request_key[:12], message)
+            return Outcome(
+                tracked.request_key, tracked.status, failed=True, error=message[:MAX_ERROR_CHARS]
+            )
         if leased is None:
             return Outcome(tracked.request_key, tracked.status, leased=False)
         try:
@@ -128,15 +154,29 @@ class RefreshService:
                 span["stored_polls"] = outcome.stored_polls
                 span["stored_results"] = outcome.stored_results
             return outcome
+        except Exception as exc:  # noqa: BLE001 - a store failure inside the run must not escape
+            from .service import _user_message
+
+            message = _user_message(exc)
+            log.warning("refresh %s failed: %s", tracked.request_key[:12], message)
+            return Outcome(
+                tracked.request_key, tracked.status, failed=True, error=message[:MAX_ERROR_CHARS]
+            )
         finally:
-            self._tracked.release(tracked.request_key)
+            try:
+                await self._in_thread(self._tracked.release, tracked.request_key)
+            except Exception:  # noqa: BLE001 - best-effort; the lease still expires on its own
+                log.warning(
+                    "refresh %s could not be released (its lease will just time out)",
+                    tracked.request_key[:12], exc_info=True,
+                )
 
     async def _run_leased(self, tracked: TrackedElection, now: datetime) -> Outcome:
         request = ImportRequest(tracked.year, tracked.nation, tracked.subnation)
         try:
             tracked, resolved = await self._resolved_for(tracked, request)
         except Exception as exc:  # noqa: BLE001 - reported as a failed run, not raised
-            return self._fail(tracked, now, exc)
+            return await self._fail(tracked, now, exc)
 
         election_date = normalize_date(resolved.election_date)
         want: Literal["polls", "results"] = "results" if now >= election_day_start(election_date) else "polls"
@@ -145,7 +185,7 @@ class RefreshService:
                 return await self._refresh_polls(tracked, resolved, request, now)
             return await self._refresh_results(tracked, resolved, request, now)
         except Exception as exc:  # noqa: BLE001 - one election's failure is not the tick's
-            return self._fail(tracked, now, exc)
+            return await self._fail(tracked, now, exc)
 
     async def _resolved_for(
         self, tracked: TrackedElection, request: ImportRequest
@@ -159,7 +199,8 @@ class RefreshService:
         if tracked.resolved is not None:
             return tracked, ResolvedElection.model_validate(tracked.resolved)
         resolved = await self._parser._resolve(request)  # noqa: SLF001 - the one caller allowed to
-        updated = self._tracked.update_tracked(
+        updated = await self._in_thread(
+            self._tracked.update_tracked,
             tracked.request_key,
             resolved=resolved.model_dump(mode="json"),
             election_date=normalize_date(resolved.election_date),
@@ -174,14 +215,17 @@ class RefreshService:
         page = await self._parser.peek_source(resolved, want="polls")
         digest = source_digest(page.text) if page is not None else None
         if digest is not None and digest == tracked.source_digest:
-            return self._reschedule(tracked, now, skipped_unchanged=True)
+            return await self._reschedule(tracked, now, skipped_unchanged=True)
 
         forecasts = await self._parser.parse_resolved(resolved, request, want="polls")
         stored = 0
         for forecast in forecasts[: self._config.keep_newest]:
-            if self._elections.put_election(_result_hash(forecast), forecast, provenance="auto"):
+            written = await self._in_thread(
+                self._elections.put_election, _result_hash(forecast), forecast, provenance="auto"
+            )
+            if written:
                 stored += 1
-        return self._reschedule(
+        return await self._reschedule(
             tracked, now, stored_polls=stored, extra_fields={"source_digest": digest}
         )
 
@@ -196,7 +240,11 @@ class RefreshService:
         # be stable: the first read of a page that has not moved since the last
         # poll was fetched must still go on to extract, or nothing is ever stored.
         if digest is not None and digest == tracked.source_digest and tracked.result_hash is not None:
-            return self._settle(tracked, now, tracked.unchanged_reads + 1, skipped_unchanged=True)
+            # The *source page* not moving is not the same as another read
+            # agreeing with the stored result (plan 3 review, finding 5): this
+            # is a fetch that was never even compared to what is stored, so it
+            # must not advance ``unchanged_reads`` towards finalising.
+            return await self._settle(tracked, now, tracked.unchanged_reads, skipped_unchanged=True)
 
         election = await self._parser.parse_resolved(resolved, request, want="results")
         _check_gates(election, resolved, request)
@@ -205,23 +253,45 @@ class RefreshService:
 
         if tracked.result_hash is None:
             new_hash = _result_hash(election)
-            self._elections.put_election(new_hash, election, provenance="auto")
+            written = await self._in_thread(
+                self._elections.put_election, new_hash, election, provenance="auto"
+            )
             extra["result_hash"] = new_hash
-            return self._settle(
-                tracked, now, 1, result_digest_value=digest_of_result, stored_results=1, extra_fields=extra
+            if not written:
+                # Somebody already confirmed this exact election by hand —
+                # imported and reviewed it before the refresh got here, most
+                # likely (plan 3 review, finding 4). Adopt its hash to track
+                # it going forward, but the refresh never wrote anything and
+                # must not claim it did, and it never overwrites what a
+                # person already checked (the branches below refuse to, once
+                # ``tracked.result_hash`` is set to a ``manual`` election).
+                existing = await self._in_thread(self._elections.get_election, new_hash)
+                digest_of_result = result_digest(existing) if existing is not None else digest_of_result
+            return await self._settle(
+                tracked, now, 1, result_digest_value=digest_of_result,
+                stored_results=1 if written else 0, extra_fields=extra,
+            )
+
+        stored = await self._in_thread(self._elections.get_stored, tracked.result_hash)
+        if stored is not None and stored.provenance == "manual":
+            # Never overwrite a manually confirmed election with unreviewed
+            # data, however different the two now look.
+            return await self._settle(
+                tracked, now, tracked.unchanged_reads + 1,
+                result_digest_value=result_digest(stored.election), extra_fields=extra,
             )
 
         if tracked.result_digest != digest_of_result:
-            self._elections.replace_election(tracked.result_hash, election)
-            return self._settle(
+            await self._in_thread(self._elections.replace_election, tracked.result_hash, election)
+            return await self._settle(
                 tracked, now, 1, result_digest_value=digest_of_result, stored_results=1, extra_fields=extra
             )
 
-        return self._settle(
+        return await self._settle(
             tracked, now, tracked.unchanged_reads + 1, result_digest_value=digest_of_result, extra_fields=extra
         )
 
-    def _settle(
+    async def _settle(
         self,
         tracked: TrackedElection,
         now: datetime,
@@ -232,27 +302,43 @@ class RefreshService:
         skipped_unchanged: bool = False,
         extra_fields: dict | None = None,
     ) -> Outcome:
-        """Store the new ``unchanged_reads``, finalising once it reaches ``stable_after``."""
-        final = unchanged_reads >= self._config.stable_after
-        fields: dict = {"unchanged_reads": unchanged_reads, **(extra_fields or {})}
+        """Store the new ``unchanged_reads``, finalising once it has been
+        stable for ``stable_after`` reads *and* ``min_finalize_after`` has
+        passed since the first result was stored (plan 3 review, finding 5).
+
+        The count alone is not enough: the shipped schedule reads every 30
+        minutes for two days, so a couple of quiet ticks around one real
+        extraction could otherwise finalise a partial count within the hour
+        and freeze it there forever (``next_refresh_at`` goes to ``None``).
+        ``first_result_at`` is backfilled here, once, the first time this row
+        has anything to be stable *about* — never re-derived after that, so
+        the clock it starts is the same one every later tick reads.
+        """
+        first_result_at = tracked.first_result_at or now
+        fields: dict = {
+            "unchanged_reads": unchanged_reads, "first_result_at": first_result_at,
+            **(extra_fields or {}),
+        }
         if result_digest_value is not None:
             fields["result_digest"] = result_digest_value
+        old_enough = now - first_result_at >= self._config.min_finalize_after
+        final = unchanged_reads >= self._config.stable_after and old_enough
         if final:
             fields.update(
                 status=TrackedStatus.FINAL, next_refresh_at=None, last_refresh_at=now,
                 consecutive_failures=0, last_error=None,
             )
-            self._tracked.update_tracked(tracked.request_key, **fields)
+            await self._in_thread(self._tracked.update_tracked, tracked.request_key, **fields)
             return Outcome(
                 tracked.request_key, TrackedStatus.FINAL, stored_results=stored_results,
                 finalised=True, skipped_unchanged=skipped_unchanged,
             )
-        return self._reschedule(
+        return await self._reschedule(
             tracked, now, stored_results=stored_results, skipped_unchanged=skipped_unchanged,
             status=TrackedStatus.COUNTING, extra_fields=fields,
         )
 
-    def _reschedule(
+    async def _reschedule(
         self,
         tracked: TrackedElection,
         now: datetime,
@@ -282,14 +368,14 @@ class RefreshService:
             fields["status"] = TrackedStatus.PARKED
             fields["next_refresh_at"] = None
             fields["last_error"] = "past the refresh schedule's last window"
-            self._tracked.update_tracked(tracked.request_key, **fields)
+            await self._in_thread(self._tracked.update_tracked, tracked.request_key, **fields)
             return Outcome(
                 tracked.request_key, TrackedStatus.PARKED, stored_polls=stored_polls,
                 stored_results=stored_results, skipped_unchanged=skipped_unchanged, parked=True,
             )
         fields["status"] = status
         fields["next_refresh_at"] = due_after(self._config, now, interval, 0)
-        self._tracked.update_tracked(tracked.request_key, **fields)
+        await self._in_thread(self._tracked.update_tracked, tracked.request_key, **fields)
         return Outcome(
             tracked.request_key, status, stored_polls=stored_polls, stored_results=stored_results,
             skipped_unchanged=skipped_unchanged,
@@ -302,7 +388,7 @@ class RefreshService:
             return None
         return interval_for(self._config, now, tracked.election_date)
 
-    def _fail(self, tracked: TrackedElection, now: datetime, exc: Exception) -> Outcome:
+    async def _fail(self, tracked: TrackedElection, now: datetime, exc: Exception) -> Outcome:
         """Back off, and park once ``failures.park_after`` is reached (plan 3, A2, A4.5)."""
         from .service import _user_message
 
@@ -317,7 +403,8 @@ class RefreshService:
         # failed run and `is_due`'s idea of "on schedule" cannot drift apart.
         due = None if parked else due_after(self._config, now, interval, failures)
         status = TrackedStatus.PARKED if parked else tracked.status
-        self._tracked.update_tracked(
+        await self._in_thread(
+            self._tracked.update_tracked,
             tracked.request_key,
             consecutive_failures=failures,
             last_error=message[:MAX_ERROR_CHARS],

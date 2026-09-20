@@ -547,6 +547,11 @@ class TrackedElection:
     """The identity hash of the stored election, once a result has been stored."""
     result_digest: str | None = None
     """SHA-256 of the last result read, to tell a changed count from a repeat."""
+    first_result_at: datetime | None = None
+    """When a result was first stored (or adopted) for this row. Set once, never
+    moved: what a minimum stability duration is measured from (plan 3 review,
+    finding 5), so two quiet ticks around one real read cannot finalise a
+    partial count within the hour."""
     unchanged_reads: int = 0
     source_digest: str | None = None
     """SHA-256 of the condensed source text last read, so a page that has not
@@ -567,13 +572,13 @@ TRACKED_FIELDS = frozenset(
     {
         "election_date", "resolved", "status", "last_refresh_at", "next_refresh_at",
         "consecutive_failures", "last_error", "result_hash", "result_digest",
-        "unchanged_reads", "source_digest", "lease_until",
+        "first_result_at", "unchanged_reads", "source_digest", "lease_until",
     }
 )
 
 
 #: The fields holding an instant, which must always be told in UTC.
-TRACKED_TIMES = ("last_refresh_at", "next_refresh_at", "lease_until")
+TRACKED_TIMES = ("last_refresh_at", "next_refresh_at", "lease_until", "first_result_at")
 
 
 def check_fields(fields: dict[str, Any]) -> dict[str, Any]:

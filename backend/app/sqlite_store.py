@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS tracked_elections (
     last_error           TEXT,
     result_hash          TEXT,
     result_digest        TEXT,
+    first_result_at      REAL,
     unchanged_reads      INTEGER NOT NULL DEFAULT 0,
     source_digest        TEXT,
     lease_until          REAL,
@@ -129,6 +130,27 @@ CREATE TABLE IF NOT EXISTS outreach_drafts (
     edited            INTEGER NOT NULL DEFAULT 0
 );
 """
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    """Bring a database created by an earlier version up to date.
+
+    ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a column
+    added later has to be added here or every read of it fails. Module-level
+    because :class:`SqliteElectionStore` and :class:`SqliteTrackedStore` each
+    run ``SCHEMA`` against the same file and must agree on what it now holds.
+    """
+    for table, column, definition in (
+        ("elections", "selected", "INTEGER NOT NULL DEFAULT 0"),
+        ("import_jobs", "forecasts", "TEXT"),
+        ("import_jobs", "owner", "TEXT"),
+        # Everything already in the table was confirmed by a person.
+        ("elections", "provenance", "TEXT NOT NULL DEFAULT 'manual'"),
+        ("tracked_elections", "first_result_at", "REAL"),
+    ):
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _stored_from_row(row: sqlite3.Row) -> StoredElection:
@@ -175,25 +197,7 @@ class SqliteElectionStore:
         with io_span(log, "sqlite", "migrate", path=self._path):
             conn = self._connect()
             conn.executescript(SCHEMA)
-            self._add_missing_columns(conn)
-
-    @staticmethod
-    def _add_missing_columns(conn: sqlite3.Connection) -> None:
-        """Bring a database created by an earlier version up to date.
-
-        ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a
-        column added later has to be added here or every read of it fails.
-        """
-        for table, column, definition in (
-            ("elections", "selected", "INTEGER NOT NULL DEFAULT 0"),
-            ("import_jobs", "forecasts", "TEXT"),
-            ("import_jobs", "owner", "TEXT"),
-            # Everything already in the table was confirmed by a person.
-            ("elections", "provenance", "TEXT NOT NULL DEFAULT 'manual'"),
-        ):
-            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-            if column not in existing:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            _add_missing_columns(conn)
 
     # --- connection handling ----------------------------------------------
 
@@ -593,6 +597,7 @@ def _tracked_from_row(row: sqlite3.Row) -> TrackedElection:
         last_error=row["last_error"],
         result_hash=row["result_hash"],
         result_digest=row["result_digest"],
+        first_result_at=from_epoch(row["first_result_at"]),
         unchanged_reads=int(row["unchanged_reads"]),
         source_digest=row["source_digest"],
         lease_until=from_epoch(row["lease_until"]),
@@ -602,7 +607,7 @@ def _tracked_from_row(row: sqlite3.Row) -> TrackedElection:
 
 def _tracked_column(name: str, value):
     """One field of a tracked election as SQLite stores it."""
-    if name in ("last_refresh_at", "next_refresh_at", "lease_until"):
+    if name in ("last_refresh_at", "next_refresh_at", "lease_until", "first_result_at"):
         return to_epoch(value)
     if name == "election_date":
         return value.isoformat() if value is not None else None
@@ -629,7 +634,9 @@ class SqliteTrackedStore:
         self._clock = clock
         self._local = threading.local()
         with io_span(log, "sqlite", "migrate", path=self._path):
-            self._connect().executescript(SCHEMA)
+            conn = self._connect()
+            conn.executescript(SCHEMA)
+            _add_missing_columns(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -670,8 +677,8 @@ class SqliteTrackedStore:
             columns = (
                 "request_key", "year", "nation", "subnation", "election_date", "resolved",
                 "status", "last_refresh_at", "next_refresh_at", "consecutive_failures",
-                "last_error", "result_hash", "result_digest", "unchanged_reads",
-                "source_digest", "lease_until", "added_by",
+                "last_error", "result_hash", "result_digest", "first_result_at",
+                "unchanged_reads", "source_digest", "lease_until", "added_by",
             )
             values = [_tracked_column(name, getattr(tracked, name)) for name in columns]
             added = self._connect().execute(

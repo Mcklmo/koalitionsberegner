@@ -25,6 +25,10 @@ after_election:         # chosen by the time since 00:00 UTC on election day;
 results:
   stable_after: 3       # identical consecutive reads before the election is final
                         # (after that nothing is fetched again)
+  min_finalize_after: 12h  # and at least this long since the first result was
+                            # stored, however fast stable_after is reached —
+                            # a slow-reporting source must not be declared
+                            # final after two quiet ticks around one read
 polls:
   keep_newest: 3        # forecasts stored per refresh, newest first; older
                         # polls already stored stay

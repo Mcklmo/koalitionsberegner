@@ -136,7 +136,13 @@ class LlmElectionParser:
             # Wikipedia is searched for polling articles by the flag, so the
             # caller's answer is written into it.
             return await self._forecasts(resolved.model_copy(update={"upcoming": True}), request)
-        candidates = await self._candidates(resolved)
+        # The symmetric case (plan 3 review, finding 2): a tracked election's
+        # ``resolved`` is frozen from whichever tick first resolved it, and on
+        # election day that can still say ``upcoming=True`` — the calendar has
+        # moved on since, even though the resolver's own answer has not. Left
+        # unmodified, :meth:`_articles` would search Wikipedia for the polling
+        # article forever, and a held election would never produce a result.
+        candidates = await self._candidates(resolved.model_copy(update={"upcoming": False}))
         if not candidates:
             raise ParseError(
                 f"no page publishing the seats for {_clip(resolved.describe(), 80)} "
@@ -170,10 +176,16 @@ class LlmElectionParser:
         """
         from .fetcher import FetchError
 
+        # Exactly the candidate list the matching branch of :meth:`parse_resolved`
+        # would read (plan 3 review, finding 3): if this picked a different
+        # page, the digest hashed here would describe a page nothing ever
+        # extracts, and an unchanged *that* page would wrongly skip a changed
+        # one, or a changed *that* page would pay for a model call whose
+        # answer never differs.
         candidates = (
-            await self._poll_candidates(resolved)
+            await self._poll_candidates(resolved.model_copy(update={"upcoming": True}))
             if want == "polls"
-            else await self._candidates(resolved)
+            else await self._candidates(resolved.model_copy(update={"upcoming": False}))
         )
         if not candidates:
             return None

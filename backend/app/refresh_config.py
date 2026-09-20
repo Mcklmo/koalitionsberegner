@@ -99,6 +99,7 @@ class RefreshConfig:
     before_election: tuple[BeforeRow, ...]   # descending more_than, ending at 0
     after_election: tuple[AfterRow, ...]     # ascending within
     stable_after: int
+    min_finalize_after: timedelta
     keep_newest: int
     backoff_factor: int
     max_backoff: timedelta
@@ -164,7 +165,7 @@ class RefreshConfig:
                     "keep after_election in ascending order"
                 )
 
-        results = _mapping(top["results"], "results", ("stable_after",))
+        results = _mapping(top["results"], "results", ("stable_after", "min_finalize_after"))
         polls = _mapping(top["polls"], "polls", ("keep_newest",))
         failures = _mapping(
             top["failures"], "failures", ("backoff_factor", "max_backoff", "park_after")
@@ -174,6 +175,7 @@ class RefreshConfig:
             before_election=before,
             after_election=after,
             stable_after=_positive_int(results, "stable_after", "results"),
+            min_finalize_after=_duration(results, "min_finalize_after", "results", allow_zero=True),
             keep_newest=_positive_int(polls, "keep_newest", "polls"),
             backoff_factor=_positive_int(failures, "backoff_factor", "failures"),
             max_backoff=_duration(failures, "max_backoff", "failures"),

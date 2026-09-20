@@ -268,9 +268,15 @@ export default {
       ctx.waitUntil(callOrigin(env, `${CALENDAR_SCAN_PATH}?years=${calendarScanYears()}`));
       return;
     }
-    // The daily cron (or an unrecognised one): the usage reports, whichever
-    // are due — the schedule this Worker has run the longest, so it is what
-    // an unexpected `controller.cron` falls back to rather than doing nothing.
-    ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
+    if (controller.cron === DAILY_CRON) {
+      ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
+      return;
+    }
+    // A cron string matching none of the three configured here means
+    // wrangler.toml's schedule and this file have drifted apart. Falling back
+    // to the daily report would be worse than doing nothing: a typo'd cron
+    // firing every few minutes would spam reports and the refresh would
+    // silently never run at all.
+    console.warn(`scheduled: unrecognised cron ${controller.cron}; doing nothing`);
   },
 };

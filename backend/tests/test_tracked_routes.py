@@ -25,7 +25,8 @@ REQUEST_KEY = "k" * 64
 CONFIG = RefreshConfig(
     before_election=(BeforeRow(more_than=timedelta(0), every=timedelta(days=1)),),
     after_election=(AfterRow(within=timedelta(days=45), every=timedelta(days=1)),),
-    stable_after=3, keep_newest=3, backoff_factor=2, max_backoff=timedelta(days=7), park_after=8,
+    stable_after=3, min_finalize_after=timedelta(0), keep_newest=3, backoff_factor=2,
+    max_backoff=timedelta(days=7), park_after=8,
 )
 
 
@@ -118,7 +119,38 @@ def test_refresh_counts_a_failed_row_and_still_answers_200(client, monkeypatch, 
     body = response.json()
     assert body["refreshed"] == 1
     assert body["failed"] == 1
-    assert tracked_store.get_tracked(REQUEST_KEY).consecutive_failures == 1
+
+
+def test_a_row_that_raises_outside_refreshservice_still_lets_the_tick_finish(
+    client, monkeypatch, tracked_store
+):
+    """plan 3 review, finding 6: ``RefreshService.run`` promises never to
+    raise, but the tick loop must not trust that alone — an exception that
+    still escapes it (a bug, here forced directly) must not 500 the whole
+    route and skip every row queued behind the broken one."""
+    monkeypatch.setenv("USAGE_REPORT_SECRET", SCHEDULE_SECRET)
+    boom_key = compute_request_key(2026, "Danmark", None)
+    ok_key = compute_request_key(2026, "Sverige", None)
+    tracked_store.add_tracked(row(request_key=boom_key, nation="Danmark"))
+    tracked_store.add_tracked(row(request_key=ok_key, nation="Sverige"))
+
+    original_run = main.RefreshService.run
+
+    async def flaky_run(self, tracked):
+        if tracked.request_key == boom_key:
+            raise RuntimeError("boom")
+        return await original_run(self, tracked)
+
+    monkeypatch.setattr(main.RefreshService, "run", flaky_run)
+
+    response = client.post("/api/internal/refresh", headers=SCHEDULE)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["refreshed"] == 2
+    assert body["failed"] == 2  # the raiser, and the other row (its parser is a bare object())
+    # The row queued behind the one that raised was still reached.
+    assert tracked_store.get_tracked(ok_key).consecutive_failures == 1
 
 
 def test_a_refresh_tick_is_counted_into_the_daily_usage_report(

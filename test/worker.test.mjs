@@ -355,14 +355,23 @@ test('the daily cron asks the origin for the reports, carrying both secrets', as
   }
 });
 
-test('an unrecognised cron falls back to the usage reports', async () => {
+test('an unrecognised cron is logged and does nothing', async (t) => {
   const calls = recordFetches();
+  t.mock.method(console, 'warn', () => {});
   const ctx = scheduledContext();
 
   await worker.scheduled({ cron: 'not one of ours' }, REPORT_ENV, ctx);
   await Promise.all(ctx.pending);
 
-  assert.deepEqual(calls.map((call) => call.url), [`${ENV.ORIGIN_URL}${USAGE_REPORTS_PATH}`]);
+  // A cron string this file does not recognise must not be guessed at — it
+  // is a configuration mistake, not a signal to run the daily report early
+  // (plan 3 review, finding 8): the wrong guess would email reports every
+  // time the mismatched cron fires and silently never refresh anything.
+  assert.equal(calls.length, 0);
+  assert.equal(ctx.pending.length, 0);
+  assert.ok(
+    console.warn.mock.calls.some((call) => call.arguments[0].includes('not one of ours')),
+  );
 });
 
 test('the 30-minute cron asks the origin to refresh tracked elections', async () => {
