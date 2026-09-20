@@ -13,6 +13,7 @@
  */
 
 import { readSecret, saveSecret } from './admin.js';
+import { buttonStates } from './approve-state.js';
 import { ADMIN_SECRET_HEADER } from './api.js';
 import { language, parseStrings, t, useStrings } from './i18n.js';
 
@@ -83,10 +84,9 @@ async function load() {
   el.reply.value = draft.reply_text;
   const saved = readSecret();
   if (saved) el.secret.value = saved;
-  if (draft.status !== 'pending' && draft.status !== 'failed') {
-    el.send.disabled = true;
-    el.reject.disabled = true;
-  }
+  const offered = buttonStates(draft.status);
+  el.send.disabled = !offered.send;
+  el.reject.disabled = !offered.reject;
   if (draft.last_error) setMessage(draft.last_error, 'error');
 }
 
