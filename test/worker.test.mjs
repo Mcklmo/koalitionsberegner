@@ -283,6 +283,47 @@ test('a second request for the same preview image is served from the cache', asy
   assert.equal(calls.length, 1, 'the second request never reached the origin');
 });
 
+// --- the outreach approval page: /approve/* -------------------------------
+
+const APPROVE_HTML = '<!DOCTYPE html><html><head><title>Koalitionsberegner — outreach</title></head><body></body></html>';
+const TOKEN = 'abc123_-XYZ';
+
+test('an approval link serves approve.html, never index.html, marked noindex and uncached', async () => {
+  const assets = recordAssets(APPROVE_HTML);
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/approve/${TOKEN}`), { ...ENV, ...assets }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-robots-tag'), 'noindex');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(await response.text(), APPROVE_HTML);
+  assert.deepEqual(assets.calls, ['https://koalitionsberegner.moritzmarcus.com/approve.html']);
+});
+
+test('an approval path that is not a bare token is not the page', async () => {
+  const assets = recordAssets(APPROVE_HTML);
+  for (const bad of ['/approve/', '/approve/has a space', '/approve/tok/en']) {
+    const response = await worker.fetch(
+      new Request(`https://koalitionsberegner.moritzmarcus.com${bad}`), { ...ENV, ...assets }
+    );
+    assert.equal(response.status, 404, bad);
+  }
+  assert.equal(assets.calls.length, 0);
+});
+
+test('the approval page never carries Open Graph tags', async () => {
+  const assets = recordAssets(APPROVE_HTML);
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/approve/${TOKEN}`), { ...ENV, ...assets }
+  );
+
+  const html = await response.text();
+  assert.doesNotMatch(html, /og:/);
+});
+
 // --- the daily cron -----------------------------------------------------------
 
 const REPORT_ENV = { ...ENV, USAGE_REPORT_SECRET: 'r'.repeat(64) };

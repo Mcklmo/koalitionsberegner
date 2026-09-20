@@ -3,11 +3,14 @@
  *
  * The page itself never reaches this code: `index.html` and `js/` are served
  * straight from Cloudflare's asset store, at the edge nearest the visitor (see
- * `run_worker_first` in wrangler.jsonc). Only `/api/*` and `/e/*` run here:
- * the first is forwarded to Cloud Run carrying the secret without which the
- * origin answers 403 — so the `run.app` address serves nothing to anyone who
- * goes around us; the second is the page itself, unfurled (see
- * `doc/plans/02-share-links.md`, WP2).
+ * `run_worker_first` in wrangler.jsonc). Only `/api/*`, `/e/*` and `/approve/*`
+ * run here: the first is forwarded to Cloud Run carrying the secret without
+ * which the origin answers 403 — so the `run.app` address serves nothing to
+ * anyone who goes around us; the second is the page itself, unfurled (see
+ * `doc/plans/02-share-links.md`, WP2); the third is the outreach approval page
+ * (see `doc/plans/04-reddit-outreach.md`, section 2) — never unfurled, never
+ * indexed, so an approval link leaked to a crawler or a chat preview shows
+ * nothing.
  *
  * Once a day the cron in wrangler.jsonc runs `scheduled`, which asks the origin
  * to email the usage reports that are due. That endpoint lives under
@@ -30,6 +33,12 @@ export const USAGE_REPORTS_PATH = '/api/internal/usage-reports';
 const SHARE_PATH = /^\/e\/([0-9a-f]{12,64})\/?$/;
 const OG_IMAGE_PATH = /^\/api\/og\/[0-9a-f]{12,64}\.png$/;
 
+//: An outreach approval link: `/approve/<token>`, the token being whatever
+//: `secrets.token_urlsafe(32)` produced (`app.outreach.new_token`) — URL-safe
+//: base64, so letters, digits, `-` and `_`. Anything else is not a link this
+//: deployment ever sent, so it gets a plain 404 rather than the page.
+const APPROVE_PATH = /^\/approve\/([A-Za-z0-9_-]+)\/?$/;
+
 //: What a link unfurls into when its card cannot be read — an unknown id, or
 //: the origin not answering. The page still loads either way.
 const GENERIC_CARD = {
@@ -46,13 +55,15 @@ export function escapeAttribute(value) {
 }
 
 /**
- * Fetch the static page (the asset copy, never the Cloud Run image's own) and
+ * Fetch a static asset (the asset copy, never the Cloud Run image's own) and
  * return it with `transform` applied to its HTML and `headers` merged over
  * the asset response's own — which already carries `_headers`. Shared by
- * every Worker route that answers with the page rather than the API.
+ * every Worker route that answers with a page rather than the API.
+ * `path` defaults to `/` (`index.html`, what `/e/*` unfurls); `/approve/*`
+ * passes its own small page instead.
  */
-export async function servePage(env, request, { transform, headers } = {}) {
-  const asset = await env.ASSETS.fetch(new Request(new URL('/', request.url)));
+export async function servePage(env, request, { path = '/', transform, headers } = {}) {
+  const asset = await env.ASSETS.fetch(new Request(new URL(path, request.url)));
   let body = await asset.text();
   if (transform) body = transform(body);
   const responseHeaders = new Headers(asset.headers);
@@ -175,6 +186,19 @@ export default {
     if ((method === 'GET' || method === 'HEAD') && url.pathname.startsWith('/e/')) {
       const match = url.pathname.match(SHARE_PATH);
       return serveSharedLink(request, env, match ? match[1] : null);
+    }
+
+    // The approval page: never unfurled, never indexed, never cached — an
+    // approval link is single-use and every fetch of the page itself must be
+    // the one the owner is looking at (doc/plans/04-reddit-outreach.md,
+    // section 2). Its own script calls the API routes below for the draft
+    // and to send or reject it.
+    if ((method === 'GET' || method === 'HEAD') && url.pathname.startsWith('/approve/')) {
+      if (!APPROVE_PATH.test(url.pathname)) return new Response('Not found', { status: 404 });
+      return servePage(env, request, {
+        path: '/approve.html',
+        headers: { 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' },
+      });
     }
 
     if (!url.pathname.startsWith('/api/') || url.pathname.startsWith('/api/internal/')) {
