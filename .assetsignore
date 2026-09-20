@@ -14,6 +14,7 @@
 .wrangler
 *.local.sh
 Dockerfile
+HANDOVER.md
 README.md
 wrangler.jsonc
 firestore.indexes.json

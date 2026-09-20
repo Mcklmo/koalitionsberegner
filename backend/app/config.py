@@ -22,7 +22,13 @@ from . import ENV_FILE_LOADED, ENV_NAMES_LOADED
 from .mailer import DisabledMailer, Mailer, SmtpMailer
 from .parser import DEFAULT_PAGE_LIMIT, ElectionParser, UnavailableParser
 from .search import DEFAULT_SEARCH_LIMIT
-from .store import DEFAULT_STALE_AFTER_SECONDS, ElectionStore, InMemoryElectionStore
+from .store import (
+    DEFAULT_STALE_AFTER_SECONDS,
+    ElectionStore,
+    InMemoryElectionStore,
+    InMemoryTrackedStore,
+    TrackedStore,
+)
 from .usage import InMemoryUsageStore, UsageRecorder, UsageStore
 from .wikipedia import DEFAULT_LANGUAGE
 from .wishlist import DisabledWishlist, GithubWishlist, Wishlist
@@ -163,6 +169,72 @@ def get_outreach_store():
         project=project, database=os.environ.get("FIRESTORE_DATABASE", "(default)")
     )
     return FirestoreOutreachStore(client)
+
+
+@lru_cache(maxsize=1)
+def get_tracked_store() -> TrackedStore:
+    """The elections this deployment watches, in the same backend as the elections.
+
+    Beside :func:`get_store` rather than inside it, for the same reason
+    :func:`get_outreach_store` is: tracking is not part of the election data,
+    and ``ELECTION_STORE`` is still the one variable that says whether this
+    process has a database.
+    """
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    backend = _env_choice(
+        "ELECTION_STORE", STORE_BACKENDS, "firestore" if project else "memory"
+    )
+
+    if backend == "memory":
+        return InMemoryTrackedStore()
+
+    if backend == "sqlite":
+        from .sqlite_store import SqliteTrackedStore
+
+        return SqliteTrackedStore(os.environ.get("SQLITE_PATH", DEFAULT_SQLITE_PATH))
+
+    if not project:
+        raise ConfigError("ELECTION_STORE=firestore requires GOOGLE_CLOUD_PROJECT")
+
+    from google.cloud import firestore
+
+    from .firestore_store import FirestoreTrackedStore
+
+    client = firestore.Client(
+        project=project, database=os.environ.get("FIRESTORE_DATABASE", "(default)")
+    )
+    return FirestoreTrackedStore(client)
+
+
+#: Most tracked elections one scheduled tick may refresh. The cap is what keeps
+#: a tick inside Cloud Run's request timeout: each one is a fetch and at most
+#: one model call, run one after another (plan 3, A3).
+DEFAULT_REFRESH_MAX_PER_TICK = 5
+
+
+def refresh_max_per_tick() -> int:
+    value = _env_int("REFRESH_MAX_PER_TICK", DEFAULT_REFRESH_MAX_PER_TICK)
+    if value < 1:
+        raise ConfigError("REFRESH_MAX_PER_TICK must be at least 1")
+    return value
+
+
+def refresh_model() -> str:
+    """A cheaper model for scheduled refreshes, or empty for the extractor's own.
+
+    Plan 3, A6.3: a refresh re-reads a page whose shape the strict schema and
+    the gates in :mod:`app.refresh` already check, so it is the one place a
+    weaker model can be tried without a person having to notice the mistake.
+    """
+    return _env_str("REFRESH_MODEL")
+
+
+@lru_cache(maxsize=1)
+def get_refresh_config():
+    """The refresh schedule, read once per process from ``refresh.yaml``."""
+    from .refresh_config import load_configured
+
+    return load_configured()
 
 
 def search_mode() -> str:
@@ -549,6 +621,11 @@ def validate_configuration() -> dict[str, str]:
     _env_float("IMPORT_MAX_WAIT_SECONDS", 25.0)
     get_store()
     get_parser()
+    # A typo in the schedule does not fail loudly on its own: it just refreshes
+    # the wrong elections at the wrong times until somebody notices.
+    get_refresh_config()
+    refresh_max_per_tick()
+    get_tracked_store()
     # Not reached by ``get_parser`` when importing is off, and a misspelled
     # SEARCH_MODE or WIKIPEDIA_LANGUAGE must still stop the boot.
     get_search()

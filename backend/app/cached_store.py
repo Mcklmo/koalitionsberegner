@@ -135,6 +135,17 @@ class CachedElectionStore:
         finally:
             self._forget(election_hash)
 
+    def put_election(
+        self, election_hash: str, election: Election, *, provenance: str = "auto"
+    ) -> bool:
+        try:
+            return self._inner.put_election(election_hash, election, provenance=provenance)
+        finally:
+            # Named here rather than left to __getattr__: a write that the cache
+            # does not hear about is a list that keeps the new election out of
+            # the picker until the entry happens to expire.
+            self._forget(election_hash)
+
     def link(self, request_key: str, election_hash: str) -> None:
         try:
             return self._inner.link(request_key, election_hash)

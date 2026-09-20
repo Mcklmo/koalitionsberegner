@@ -20,6 +20,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from datetime import date, datetime
 from pathlib import Path
 
 from .observability import io_span
@@ -32,6 +33,8 @@ from .outreach import (
 )
 from .schema import Election
 from .store import (
+    ACTIVE_STATUSES,
+    DEFAULT_PROVENANCE,
     DEFAULT_STALE_AFTER_SECONDS,
     DISCARDABLE_STATUSES,
     Claim,
@@ -41,8 +44,13 @@ from .store import (
     Job,
     JobStatus,
     StoredElection,
+    TrackedElection,
+    TrackedStatus,
     _decide,
+    check_fields,
+    from_epoch,
     select_by_place,
+    to_epoch,
 )
 
 log = logging.getLogger(__name__)
@@ -73,6 +81,25 @@ CREATE TABLE IF NOT EXISTS import_results (
     request_key   TEXT PRIMARY KEY,
     election_hash TEXT NOT NULL,
     linked_at     REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tracked_elections (
+    request_key          TEXT PRIMARY KEY,
+    year                 INTEGER NOT NULL,
+    nation               TEXT NOT NULL,
+    subnation            TEXT,
+    election_date        TEXT,
+    resolved             TEXT,
+    status               TEXT NOT NULL,
+    last_refresh_at      REAL,
+    next_refresh_at      REAL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_error           TEXT,
+    result_hash          TEXT,
+    result_digest        TEXT,
+    unchanged_reads      INTEGER NOT NULL DEFAULT 0,
+    source_digest        TEXT,
+    lease_until          REAL,
+    added_by             TEXT NOT NULL DEFAULT 'owner'
 );
 CREATE TABLE IF NOT EXISTS outreach_drafts (
     id                TEXT PRIMARY KEY,
@@ -111,6 +138,7 @@ def _stored_from_row(row: sqlite3.Row) -> StoredElection:
         election=Election.model_validate(json.loads(row["election"])),
         stored_at=float(row["stored_at"]),
         selected=bool(row["selected"]),
+        provenance=row["provenance"] or DEFAULT_PROVENANCE,
     )
 
 
@@ -161,6 +189,8 @@ class SqliteElectionStore:
             ("elections", "selected", "INTEGER NOT NULL DEFAULT 0"),
             ("import_jobs", "forecasts", "TEXT"),
             ("import_jobs", "owner", "TEXT"),
+            # Everything already in the table was confirmed by a person.
+            ("elections", "provenance", "TEXT NOT NULL DEFAULT 'manual'"),
         ):
             existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if column not in existing:
@@ -261,6 +291,25 @@ class SqliteElectionStore:
                 ).rowcount
                 span["found"] = bool(changed)
                 return bool(changed)
+
+    def put_election(
+        self, election_hash: str, election: Election, *, provenance: str = "auto"
+    ) -> bool:
+        with io_span(log, "sqlite", "put_election", hash=election_hash[:12],
+                     provenance=provenance) as span:
+            with self._write() as conn:
+                # ON CONFLICT DO NOTHING rather than a read and a write: the
+                # primary key is what makes a second read of the same poll a
+                # no-op, inside the same transaction.
+                stored = conn.execute(
+                    "INSERT INTO elections"
+                    " (election_hash, election, stored_at, selected, provenance)"
+                    " VALUES (?, ?, ?, 0, ?) ON CONFLICT(election_hash) DO NOTHING",
+                    (election_hash, json.dumps(election.model_dump(mode="json")),
+                     self._clock(), provenance),
+                ).rowcount
+                span["stored"] = bool(stored)
+                return bool(stored)
 
     def get_job(self, request_key: str) -> Job | None:
         with io_span(log, "sqlite", "get_job", request=request_key[:12]) as span:
@@ -531,6 +580,157 @@ def _draft_from_row(row: sqlite3.Row) -> OutreachDraft:
         last_error=row["last_error"],
         edited=bool(row["edited"]),
     )
+
+
+def _tracked_from_row(row: sqlite3.Row) -> TrackedElection:
+    return TrackedElection(
+        request_key=row["request_key"],
+        year=int(row["year"]),
+        nation=row["nation"],
+        subnation=row["subnation"],
+        election_date=date.fromisoformat(row["election_date"]) if row["election_date"] else None,
+        resolved=json.loads(row["resolved"]) if row["resolved"] else None,
+        status=TrackedStatus(row["status"]),
+        last_refresh_at=from_epoch(row["last_refresh_at"]),
+        next_refresh_at=from_epoch(row["next_refresh_at"]),
+        consecutive_failures=int(row["consecutive_failures"]),
+        last_error=row["last_error"],
+        result_hash=row["result_hash"],
+        result_digest=row["result_digest"],
+        unchanged_reads=int(row["unchanged_reads"]),
+        source_digest=row["source_digest"],
+        lease_until=from_epoch(row["lease_until"]),
+        added_by=row["added_by"],
+    )
+
+
+def _tracked_column(name: str, value):
+    """One field of a tracked election as SQLite stores it."""
+    if name in ("last_refresh_at", "next_refresh_at", "lease_until"):
+        return to_epoch(value)
+    if name == "election_date":
+        return value.isoformat() if value is not None else None
+    if name == "resolved":
+        return json.dumps(value) if value is not None else None
+    if name == "status":
+        return TrackedStatus(value).value
+    return value
+
+
+class SqliteTrackedStore:
+    """Tracked elections in the same file as the elections (plan 3, A1).
+
+    Its own connection, like :class:`SqliteOutreachStore`: nothing here has to
+    be atomic together with an election write. The lease is a conditional
+    ``UPDATE``, which SQLite's write lock makes indivisible on its own — no
+    read-then-write, so two threads cannot both see a free lease.
+    """
+
+    def __init__(self, path: str | Path, *, clock=time.time):
+        self._path = str(path)
+        if self._path != ":memory:":
+            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        self._clock = clock
+        self._local = threading.local()
+        with io_span(log, "sqlite", "migrate", path=self._path):
+            self._connect().executescript(SCHEMA)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self._path, isolation_level=None, timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._local.conn = conn
+        return conn
+
+    def close(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
+    def get_tracked(self, request_key: str) -> TrackedElection | None:
+        row = self._connect().execute(
+            "SELECT * FROM tracked_elections WHERE request_key = ?", (request_key,)
+        ).fetchone()
+        return _tracked_from_row(row) if row else None
+
+    def list_tracked(self) -> list[TrackedElection]:
+        with io_span(log, "sqlite", "list_tracked") as span:
+            rows = self._connect().execute(
+                # NULLs first: a row nothing has scheduled yet is the most due
+                # of all, and SQLite would otherwise sort it last.
+                "SELECT * FROM tracked_elections"
+                " ORDER BY next_refresh_at IS NULL DESC, next_refresh_at ASC"
+            ).fetchall()
+            span["count"] = len(rows)
+            return [_tracked_from_row(row) for row in rows]
+
+    def add_tracked(self, tracked: TrackedElection) -> bool:
+        with io_span(log, "sqlite", "add_tracked", request=tracked.request_key[:12]) as span:
+            columns = (
+                "request_key", "year", "nation", "subnation", "election_date", "resolved",
+                "status", "last_refresh_at", "next_refresh_at", "consecutive_failures",
+                "last_error", "result_hash", "result_digest", "unchanged_reads",
+                "source_digest", "lease_until", "added_by",
+            )
+            values = [_tracked_column(name, getattr(tracked, name)) for name in columns]
+            added = self._connect().execute(
+                f"INSERT INTO tracked_elections ({', '.join(columns)})"
+                f" VALUES ({', '.join('?' * len(columns))})"
+                " ON CONFLICT(request_key) DO NOTHING",
+                values,
+            ).rowcount
+            span["added"] = bool(added)
+            return bool(added)
+
+    def update_tracked(self, request_key: str, **fields) -> TrackedElection | None:
+        check_fields(fields)
+        if not fields:
+            return self.get_tracked(request_key)
+        # The column names come from TRACKED_FIELDS, never from a caller's string.
+        assignments = ", ".join(f"{name} = ?" for name in fields)
+        values = [_tracked_column(name, value) for name, value in fields.items()]
+        changed = self._connect().execute(
+            f"UPDATE tracked_elections SET {assignments} WHERE request_key = ?",
+            (*values, request_key),
+        ).rowcount
+        return self.get_tracked(request_key) if changed else None
+
+    def due_tracked(self, now: datetime, limit: int) -> list[TrackedElection]:
+        with io_span(log, "sqlite", "due_tracked", limit=limit) as span:
+            moment = to_epoch(now)
+            rows = self._connect().execute(
+                "SELECT * FROM tracked_elections"
+                f" WHERE status IN ({', '.join('?' * len(ACTIVE_STATUSES))})"
+                "   AND (next_refresh_at IS NULL OR next_refresh_at <= ?)"
+                "   AND (lease_until IS NULL OR lease_until <= ?)"
+                " ORDER BY next_refresh_at IS NULL DESC, next_refresh_at ASC"
+                " LIMIT ?",
+                (*(status.value for status in ACTIVE_STATUSES), moment, moment, limit),
+            ).fetchall()
+            span["count"] = len(rows)
+            return [_tracked_from_row(row) for row in rows]
+
+    def lease(self, request_key: str, until: datetime) -> TrackedElection | None:
+        with io_span(log, "sqlite", "lease", request=request_key[:12]) as span:
+            now = self._clock()
+            taken = self._connect().execute(
+                "UPDATE tracked_elections SET lease_until = ?"
+                " WHERE request_key = ? AND (lease_until IS NULL OR lease_until <= ?)",
+                (to_epoch(until), request_key, now),
+            ).rowcount
+            span["taken"] = bool(taken)
+            return self.get_tracked(request_key) if taken else None
+
+    def release(self, request_key: str) -> None:
+        self._connect().execute(
+            "UPDATE tracked_elections SET lease_until = NULL WHERE request_key = ?",
+            (request_key,),
+        )
 
 
 class SqliteOutreachStore:

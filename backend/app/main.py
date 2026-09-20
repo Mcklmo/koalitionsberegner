@@ -372,6 +372,9 @@ class ElectionSummary(BaseModel):
     title: str
     total_seats: int
     forecast: Forecast | None = None
+    provenance: str = "manual"
+    """``auto`` for an election the scheduled refresh stored, which nobody
+    confirmed — the page footnotes those and offers a way to report them."""
 
     @classmethod
     def of(cls, stored: StoredElection) -> "ElectionSummary":
@@ -383,6 +386,7 @@ class ElectionSummary(BaseModel):
             title=stored.election.title,
             total_seats=stored.election.total_seats,
             forecast=stored.election.forecast,
+            provenance=stored.provenance,
         )
 
 
