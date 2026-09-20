@@ -266,6 +266,69 @@
       color: #888
     }
 
+    .picker-combo {
+      position: relative;
+      flex: 1;
+      min-width: 0
+    }
+
+    .picker-results {
+      list-style: none;
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(100% + 4px);
+      z-index: 10;
+      max-height: 320px;
+      overflow-y: auto;
+      background: #fff;
+      border: 0.5px solid #ccc;
+      border-radius: 6px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .12)
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .picker-results {
+        background: #222;
+        border-color: #444
+      }
+    }
+
+    .picker-result {
+      padding: 7px 10px;
+      font-size: 13px;
+      cursor: pointer
+    }
+
+    .picker-result-older {
+      padding-left: 24px;
+      opacity: .8
+    }
+
+    .picker-result.active,
+    .picker-result:hover {
+      background: #f3f3f3
+    }
+
+    @media(prefers-color-scheme:dark) {
+
+      .picker-result.active,
+      .picker-result:hover {
+        background: #2a2a2a
+      }
+    }
+
+    .picker-result-ask {
+      font-style: italic;
+      color: #666
+    }
+
+    @media(prefers-color-scheme:dark) {
+      .picker-result-ask {
+        color: #aaa
+      }
+    }
+
     select,
     input {
       font: inherit;
@@ -518,8 +581,13 @@
   </div>
 
   <div class="picker-row" id="picker-row" hidden>
-    <label for="picker" data-i18n="picker.label">Valg</label>
-    <select id="picker"></select>
+    <label for="picker-search" data-i18n="picker.label">Valg</label>
+    <div class="picker-combo">
+      <input type="text" id="picker-search" role="combobox" aria-expanded="false"
+             aria-controls="picker-results" aria-autocomplete="list" autocomplete="off"
+             data-i18n-placeholder="picker.searchPlaceholder">
+      <ul class="picker-results" id="picker-results" role="listbox" hidden></ul>
+    </div>
   </div>
 
   <h2 id="title"></h2>

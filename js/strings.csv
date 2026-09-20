@@ -3,6 +3,12 @@ language.name,Dansk,English
 language.label,Sprog,Language
 picker.label,Valg,Election
 picker.forecast,{where} · prognose {label},{where} · forecast {label}
+picker.searchPlaceholder,"Søg efter land, region eller år","Search by country, region or year"
+picker.noMatches,Intet valg matcher.,No election matches.
+picker.askForIt,Ikke her endnu? Spørg efter det,Not here yet? Ask for it
+picker.importIt,Ikke her endnu? Importér det,Not here yet? Import it
+picker.askedInline,"Bedt om — se importpanelet nedenfor.","Asked for — see the import panel below."
+picker.olderPolls,"{count} {count, plural, one {ældre meningsmåling} other {ældre meningsmålinger}}","{count} {count, plural, one {older poll} other {older polls}}"
 names.label,Partinavne,Party names
 names.local,Originalsprog,Original language
 names.english,Engelsk,English

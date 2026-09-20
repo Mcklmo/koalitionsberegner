@@ -1,7 +1,5 @@
 /**
- * Import flow and election picker.
- *
- * Drives four steps: check the year and the country are there, ask whether that
+ * The import form: check the year and the country are there, ask whether that
  * election has been imported before, show what the server found — which
  * election it decided was meant, and the seats it read — and save only when the
  * user confirms.
@@ -30,13 +28,19 @@
  * as an issue in the tracker, to be imported later
  * (`POST /api/elections/requests`). The fields are the same either way; the
  * button says which of the two it will do.
+ *
+ * The election *picker* — search, grouping, keyboard nav — lives in
+ * `js/picker.js` (plan 3, Section B). This module no longer renders it, but
+ * still owns the one thing that must happen after a change here: telling the
+ * picker to re-fetch, via the `refreshList` callback, and `requestOrImport`
+ * lets the picker's own "ask for it"/"import it" fallback drive this same
+ * form without a submit event to reuse.
  */
 
 import { ApiError, ImportStatus } from './api.js';
 import { validateImportForm } from './import-form.js';
+import { forecastLabel, placeOf } from './picker.js';
 import { t } from './i18n.js';
-
-const LOCAL_VALUE = 'local';
 
 /**
  * Why the server turned an import down, as the texts that say so in the page's
@@ -55,19 +59,16 @@ const REQUEST_REFUSALS = {
   503: 'request.refusal.unavailable',
 };
 
-/** "Voxmeter · 2026-09-07" */
-const forecastLabel = (forecast) => `${forecast.publisher} · ${forecast.publishedOn}`;
-
-const placeOf = (election) =>
-  election.state ? `${election.nation} — ${election.state}` : election.nation;
-
 export function mountImportUi({
   api,
   elements,
   onSelect,
-  bundled,
   config = {},
   onWrongSecret = () => {},
+  /** Told to re-fetch (and, given a hash, select it) after anything here
+   *  changes the store: a confirm, or a lookup that found an existing
+   *  election. `js/main.js` wires this to `js/picker.js`'s `refresh`. */
+  refreshList = async () => {},
 }) {
   const el = elements;
   /**
@@ -77,7 +78,6 @@ export function mountImportUi({
   let pending = null;
   /** An upcoming election's forecasts, while the user chooses between them. */
   let offered = null;
-  let summaries = [];
   /** Whether the page holds the owner's secret. The server still checks it. */
   let admin = false;
   /** True while a submit is under way, from the lookup to the last message. */
@@ -147,40 +147,6 @@ export function mountImportUi({
     renderSubmit();
   }
 
-  function optionLabel(summary) {
-    const where = placeOf(summary);
-    return summary.forecast
-      ? t('picker.forecast', { where, label: forecastLabel(summary.forecast) })
-      : `${where} · ${summary.electionDate}`;
-  }
-
-  function renderPicker() {
-    el.picker.innerHTML = '';
-    const entries = summaries.map((summary) => [summary.electionHash, optionLabel(summary)]);
-    if (bundled) entries.push([LOCAL_VALUE, bundled.title]);
-    // Ignoring the separators puts a nation's own election before its regions'.
-    entries.sort(([, a], [, b]) => a.localeCompare(b, undefined, { ignorePunctuation: true }));
-    for (const [value, label] of entries) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = label;
-      el.picker.appendChild(option);
-    }
-    show(el.pickerRow, el.picker.options.length > 1);
-  }
-
-  async function refreshPicker(selectHash) {
-    try {
-      summaries = await api.listElections();
-    } catch (error) {
-      // A missing backend is not fatal: the bundled election still renders.
-      summaries = [];
-      renderPicker();
-      throw error;
-    }
-    renderPicker();
-    if (selectHash) el.picker.value = selectHash;
-  }
 
   function renderPreview(election) {
     const seats = election.blocks.flatMap((b) => b.parties);
@@ -267,24 +233,37 @@ export function mountImportUi({
     // The button is disabled meanwhile, but a second submit must not slip past
     // it: it would clear the preview the first one is about to show.
     if (submitting) return;
-    clearPreview();
-    clearChoices();
-    setMessage('');
-
-    const { valid, values, errors } = validateImportForm({
+    await requestOrImport({
       year: el.year.value,
       nation: el.nation.value,
       subnation: el.subnation.value,
     });
+  }
+
+  /**
+   * The form's submit handler minus the DOM event and the fields: validates
+   * `input`, then either files a request or runs the import, exactly as a
+   * submit would. Callable directly, so `js/picker.js`'s "ask for it"/"import
+   * it" fallback can drive this form from a parsed search query without a
+   * click of its own (plan 3, B3).
+   *
+   * @returns {Promise<{valid: boolean, errors?: Record<string, string>}>}
+   */
+  async function requestOrImport(input) {
+    clearPreview();
+    clearChoices();
+    setMessage('');
+
+    const { valid, values, errors } = validateImportForm(input);
     setFieldErrors(errors);
-    if (!valid) return;
+    if (!valid) return { valid: false, errors };
 
     // Not the owner: the election is written down rather than fetched. Not
     // preceded by a lookup — the server answers 409 if it already holds the
     // election, which is the same round trip and one fewer.
     if (!allowed()) {
       if (canRequest()) await fileRequest(values);
-      return;
+      return { valid: true };
     }
 
     try {
@@ -294,13 +273,13 @@ export function mountImportUi({
       const existing = await api.lookup(values);
       if (existing.status === ImportStatus.READY) {
         setMessage(t('import.alreadyImportedPick'), 'warn');
-        await refreshPicker(existing.electionHash).catch(() => {});
-        return;
+        await refreshList(existing.electionHash).catch(() => {});
+        return { valid: true };
       }
       if (existing.status === ImportStatus.CHOOSE) {
         // Somebody read these polls a moment ago; choosing from them is free.
         renderChoices(existing);
-        return;
+        return { valid: true };
       }
 
       // An import already running, or already read and waiting to be checked —
@@ -315,9 +294,11 @@ export function mountImportUi({
         result = await api.importElection(values);
       }
       await handleResult(result);
+      return { valid: true };
     } catch (error) {
       setMessage(refusal(error), 'error');
       forgetOnRefusal(error);
+      return { valid: true };
     } finally {
       busy(false);
     }
@@ -353,7 +334,7 @@ export function mountImportUi({
       if (error instanceof ApiError && error.status === 409) {
         // Already imported. Showing it beats writing down a wish for it.
         setMessage(t('import.alreadyImportedPick'), 'warn');
-        await refreshPicker().catch(() => {});
+        await refreshList().catch(() => {});
         return;
       }
       setMessage(requestRefusal(error), 'error');
@@ -373,7 +354,7 @@ export function mountImportUi({
     if (result.status === ImportStatus.READY) {
       // It turned out to be an election we already hold, asked for another way.
       setMessage(t('import.alreadyImported'), 'warn');
-      await refreshPicker(result.electionHash).catch(() => {});
+      await refreshList(result.electionHash).catch(() => {});
       return;
     }
     if (result.status === ImportStatus.FAILED) {
@@ -408,7 +389,7 @@ export function mountImportUi({
       const saved = await api.confirm(requestKey, isForecast ? { option } : {});
       clearPreview();
       clearChoices();
-      await refreshPicker(saved.electionHash).catch(() => {});
+      await refreshList(saved.electionHash).catch(() => {});
       const kind = isForecast ? 'forecast' : 'election';
       setMessage(t(saved.duplicate ? `saved.${kind}Already` : `saved.${kind}`), 'ok');
       el.form.reset();
@@ -446,27 +427,10 @@ export function mountImportUi({
     await api.discardPreview(requestKey).catch(() => {});
   }
 
-  async function select() {
-    const value = el.picker.value;
-    if (value === LOCAL_VALUE) {
-      // The bundled election has no hash of its own; a caller after a link for
-      // it looks up its stored twin, if any, among `summaries()`.
-      onSelect(bundled, null);
-      return;
-    }
-    try {
-      const result = await api.getElection(value);
-      if (result.election) onSelect(result.election, result.electionHash);
-    } catch (error) {
-      setMessage(t('select.failed', { message: error.message }), 'error');
-    }
-  }
-
   el.form.addEventListener('submit', submit);
   el.confirm.addEventListener('click', confirm);
   el.discard.addEventListener('click', discard);
   el.choicesDiscard.addEventListener('click', discardChoices);
-  el.picker.addEventListener('change', select);
 
   return {
     /** Follow the admin mode: whether the form imports or asks. */
@@ -475,18 +439,27 @@ export function mountImportUi({
       renderAvailability();
     },
 
-    /** Populate the picker; failures leave the bundled election in place. */
+    /** Populate the picker (via `refreshList`); failures leave the bundled
+     *  election in place. */
     async start() {
       renderAvailability();
       try {
-        await refreshPicker();
+        await refreshList();
       } catch {
         setMessage(t('archive.unreachable'), 'warn');
       }
     },
 
-    /** The stored elections currently listed, for a caller that needs to find
-     *  one by nation and date — a shared link's bundled twin, for instance. */
-    summaries: () => summaries,
+    /** Whether this page imports right now — `js/picker.js`'s fallback row
+     *  says "import it" rather than "ask for it" when this is true. */
+    isImportAllowed: () => allowed(),
+
+    /** Whether anyone may file a request right now. */
+    isRequestAllowed: () => canRequest(),
+
+    /** Validate `input` and either file a request or run the import, exactly
+     *  as this form's own submit does — for `js/picker.js`'s "ask for
+     *  it"/"import it" fallback (plan 3, B3). */
+    requestOrImport,
   };
 }

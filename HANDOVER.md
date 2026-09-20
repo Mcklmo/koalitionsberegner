@@ -1,57 +1,55 @@
-# Handover: plan 3 sections B, C, D
+# Handover: plan 3 section D, the rest
 
 ## Done (this pass)
-- Section C: LICENSE (AGPL-3.0) + `.assetsignore` (already on disk at
-  handover); README rewrite (pitch intro, Licence, Data and its licence,
-  Funding, Embedding and the API, Contributing sections); `CONTRIBUTING.md`;
-  `.github/ISSUE_TEMPLATE/election-request.md`. Donate/sponsor footer link
-  and "Supported by …" wired end to end (`config.py` → `main.py` →
-  `js/api.js` → `js/main.js` → `index.html`, strings `footer.support`/
-  `footer.sponsoredBy`). Data attribution note wired the same way
-  (`data.attribution` string, `js/app.js`'s `renderAttributionNote`,
-  `#attribution-note`). C6: `GET /api/elections` and `GET
-  /api/elections/{hash}` now send `Cache-Control: public, max-age=60` and
-  are documented as stable/embeddable in the README.
-- B1 (pulled forward because it touches the same `ElectionSummary`):
-  `election_key` — `identity.election_hash` without the forecast tuple — on
-  every summary; `list_elections` sorted by `election_date` descending
-  server-side; `js/api.js`'s `toSummary` maps `electionKey` (falls back to
-  `electionHash` for an older backend). Tests added in `test_api.py` and
-  `test/api.test.mjs`. 1046 pytest / 240 node green.
+- Section C (committed separately): licence, data attribution, donate/
+  sponsor, README/CONTRIBUTING, embed API, `election_key` pulled forward.
+- Section B, in full, with D9 folded in: `js/picker.js` (new) — search box,
+  grouping by `election_key` (result leads, newest poll next, older polls
+  one click deeper — D9), keyboard nav (arrows + enter, mouse for older
+  polls), the "ask for it"/"import it" fallback (`parseQueryAsRequest` +
+  `js/import-ui.js`'s new `requestOrImport`), and the default-election
+  landing (`pickDefaultElection`: soonest upcoming election with a stored
+  poll, else the most recent result; shared links bypass it).
+  `js/import-ui.js` no longer renders a picker — it exposes
+  `requestOrImport`/`isImportAllowed`/`isRequestAllowed` and a `refreshList`
+  callback instead. `index.html`'s `<select id="picker">` became a
+  search input + `<ul>` combobox (`#picker-search`/`#picker-results`).
+  `test/picker.test.mjs` (30 tests) covers the pure functions and the DOM;
+  six picker-only tests moved out of `test/import-ui.test.mjs`.
+  1046 pytest / 266 node green.
 
 ## Next concrete step
-Section B, the rest: a search box above the calculator (client-side filter
-on nation/state/title/year/publisher, accent- and case-insensitive),
-grouping by `election_key` (newest poll or result preselected, older ones
-one click deeper — this is D9, folded in per the owner's decision), keyboard
-nav (arrows + enter), the "Not here yet? Ask for it" / "Import it" fallback
-reusing `import-form.js`, and the default-election logic for a plain `/`
-(nearest upcoming tracked election with a stored poll, else the most recent
-result; bundled election is the pre-arrival render and offline fallback;
-shared links bypass it). Split `js/import-ui.js`'s picker into `js/picker.js`
-with `test/picker.test.mjs`, per the plan.
-
-Then Section D: D2 and D9 are done (D9 via the B rework above). D1, D3-D8 are
-explicitly deferred by the plan's own wording — no code needed for this
-pass; leave them as-is in `doc/plans/03-remaining-work.md`.
+Section D's remaining items (D1, D3, D4, D5, D6, D7, D8) are explicitly
+deferred by the plan's own wording — D1/D3 wait on real-world timing (Plan 1
+live a while / next secret rotation), D4/D5/D7/D8 are "watch and revisit"
+notes with no code to write today, D6 waits on a non-Latin-script election
+actually being tracked. **Nothing to implement here.** Confirm this reading
+against `doc/plans/03-remaining-work.md`'s Section D before closing the
+plan out, then this handover file (and its `.assetsignore` line, already
+gone — LICENSE/CONTRIBUTING.md are the real entries) can be deleted for
+good.
 
 ## Decisions not to re-litigate
-- Licence: AGPL-3.0, `LICENSE` and `CONTRIBUTING.md`/`.github` in
-  `.assetsignore` (not the Cloudflare-published set — same pattern as
-  README.md).
-- Data attribution note shows on every election regardless of provenance,
-  with one fixed string naming the source and noting CC BY-SA "where the
-  source is Wikipedia" — no per-source hostname branching; simpler and still
-  honest.
-- Older polls stay in the picker after a result is final, grouped under the
-  election (D9) — implement inside section B's picker rework.
-- `election_key` fallback to `electionHash` client-side keeps a mixed old/new
-  backend from crashing; don't remove it without checking the whole fleet is
-  on the new backend.
+- Licence: AGPL-3.0. Data attribution note is one fixed string, not
+  per-source branching (see prior handover entry, still true).
+- D9: implemented inside Section B's picker, not separately.
+- The picker's fallback reuses `js/import-ui.js`'s form/network logic via
+  `requestOrImport` rather than re-implementing request/import in
+  `js/picker.js` — one code path for "type into the form" and "type into
+  search and click ask for it".
+- `js/picker.js` and `js/import-ui.js` reference each other's public methods
+  through a forward-declared `let importUi` in `js/main.js`, the same
+  pattern `adminUi` already used — neither closure runs until both exist.
 
 ## Dead ends / gotchas
 - `~/.claude/todos/` writes are blocked on purpose — track progress here.
+- Watch for stray literal Unicode combining characters when writing a regex
+  with `̀`-style escapes through a tool call — one such write silently
+  produced raw combining marks instead of the escape text in `js/picker.js`
+  and had to be replaced with `/\p{Mn}/gu` (Unicode property escape,
+  `u`-flagged). If a regex looks right in the tool call but wrong on disk,
+  `cat -A` the line before trusting it.
 - `test/i18n.test.mjs`'s fake DOM in "the calculator speaks English" only
-  registers a handful of element ids; any new element app.js looks up by id
-  must be guarded with `if (!el.xyz) return;` the way `autoNote` already is,
-  or that test's fake `getElementById` returns `undefined` and breaks it.
+  registers a handful of element ids; any new element `app.js` looks up by
+  id must be guarded with `if (!el.xyz) return;` the way `autoNote` already
+  is.

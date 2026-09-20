@@ -11,6 +11,7 @@ import { mountAdmin, readSecret } from './admin.js';
 import { createApiClient } from './api.js';
 import { mountCoalitionCalculator } from './app.js';
 import { mountImportUi } from './import-ui.js';
+import { mountPicker } from './picker.js';
 import {
   language, languageName, languages, parseStrings, setLanguage, t, useStrings,
 } from './i18n.js';
@@ -98,7 +99,6 @@ function setShareTarget(electionHash) {
 // election renders before either exists, and it is one a person put in the
 // repository, so the defaults are the truth until then.
 let issuesUrl = '';
-let summaries = () => [];
 
 /**
  * How this election got into the store, so the calculator knows whether to say
@@ -108,7 +108,7 @@ let summaries = () => [];
  */
 function provenanceOf(electionHash) {
   if (!electionHash) return 'manual';
-  return summaries().find((summary) => summary.electionHash === electionHash)
+  return picker.summaries().find((summary) => summary.electionHash === electionHash)
     ?.provenance ?? 'manual';
 }
 
@@ -155,7 +155,7 @@ const datePart = (iso) => iso.split('T')[0];
 
 /** The stored election that is this bundled one, if the archive already holds it. */
 function bundledTwin() {
-  return importUi.summaries().find((summary) => summary.nation === bundled.nation
+  return picker.summaries().find((summary) => summary.nation === bundled.nation
     && datePart(summary.electionDate) === datePart(bundled.electionDate) && !summary.forecast);
 }
 
@@ -201,13 +201,37 @@ if (config.supportSponsor) {
   sponsorNote.hidden = false;
 }
 
-const importUi = mountImportUi({
-  api,
+// `picker` and `importUi` each call into the other — the picker's "ask for
+// it"/"import it" fallback drives the form, and the form tells the picker to
+// re-fetch after it changes the store — so `importUi` is declared before
+// either is built and assigned once `mountImportUi` exists. Neither closure
+// below runs until after both are set, the same forward reference `adminUi`
+// already relies on.
+let importUi;
+
+const picker = mountPicker({
   bundled,
+  onSelect: selectElection,
+  canImport: () => importUi.isImportAllowed(),
+  canRequestElection: () => importUi.isRequestAllowed(),
+  onAskForIt: (values) => importUi.requestOrImport(values),
+  elements: {
+    row: byId('picker-row'),
+    input: byId('picker-search'),
+    results: byId('picker-results'),
+  },
+});
+
+importUi = mountImportUi({
+  api,
   config,
   onSelect: selectElection,
   // The server refused the secret; the panel has already stopped importing.
   onWrongSecret: () => adminUi.forget(),
+  // The combobox has no persistent "selected" value to update, unlike the
+  // old `<select>`: refreshing it is enough, and `onSelect` above already put
+  // the confirmed or picked-up election on screen.
+  refreshList: () => picker.refresh(api),
   elements: {
     form: byId('import-form'),
     year: byId('f-year'),
@@ -228,11 +252,8 @@ const importUi = mountImportUi({
     choicesTitle: byId('choices-title'),
     choicesList: byId('choices-list'),
     choicesDiscard: byId('choices-discard'),
-    picker: byId('picker'),
-    pickerRow: byId('picker-row'),
   },
 });
-summaries = () => importUi.summaries();
 
 const adminUi = mountAdmin({
   onChange: (isAdmin) => importUi.setAdmin(isAdmin),
@@ -249,14 +270,12 @@ await importUi.start();
 importUi.setAdmin(Boolean(readSecret()));
 
 // A shared link names an election by a prefix of its hash. Resolved after the
-// picker's list is loaded, so picking it there afterwards shows the right
-// option selected.
+// picker's list is loaded, so its search already includes it.
 const link = parseLocation(globalThis.location);
 if (link) {
   try {
     const result = await api.getElection(link.id);
     if (!result.election) throw new Error('no election in the response');
-    byId('picker').value = result.electionHash;
     setShareTarget(result.electionHash);
     render(result.election, { initialSelection: link.indices, electionHash: result.electionHash });
     const total = calculator.total();
@@ -268,5 +287,22 @@ if (link) {
     enableShareForBundled();
   }
 } else {
-  enableShareForBundled();
+  // No shared link: land on the nearest upcoming tracked election with a
+  // stored poll, or else the most recent result (plan 3, B4). Neither
+  // existing keeps the bundled election on screen, which is the fallback's
+  // whole point.
+  const fallback = picker.defaultElection();
+  let landed = false;
+  if (fallback) {
+    try {
+      const result = await api.getElection(fallback.electionHash);
+      if (result.election) {
+        selectElection(result.election, fallback.electionHash);
+        landed = true;
+      }
+    } catch {
+      // Unreachable or since removed: fall through to the bundled election.
+    }
+  }
+  if (!landed) enableShareForBundled();
 }

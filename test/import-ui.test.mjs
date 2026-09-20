@@ -22,8 +22,6 @@ const election = validateElection({
   ],
 });
 
-const bundled = validateElection({ ...election, title: 'Bundled election' });
-
 // --- a DOM stub covering exactly what import-ui touches ---------------------
 function node(tag = 'div') {
   return {
@@ -48,7 +46,7 @@ function node(tag = 'div') {
   };
 }
 
-function harness({ api, selected = [], admin = true, config: overrides = {} } = {}) {
+function harness({ api, selected = [], admin = true, config: overrides = {}, refreshList } = {}) {
   // The backend has a parser unless a test says otherwise.
   const config = { importsEnabled: true, ...overrides };
   globalThis.document = { createElement: node };
@@ -72,17 +70,18 @@ function harness({ api, selected = [], admin = true, config: overrides = {} } = 
     choicesTitle: node(),
     choicesList: node(),
     choicesDiscard: node('button'),
-    picker: node('select'),
-    pickerRow: node(),
   };
   const forgotten = [];
   const ui = mountImportUi({
     api,
     elements: el,
-    bundled,
     config,
     onSelect: (e) => selected.push(e),
     onWrongSecret: () => forgotten.push(true),
+    // The real page wires this to js/picker.js's `refresh`; here it is just
+    // enough to exercise "the picker is refreshed" and "unreachable" without
+    // a picker in the picture.
+    refreshList: refreshList ?? (() => api.listElections()),
   });
   // Most cases are about the import flow, so the harness starts as the owner
   // unless a test says otherwise.
@@ -326,62 +325,10 @@ test('a preview left behind is shown again without a new import', async () => {
   assert.equal(calls.confirmedWith, 'p1', 'and it can still be saved');
 });
 
-test('the picker lists the bundled election plus everything stored', async () => {
-  const { api } = fakeApi({
-    summaries: [
-      { electionHash: 'a', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 179 },
-      { electionHash: 'b', nation: 'Danmark', state: 'Nordjylland', electionDate: '2026-03-25', title: 'T', totalSeats: 71 },
-    ],
-  });
-  const { el, ui } = harness({ api });
-
-  await ui.start();
-
-  assert.equal(el.pickerRow.hidden, false);
-  assert.deepEqual(el.picker.children.map((o) => o.value), ['local', 'a', 'b']);
-  assert.match(el.picker.children[2].textContent, /Nordjylland/);
-});
-
-test('the picker lists elections alphabetically', async () => {
-  const { api } = fakeApi({
-    summaries: [
-      { electionHash: 'se', nation: 'Sweden', state: null, electionDate: '2026-09-11', title: 'T', totalSeats: 349 },
-      { electionHash: 'de', nation: 'Germany', state: null, electionDate: '2025-02-23', title: 'T', totalSeats: 630 },
-      { electionHash: 'fi', nation: 'Finland', state: null, electionDate: '2023-04-02', title: 'T', totalSeats: 200 },
-    ],
-  });
-  const { el, ui } = harness({ api });
-
-  await ui.start();
-
-  assert.deepEqual(el.picker.children.map((o) => o.value), ['local', 'fi', 'de', 'se']);
-});
-
-test('choosing a stored election re-renders it', async () => {
-  const { api, calls } = fakeApi({
-    summaries: [{ electionHash: 'a', nation: 'Danmark', state: null, electionDate: '2026-03-25', title: 'T', totalSeats: 10 }],
-  });
-  const { el, ui, selected } = harness({ api });
-  await ui.start();
-
-  el.picker.value = 'a';
-  await el.picker.dispatch('change');
-
-  assert.equal(calls.getElection, 1);
-  assert.deepEqual(selected, [election]);
-});
-
-test('choosing the bundled election needs no backend call', async () => {
-  const { api, calls } = fakeApi();
-  const { el, ui, selected } = harness({ api });
-  await ui.start();
-
-  el.picker.value = 'local';
-  await el.picker.dispatch('change');
-
-  assert.equal(calls.getElection, 0);
-  assert.deepEqual(selected, [bundled]);
-});
+// The picker itself — search, grouping, keyboard nav, choosing an election —
+// moved to js/picker.js and is tested in test/picker.test.mjs. What is left
+// here is that `start()` surfaces a `refreshList` failure as a message, and
+// that a change here (below) tells `refreshList` to run.
 
 test('an unreachable backend leaves the bundled election usable', async () => {
   const api = {
@@ -392,7 +339,6 @@ test('an unreachable backend leaves the bundled election usable', async () => {
   await ui.start();
 
   assert.match(el.message.textContent, /kan ikke nås/);
-  assert.equal(el.pickerRow.hidden, true, 'no picker when there is nothing to pick');
 });
 
 
