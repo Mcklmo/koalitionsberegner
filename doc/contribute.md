@@ -258,6 +258,42 @@ To host the page separately (e.g. Cloudflare) instead, point the page at the API
 with `<meta name="api-base" content="https://…">` in `index.html` and set
 `ALLOWED_ORIGINS` on the backend.
 
+### First deploy, in order
+
+The four plans in [doc/plans](plans/) each end with checks only a live
+deployment can answer. They are collected here once, in the order they have to
+happen; each step says what a wrong answer means.
+
+1. **Secrets and indexes first**, from [Cloud setup](#cloud-setup-deployment-only):
+   `GOOGLE_CLOUD_PROJECT`, `ADMIN_SECRET`, `USAGE_REPORT_SECRET`, the Anthropic
+   key for `LLM_MODE=live`, and the three composite indexes. The indexes take a
+   few minutes to build; the outreach caps and the refresh queue 500 until they
+   are ready.
+2. **Deploy the backend** with the `gcloud run deploy` line above. Then deploy
+   the Worker (`npx wrangler deploy`), which owns `/api/*`, `/e/*` and
+   `/approve/*`, and carries the three crons in `wrangler.jsonc`: the daily
+   usage report, the 30-minute refresh tick and the monthly calendar scan.
+   Confirm all three under Workers & Pages → the Worker → Triggers.
+3. **Check the boot refuses a missing secret, on purpose, once.** Deploy a
+   revision with no `ADMIN_SECRET` and read the revision log: it must refuse to
+   start. `backend/tests/test_config.py` covers the code path, but only a real
+   revision proves the secret is actually mounted. Roll forward again
+   afterwards.
+4. **Check the page and a shared link.** Open `/`, pick a coalition, press
+   share, and paste the link into Slack, Discord and Reddit, plus Facebook's
+   Sharing Debugger: each must unfurl into the seat image, not a bare URL.
+   `curl -s $SITE/api/og/<id>.png | file -` must say PNG, 1200 x 630. A wrong
+   or missing unfurl is usually the Worker route, not the image: compare
+   `curl -sI $SITE/e/<id>` against `curl -sI $SITE/` — the headers must match.
+5. **Then the tracked elections**, following the next section. Nothing spends
+   anything until a row is tracked, so this step is safe to leave for later.
+6. **Switches that stay off until you turn them on.** Reddit posting needs the
+   five `REDDIT_*` secrets *and* a non-empty `OUTREACH_ALLOWED_SUBREDDITS`;
+   without both, `/api/outreach/approval/{token}/send` answers 503 and the rest
+   of the queue still works, which is the safe way to try it. Donations need
+   `SUPPORT_LINK`. `PUBLIC_BASE_URL` makes the approval email's link absolute.
+   `IFES_ELECTIONGUIDE` stays `off` — see the end of the next section.
+
 ### Rolling out tracked elections and the scheduled refresh
 
 [doc/plans/03-remaining-work.md](plans/03-remaining-work.md), section A: the
