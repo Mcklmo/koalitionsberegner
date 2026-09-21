@@ -625,9 +625,9 @@ def get_reddit_poster():
     return reddit.poster_from_env()
 
 
-#: The subreddits this deployment may post to. Its own list, not the
-#: scanner's ``OUTREACH_SUBREDDITS`` — a server posting to a subreddit the
-#: scanner no longer reads from would be a stale allowlist nobody noticed.
+#: The subreddits this deployment may post to. The scanner keeps no list of
+#: its own — it reads threads saved by hand — so this is the only allowlist,
+#: and a draft for a subreddit outside it is refused here.
 def outreach_allowed_subreddits() -> frozenset[str]:
     raw = _env_str("OUTREACH_ALLOWED_SUBREDDITS")
     return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())

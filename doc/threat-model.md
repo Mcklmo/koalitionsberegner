@@ -520,9 +520,8 @@ link itself**, which travels by email and can be forwarded, leaked or guessed.
   reply per thread ever (`OutreachStore.thread_posted`), a weekly cap per
   subreddit and a daily cap in total (`config.outreach_subreddit_weekly_cap`,
   `outreach_daily_cap`), and nothing posts to a subreddit outside this
-  deployment's own `OUTREACH_ALLOWED_SUBREDDITS` — a separate list from the
-  scanner's `OUTREACH_SUBREDDITS`, so retiring a subreddit on the scanner does
-  not leave it postable on the server. Every refusal is a distinct message
+  deployment's own `OUTREACH_ALLOWED_SUBREDDITS` — the scanner keeps no list of
+  its own, so this is the only place a subreddit is allowed or retired. Every refusal is a distinct message
   naming which limit stopped it, not a silent no.
 - **The page itself is inert.** `/approve/{token}` gets no Open Graph tags and
   `X-Robots-Tag: noindex` (the Worker sets it on the response; see

@@ -1,31 +1,100 @@
 # outreach plugin
 
-A Claude Code plugin with one command, `/outreach:reddit-scan`. It runs the
-daily low-budget marketing scan for koalitionsberegner on the owner's machine:
+A Claude Code plugin with two commands. They are deliberately separate,
+because one of them is free and the other one is not.
 
-1. Reads the newest posts (and the top-level comments of the most-discussed
-   posts) in the subreddits named by `OUTREACH_SUBREDDITS`.
-2. Asks a local model (Qwen through Ollama, or any OpenAI-compatible local
-   server) one structured question per post or comment: does this mention
-   politics, meaning elections, parties, coalitions or politicians? True or
-   false.
-3. Hands every true to Claude Opus 5 for verification: which election, is it
-   coalition talk, is a reply genuinely helpful, and a short reply draft.
-4. Matches the election against what the site holds, appends the disclosure
-   footer, and queues the draft for the owner's approval through the site's
-   `POST /api/admin/outreach/drafts` endpoint (see
-   `doc/plans/04-reddit-outreach.md`). Nothing is posted to Reddit by this
-   plugin; the owner approves each draft from an emailed one-time link.
+| Command | Script | Costs | What it does |
+| --- | --- | --- | --- |
+| `/outreach:reddit-scan` | `scripts/scan.py` | nothing | Triages a thread saved from Reddit with a local model and writes what it found to SQLite. |
+| `/outreach:reddit-reply` | `scripts/reply.py` | two Claude Opus calls | Answers **one** scanned post and queues the draft for approval. |
+
+Nothing in this plugin posts to Reddit. Every draft goes to the site's approval
+queue, where the owner reads it, edits it if needed, and presses send from a
+one-time link that arrived by email (`doc/plans/04-reddit-outreach.md`).
+
+## Stage 1 — scan
+
+Reddit answers a scripted fetch of a thread with `403` but serves the same JSON
+to a logged-in browser. Open the post with `.json` on the end
+(`https://www.reddit.com/r/de/comments/<id>/.json`), save the page, and:
+
+```sh
+./plugins/outreach/scripts/scan.py ~/Downloads/saved.json -v
+```
+
+The local model is asked three questions about each item, not one:
+
+* does it mention an election that has been held,
+* does it mention one still to come,
+* does it make a statement involving two or more parties.
+
+The post itself is asked first. If it says yes to anything the scan stops
+there; otherwise the comments go **three at a time, concurrently**, and the
+scan stops after the first batch containing a yes. One reason to open a thread
+is enough, and every comment after that would be a local call spent on a
+decision already made — on a 31-comment thread that is usually six calls
+instead of thirty-two.
+
+What comes out is the path of the thread's JSON blob and the flagged item(s),
+on stdout and in the database:
+
+```json
+{"post_id": "1abc23", "blob": "~/.koalitionsberegner-outreach/posts/de/1abc23.json",
+ "comments_total": 31, "comments_scanned": 6,
+ "flagged": [{"thing_id": "t1_xyz", "position": 5, "upcoming_election": true,
+              "multi_party": true, "reason": "…", "permalink": "https://…"}]}
+```
+
+`--classifier keyword` runs the whole pipeline with a word list instead of a
+model — useful to check the plumbing on a machine without Ollama, useless as a
+judgement. `--rescan` scans a thread that is already in the database again.
+
+## Stage 2 — reply
+
+```sh
+./plugins/outreach/scripts/reply.py next          # the oldest flagged post
+./plugins/outreach/scripts/reply.py list          # what is waiting
+./plugins/outreach/scripts/reply.py show <id>     # one row, its flags, its blob
+./plugins/outreach/scripts/reply.py reset <id>    # answer that post again
+```
+
+`next` takes exactly one post per invocation. It reads the **whole** thread
+back from the blob — not only what the local pass flagged, because that pass
+stops at its first yes and a comment further down is often the better opening —
+and then:
+
+1. asks Claude which election the thread is about and whether a reply is worth
+   writing at all (no → the post is marked, and the second call never happens);
+2. matches that election against what the site holds;
+3. asks Claude for the reply: which item to answer, which parties make the
+   coalition worth arguing about, and the text;
+4. builds the link, the seat totals and the disclosure footer **in code**, and
+   queues the draft.
+
+The reply is written to provoke an argument about the arithmetic, because that
+is what gets read: a contestable claim about who reaches a majority and who
+does not. The prompt draws the line — never an insult, never a number the seat
+list does not support — and the owner still reads every draft before it goes
+anywhere.
+
+The link is a coalition, not the front page: `/e/<id>?c=<parties>&s=<seats>`,
+the same shape the site's own share button produces.
+
+**When the site holds no election for the thread**, the election is filed in
+the issue tracker through the same open endpoint the page's "ask for it" button
+uses, and the post is *kept*: `reply.py next --retry` takes it again once the
+election has been imported.
+
+`--dry-run` prints the draft instead of queueing it. It still calls Claude, and
+still marks the row — `reset` is how you get the post back.
 
 ## Load it
 
 ```sh
 claude --plugin-dir ./plugins/outreach
-/outreach:reddit-scan --dry-run
+/outreach:reddit-scan ~/Downloads/saved.json
+/outreach:reddit-reply next
 ```
-
-`--dry-run` scans and classifies locally but calls neither Claude nor the
-server.
 
 ## Configure
 
@@ -33,21 +102,18 @@ Put these in the environment or in `plugins/outreach/.env` (gitignored):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OUTREACH_SUBREDDITS` | required | Comma-separated subreddit names. Only subreddits whose rules you have read and that allow a disclosed, relevant link. |
-| `OUTREACH_SITE` | `https://koalitionsberegner.moritzmarcus.com` | Where elections are listed and drafts are queued. |
-| `OUTREACH_ADMIN_SECRET` | required for `--submit server` | The site's `ADMIN_SECRET`. |
+| `OUTREACH_SITE` | `https://koalitionsberegner.moritzmarcus.com` | Where elections are read and drafts are queued. |
+| `OUTREACH_ADMIN_SECRET` | required by `reply.py` | The site's `ADMIN_SECRET`. |
 | `OUTREACH_LOCAL_API` | `ollama` | `ollama` or `openai` (LM Studio, llama.cpp server, vLLM). |
 | `OUTREACH_LOCAL_URL` | `http://localhost:11434` | Base URL of the local model server. |
 | `OUTREACH_LOCAL_MODEL` | `qwen3:32b` | Model name as the local server knows it. |
-| `OUTREACH_VERIFY_MODEL` | `claude-opus-5` | The verifying model. |
+| `OUTREACH_VERIFY_MODEL` | `claude-opus-5` | The model that writes the reply. |
 | `ANTHROPIC_API_KEY` | from `ant auth login` if unset | Anthropic credentials. |
-| `OUTREACH_LINK_STYLE` | `root` | `root` links to the front page; `share` links to `/e/<id>`, once plan 2 has built that route. |
-| `OUTREACH_LIMIT` | `50` | Newest posts read per subreddit. |
-| `OUTREACH_COMMENT_POSTS` | `10` | Most-commented posts per subreddit whose top-level comments are read too. |
-| `OUTREACH_MAX_DRAFTS` | `5` | Drafts queued per run, whatever was found. |
-| `OUTREACH_REDDIT_USER_AGENT` | `koalitionsberegner-outreach/0.1` | Identify yourself to Reddit: add `(by u/yourname)`. |
-| `OUTREACH_REDDIT_DELAY` | `2.0` | Seconds between Reddit requests. |
-| `OUTREACH_STATE` | `~/.koalitionsberegner-outreach/state.json` | Memory of what has been processed. |
+| `OUTREACH_DB` | `~/.koalitionsberegner-outreach/outreach.db` | What the scan found, and what has been answered. |
+| `OUTREACH_BLOBS` | `~/.koalitionsberegner-outreach/posts` | Where saved threads are kept. |
+
+A default Ollama install serialises requests unless `OLLAMA_NUM_PARALLEL` is
+set; the scan is correct either way, just not faster.
 
 ## Test offline
 
@@ -55,32 +121,13 @@ Put these in the environment or in `plugins/outreach/.env` (gitignored):
 uv run --with pytest --with pydantic --with anthropic pytest plugins/outreach/scripts
 ```
 
-## Try it on one thread you picked
+Nothing in the suite touches the network, Reddit, Ollama or Claude.
 
-Reddit answers a scripted fetch with `403`, but serves the same JSON to a
-logged-in browser. Open the post with `.json` on the end
-(`https://www.reddit.com/r/Sverige/comments/<id>/.json`), save the page, and:
+## Before you switch any of this on
 
-```sh
-# Keep both files out of the repo root: anything there is published by
-# `wrangler deploy` unless `.assetsignore` names it.
-python3 plugins/outreach/scripts/from_reddit_json.py ~/Downloads/saved.json -o ~/thread.json
-OUTREACH_SUBREDDITS=Sverige ./plugins/outreach/scripts/scan.py \
-  --posts-file ~/thread.json --submit stdout --state none
-```
-
-The converter keeps the post and its top-level comments, dropping Reddit's
-"load more" rows. `--submit stdout` prints the draft instead of queueing it, and
-`--state none` leaves the thread unseen, so a later real run still considers it.
-Neither command posts anything.
-
-The local pass asks one narrow question — is someone working out who can
-govern — not "is this political". On a 31-comment r/Sverige thread about party
-support it flags 2; the wider wording it replaced flagged all 31, and every one
-of those would have been sent to the billed verifier.
-
-`--dry-run` classifies locally and calls Claude not at all, which is the way to
-tune the local model without spending anything; it prints counts rather than
-drafts, because the reply text comes from the verifier. A verification that
-fails three times in a row — no key, no credit, no network — stops the run
-rather than repeating itself once per candidate.
+Read `doc/plans/04-reddit-outreach.md`, "Before you switch this on". Reddit
+removes and bans for undisclosed self-promotion; a reply that does not answer
+the thread is spam even when it is honest, and a provocative one that misses is
+worse. The footer the sanitiser appends discloses both who is behind the link
+and that a model drafted the text. Do not remove it — the server checks for it
+and refuses a draft without it.

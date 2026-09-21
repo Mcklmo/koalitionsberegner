@@ -8,9 +8,8 @@ the queue, the approval email, the one-time approval page, and the posting.
 Depends on [01-open-access.md](01-open-access.md) Phase C, which introduces
 `ADMIN_SECRET` and the `x-admin-secret` header. It reuses the SMTP mailer that
 plan 1 keeps for the usage reports. [02-share-links.md](02-share-links.md) runs before
-this plan, so `/e/<id>` already exists: set `OUTREACH_LINK_STYLE=share` from the
-start, and a reply links to the coalition being discussed rather than the front
-page. [03-remaining-work.md](03-remaining-work.md) runs after this plan, so
+this plan, so `/e/<id>?c=…&s=…` already exists and every reply links to the
+coalition being discussed rather than to the front page. [03-remaining-work.md](03-remaining-work.md) runs after this plan, so
 expect the scan to report `missing_elections` until tracked elections land;
 those are import candidates to work by hand in the meantime.
 
@@ -52,28 +51,42 @@ writing code.
   does, and many subreddits ban links from a project's own author outright. A
   domain that gets reported enough can be blocked site-wide, which would cost
   the project its main organic channel permanently. Verify each subreddit's
-  rules by hand and keep the allowlist small. `OUTREACH_SUBREDDITS` is the
-  allowlist; there is no discovery.
+  rules by hand and keep the allowlist small. There is no discovery at all:
+  the scanner reads only the threads the owner saved by hand, and the server's
+  `OUTREACH_ALLOWED_SUBREDDITS` is what a reply may actually be posted to.
 - **Many subreddits require bots to be flaired, or ban them.** The plugin's
   footer discloses that an LLM drafted the reply and that the owner is behind
   the site. Do not remove it; the sanitiser appends it in code so no model can.
-- **Reddit's API terms and the user agent.** Identify the client honestly in
-  `OUTREACH_REDDIT_USER_AGENT`, including a contact. Confirm the current terms
+- **Reddit's API terms and the user agent.** The plugin no longer reads
+  Reddit at all — the owner saves a thread from their own browser — so this is
+  about the server's poster: identify it honestly in `REDDIT_USER_AGENT`,
+  including a contact. Confirm the current terms
   and the comment endpoint's shape at implementation time rather than from
   memory; the details below are the shape to verify, not a citation.
 - **A reply that does not answer the thread is spam even when it is honest.**
-  The verifier is instructed to reject anything that is not a real question
-  about coalition seats, and `OUTREACH_MAX_DRAFTS` caps a day at five. Keep the
-  per-subreddit ceiling in section 5 low.
-- **Start by hand.** Run the plugin with `--submit stdout` for a week, read
+  Claude is instructed to reject a thread that is not really about coalition
+  seats, and `reply.py` answers exactly one post per invocation — there is no
+  batch to run away. Keep the per-subreddit ceiling in section 5 low anyway;
+  that one is the server's and does not depend on the plugin behaving.
+- **Start by hand.** Run `reply.py --dry-run` for a week, read
   every draft, and post the good ones yourself from your own account. Build the
   server side only once the drafts are consistently ones you would have written.
 
 ## What already exists
 
-`plugins/outreach/scripts/scan.py` produces, per accepted find, a JSON object
+The plugin is two commands now, not one. `scripts/scan.py` triages a thread
+saved from Reddit with the local model — three questions per item, three
+comments at a time, stopping at the first yes — and writes the thread's blob
+and the flagged items to its own SQLite file. `scripts/reply.py` is run by hand
+on one post at a time, reads the *whole* thread back, and produces the draft
+below. The split exists so the money is spent by a person, not by a loop, and
+the link a draft carries is now a coalition (`/e/<id>?c=…&s=…`) rather than the
+front page.
+
+`plugins/outreach/scripts/reply.py` produces, per accepted find, a JSON object
 with these fields, and posts it to `POST /api/admin/outreach/drafts` with the
-`x-admin-secret` header:
+`x-admin-secret` header — unchanged from what `scan.py` used to post, so
+nothing on this side of the gate had to move:
 
 | Field | Meaning |
 | --- | --- |
@@ -87,8 +100,8 @@ with these fields, and posts it to `POST /api/admin/outreach/drafts` with the
 | `election_hash` | the stored election the reply links to |
 | `election_title`, `link` | what the reply points at |
 | `reply_text` | the full reply, disclosure footer included, ready to post |
-| `verification` | what Claude concluded: nation, region, year, parties, language, reason |
-| `classifier_reason` | why the local model flagged it |
+| `verification` | what Claude concluded: the election it named, the coalition it picked, its seats and the majority |
+| `classifier_reason` | which of the local model's three questions were answered yes, and where |
 | `created_at` | when the scan produced it |
 
 The script expects `201` with `{"id": "..."}`, treats `409` as "already queued"
@@ -240,9 +253,8 @@ it, not a silent no.
 ## 7. Running this beside plan 2
 
 The owner runs this plan and [02-share-links.md](02-share-links.md) at the same
-time. Nothing here needs anything plan 2 builds: `OUTREACH_LINK_STYLE` defaults
-to `root`, so replies link to the front page until `/e/<id>` exists, and
-flipping it to `share` afterwards is a one-variable change.
+time. This half needs nothing plan 2 builds; the plugin's reply half does, since
+the link it writes is a coalition on the `/e/<id>` route.
 
 What the two plans share is five files. Most of each plan does not touch them,
 so start with the work that does not, and keep the shared edits small and late.

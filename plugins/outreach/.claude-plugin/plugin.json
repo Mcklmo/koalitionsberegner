@@ -1,6 +1,6 @@
 {
   "name": "outreach",
-  "description": "Low-budget marketing for koalitionsberegner: scan subreddits for election talk with a local model, verify with Claude, draft a reply, and queue it for the owner's one-click approval.",
+  "description": "Low-budget marketing for koalitionsberegner: triage saved Reddit threads with a local model for free, then spend one Claude call on one post at a time to draft a reply linking to a coalition, queued for the owner's one-click approval.",
   "version": "0.1.0",
   "author": {
     "name": "Moritz Marcus Hönscheidt"
