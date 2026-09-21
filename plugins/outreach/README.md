@@ -74,6 +74,11 @@ The converter keeps the post and its top-level comments, dropping Reddit's
 `--state none` leaves the thread unseen, so a later real run still considers it.
 Neither command posts anything.
 
+The local pass asks one narrow question — is someone working out who can
+govern — not "is this political". On a 31-comment r/Sverige thread about party
+support it flags 2; the wider wording it replaced flagged all 31, and every one
+of those would have been sent to the billed verifier.
+
 `--dry-run` classifies locally and calls Claude not at all, which is the way to
 tune the local model without spending anything; it prints counts rather than
 drafts, because the reply text comes from the verifier. A verification that
