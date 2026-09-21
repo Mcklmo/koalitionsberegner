@@ -822,6 +822,17 @@ def run(settings: Settings, *, source: Source, classifier, verifier, index: Elec
             summary.errors.append(f"classify {candidate.thing_id}: {exc}")
             continue
         state.seen.add(candidate.thing_id)
+        # One line per decision, so -v shows what the local pass is actually
+        # doing. Its question is deliberately wide — a whole thread about
+        # parties is meant to come through here and be narrowed by the
+        # verifier — and only this makes that visible.
+        log.debug(
+            "%s %s: %s | %s",
+            "flagged" if label.political else "skipped",
+            candidate.thing_id,
+            label.reason or "no reason given",
+            cut(candidate.title or candidate.text, 80),
+        )
         if label.political:
             summary.flagged_local += 1
             positives.append((candidate, label))
