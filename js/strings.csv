@@ -33,6 +33,7 @@ month.11,november,November,November
 month.12,december,December,Dezember
 calc.subtitle,Vælg partier og se om de tilsammen opnår flertal ({majority}+ ud af {total} mandater),Pick parties and see whether together they reach a majority ({majority}+ of {total} seats),"Parteien auswählen und sehen, ob sie zusammen eine Mehrheit erreichen ({majority}+ von {total} Sitzen)"
 calc.totalOf,af {total} mandater,of {total} seats,von {total} Sitzen
+calc.seatShare,Andel af mandaterne,Share of the seats,Anteil der Sitze
 calc.majorityNeeds,Flertal kræver {majority} mandater,A majority needs {majority} seats,Für eine Mehrheit sind {majority} Sitze nötig
 calc.forecastFrom,"Prognose fra {publisher}, {date}","Forecast by {publisher}, {date}","Prognose von {publisher}, {date}"
 calc.finalResult,"Endelig resultat, {date}","Final result, {date}","Endgültiges Ergebnis, {date}"

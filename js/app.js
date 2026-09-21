@@ -1,5 +1,5 @@
 import { isValidatedElection } from './election.js';
-import { formatDate, t } from './i18n.js';
+import { formatDate, language, t } from './i18n.js';
 
 /**
  * Coalition calculator renderer.
@@ -41,6 +41,23 @@ function savePartyNames(value) {
 
 /** Two thirds of the assembly, above which a coalition counts as a large majority. */
 const supermajorityOf = (totalSeats) => Math.floor(totalSeats * 2 / 3);
+
+/**
+ * A party's share of the assembly, to one decimal — "28.6%" in English, "28,6 %"
+ * in Danish and German. Which separator the decimal takes, and whether a space
+ * belongs before the sign, are each language's own business, so the number is
+ * left to Intl rather than spelled out in the sheet.
+ *
+ * Seats, not votes: a party's vote share never reaches the renderer, and for a
+ * forecast the seats are themselves computed from one. Every validated
+ * election's parties add up to `totalSeats` (election.js refuses one that
+ * doesn't), so these shares are a whole assembly divided up.
+ */
+const seatShareOf = (seats, totalSeats) => new Intl.NumberFormat(language(), {
+  style: 'percent',
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+}).format(seats / totalSeats);
 
 /**
  * @param {import('./election.js').Election} election A validated election.
@@ -205,7 +222,12 @@ export function mountCoalitionCalculator(
         const seats = document.createElement('span');
         seats.className = 'seats';
         seats.textContent = p.seats;
-        row.append(chk, dot, abbr, name, seats);
+        const share = document.createElement('span');
+        share.className = 'share';
+        share.textContent = seatShareOf(p.seats, election.totalSeats);
+        // A bare percentage could be read as the vote share it is not.
+        share.title = t('calc.seatShare');
+        row.append(chk, dot, abbr, name, seats, share);
         el.list.appendChild(row);
       });
     });
