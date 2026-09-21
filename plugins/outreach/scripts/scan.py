@@ -839,12 +839,16 @@ def run(settings: Settings, *, source: Source, classifier, verifier, index: Elec
         # doing. Its question is deliberately wide — a whole thread about
         # parties is meant to come through here and be narrowed by the
         # verifier — and only this makes that visible.
+        # The permalink, not the title: for a comment the title is its parent
+        # post's, so thirty comments printed the same line. This is the one
+        # thing a reader needs to go and see what was judged.
         log.debug(
-            "%s %s: %s | %s",
+            "%s %s %s | %s | %s",
             "flagged" if label.political else "skipped",
             candidate.thing_id,
+            candidate.permalink,
+            cut(candidate.text or candidate.title, 100),
             label.reason or "no reason given",
-            cut(candidate.title or candidate.text, 80),
         )
         if label.political:
             summary.flagged_local += 1
