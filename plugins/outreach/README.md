@@ -73,3 +73,9 @@ The converter keeps the post and its top-level comments, dropping Reddit's
 "load more" rows. `--submit stdout` prints the draft instead of queueing it, and
 `--state none` leaves the thread unseen, so a later real run still considers it.
 Neither command posts anything.
+
+`--dry-run` classifies locally and calls Claude not at all, which is the way to
+tune the local model without spending anything; it prints counts rather than
+drafts, because the reply text comes from the verifier. A verification that
+fails three times in a row — no key, no credit, no network — stops the run
+rather than repeating itself once per candidate.

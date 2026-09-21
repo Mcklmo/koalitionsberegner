@@ -376,3 +376,32 @@ def test_the_scanner_reads_that_file_whatever_the_name_s_case(tmp_path):
     posts = scan.FileSource(path).posts("sverige", limit=10)
 
     assert [p.id for p in posts] == ["1wfjm8e"], "Reddit says Sverige, the scanner says sverige"
+
+
+class BrokenVerifier:
+    """Fails the way an exhausted API key does: the same, every time."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def verify(self, candidate):
+        self.calls += 1
+        raise RuntimeError("credit balance is too low")
+
+
+def test_the_run_stops_asking_a_verifier_that_keeps_failing(tmp_path):
+    posts = tmp_path / "posts.json"
+    posts.write_text(json.dumps({"posts": [
+        {"id": f"p{i}", "subreddit": "denmark", "title": "Hvem kan danne regering?",
+         "text": "Hvilke partier kan samle flertal?", "created_utc": 100 + i}
+        for i in range(10)
+    ]}), encoding="utf-8")
+    verifier = BrokenVerifier()
+
+    summary = run(settings(), source=FileSource(posts), classifier=KeywordClassifier(),
+                  verifier=verifier, index=ElectionIndex([]),
+                  sink=scan.NullSink(), state=State(None))
+
+    assert verifier.calls == scan.VERIFY_FAILURES_BEFORE_GIVING_UP, \
+        "the cause is the same for every candidate; asking again only repeats it"
+    assert any("gave up" in error for error in summary.errors)

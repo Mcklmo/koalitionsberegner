@@ -56,6 +56,10 @@ DEFAULT_STATE = "~/.koalitionsberegner-outreach/state.json"
 #: Characters of a post or comment handed to a model. Enough for any Reddit
 #: comment and most posts; a wall of text past this is cut, not summarised.
 MAX_CANDIDATE_CHARS = 4_000
+
+#: Verifications that may fail in a row before the run stops asking. The causes
+#: — no key, no credit, no network — are the same for every candidate.
+VERIFY_FAILURES_BEFORE_GIVING_UP = 3
 #: A reply is short. Reddit allows far more; a helpful pointer does not need it.
 MAX_REPLY_CHARS = 900
 #: The footer every draft carries, appended in code so no model can drop or
@@ -825,6 +829,7 @@ def run(settings: Settings, *, source: Source, classifier, verifier, index: Elec
     # Newest first, and one draft per thread: a post and its comments compete.
     positives.sort(key=lambda pair: -pair[0].created_utc)
     drafted_threads: set[str] = set()
+    failures_in_a_row = 0
     for candidate, label in positives:
         if len(summary.drafts) >= settings.max_drafts:
             break
@@ -834,7 +839,17 @@ def run(settings: Settings, *, source: Source, classifier, verifier, index: Elec
             verification = verifier.verify(candidate)
         except Exception as exc:  # noqa: BLE001
             summary.errors.append(f"verify {candidate.thing_id}: {exc}")
+            failures_in_a_row += 1
+            # No credit, no key, no network: whatever it is, it is the same for
+            # every candidate. Thirty more calls would only repeat it — and be
+            # billed for if they were ever accepted.
+            if failures_in_a_row >= VERIFY_FAILURES_BEFORE_GIVING_UP:
+                summary.errors.append(
+                    f"gave up after {failures_in_a_row} verifications in a row failed"
+                )
+                break
             continue
+        failures_in_a_row = 0
         if not (verification.about_election and verification.worth_replying and verification.reply_draft):
             continue
         summary.verified_positive += 1
