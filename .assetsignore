@@ -13,6 +13,7 @@
 .pytest_cache
 .wrangler
 *.local.sh
+.debug.sh
 Dockerfile
 README.md
 LICENSE

@@ -215,6 +215,7 @@ they are labelled in the list, the preview and the calculator's footer.
    `FirestoreTrackedStore.due_tracked` 500 with `FAILED_PRECONDITION`, and
    the etiquette caps in `doc/plans/04-reddit-outreach.md` and the schedule
    in `doc/plans/03-remaining-work.md` (section A) never run:
+
    ```sh
    gcloud firestore indexes composite create --database=main --collection-group=outreach_drafts \
      --field-config field-path=subreddit,order=ascending \
@@ -229,6 +230,7 @@ they are labelled in the list, the preview and the calculator's footer.
      --field-config field-path=status,order=ascending \
      --field-config field-path=next_refresh_at,order=ascending
    ```
+
    Add `--database=NAME` to all three if `FIRESTORE_DATABASE` is not
    `(default)`. `thread_posted`'s query (`thread_id ==` and `status ==`, two
    equalities and no range filter) needs no composite index — Firestore
@@ -428,3 +430,18 @@ variables from `--set-env-vars` and Secret Manager.
 
 Credentials come from Application Default Credentials — the attached service account
 on Cloud Run, or `gcloud auth application-default login` locally.
+
+## Get reddit data with a logged in user
+
+Paste this url and replace \<subreddit\> and \<id\> with the id of a reddit post — the
+bare id as it stands in the post's own address, `15x0g1`, not the fullname
+`t3_15x0g1`, which this route answers with a 404:
+
+```url
+https://www.reddit.com/r/<subreddit>/comments/<id>/whatever/.json?limit=500&raw_json=1
+```
+
+`limit=500` asks for the whole comment page rather than the first handful, and
+`raw_json=1` stops Reddit HTML-escaping `&`, `<` and `>` in the text. Save the
+page into `plugins/outreach/inbox/`, which is where `scan.py` looks when no
+file is named.
