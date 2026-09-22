@@ -1,0 +1,64 @@
+{
+    // The two halves of the outreach plugin, each as a debuggable launch.
+    // Both run on backend/.venv, the interpreter settings.json already points
+    // the editor at: scan.py needs nothing but the standard library, reply.py
+    // needs anthropic and pydantic, which that environment has. The scripts'
+    // own `uv run --script` shebangs are what a shell uses; the debugger
+    // cannot go through uv, so the interpreter is named here instead.
+    //
+    // All three interpreter properties are pinned, not just `python`. The
+    // editor's own resolution here lands on a 3.14 framework build that is no
+    // longer installed, and a debug adapter launched with a missing executable
+    // dies without a word: the configuration is listed, starting it does
+    // nothing at all, and nothing says why. `debugAdapterPython` and
+    // `debugLauncherPython` are what keep that resolution out of the picture.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // Scans everything in plugins/outreach/inbox: save a thread from
+            // Reddit into that folder (the post's URL with `.json` appended)
+            // and press F5, whatever file is focused. A
+            // thread already scanned is skipped, so leftovers cost nothing.
+            // Free: it calls the model on localhost and nothing else. Add
+            // "--classifier", "keyword" to run it without Ollama at all, and
+            // drop "--slim" to archive the saved page whole rather than the
+            // fields the pipeline reads.
+            "name": "Qwen: scan the saved threads in the inbox",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/plugins/outreach/scripts/scan.py",
+            "python": "${workspaceFolder}/backend/.venv/bin/python",
+            "debugAdapterPython": "${workspaceFolder}/backend/.venv/bin/python",
+            "debugLauncherPython": "${workspaceFolder}/backend/.venv/bin/python",
+            "args": [
+                "--slim",
+                "-v"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            // One post the scan flagged. Both billed calls happen; --dry-run
+            // prints the draft instead of queueing it. The row is marked
+            // either way — `reply.py reset <post_id>` takes it back. Drop
+            // --dry-run to queue for real (needs OUTREACH_ADMIN_SECRET), and
+            // add --retry to take back a post that missed or failed.
+            "name": "Opus: answer the next scanned post (dry run)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/plugins/outreach/scripts/reply.py",
+            "python": "${workspaceFolder}/backend/.venv/bin/python",
+            "debugAdapterPython": "${workspaceFolder}/backend/.venv/bin/python",
+            "debugLauncherPython": "${workspaceFolder}/backend/.venv/bin/python",
+            "args": [
+                "next",
+                "--dry-run",
+                "-v"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}
