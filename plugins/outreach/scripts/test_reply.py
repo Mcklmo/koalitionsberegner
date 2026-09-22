@@ -149,6 +149,16 @@ def test_the_model_sees_every_comment_not_only_the_flagged_one():
     assert "hint only" in document and "[2] upcoming_election" in document
 
 
+def test_the_thread_says_when_it_happened_and_when_now_is():
+    from common import thread_from_blob
+
+    post, comments = thread_from_blob(thread(["first"]))
+    document = thread_document(post, comments, {}, now="2026-09-21")
+    # Without this the year in a title is all a model has, and the election
+    # match is keyed on the year it returns.
+    assert "Posted: 1970-01-01. Today is 2026-09-21." in document
+
+
 def test_a_very_long_thread_is_cut_and_says_so(monkeypatch):
     from common import thread_from_blob
 

@@ -15,12 +15,35 @@ one-time link that arrived by email (`doc/plans/04-reddit-outreach.md`).
 ## Stage 1 — scan
 
 Reddit answers a scripted fetch of a thread with `403` but serves the same JSON
-to a logged-in browser. Open the post with `.json` on the end
-(`https://www.reddit.com/r/de/comments/<id>/.json`), save the page, and:
+to a logged-in browser. Open the post with `.json` on the end and save the
+page:
+
+```
+https://www.reddit.com/r/de/comments/<id>/whatever/.json?limit=500&raw_json=1
+```
+
+`limit=500` asks for the whole comment page rather than the first handful, and
+`raw_json=1` stops Reddit HTML-escaping `&`, `<` and `>` in the text. Save it
+into the inbox, `plugins/outreach/inbox/` — it is beside the code, so the
+editor's own file tree is where you drop it, and its contents are gitignored.
+Then:
 
 ```sh
-./plugins/outreach/scripts/scan.py ~/Downloads/saved.json -v
+./plugins/outreach/scripts/scan.py -v            # everything in the inbox
+./plugins/outreach/scripts/scan.py ~/Downloads/saved.json -v   # or one file
 ```
+
+A file, a directory of them, `-` for stdin, or nothing at all — which reads the
+inbox and creates it if it is not there yet. A thread already in the database
+is skipped, so leaving the files in the inbox costs one lookup each.
+
+`--slim` keeps the blob down to the fields the pipeline actually reads. A real
+r/berlin thread saved from the browser is 2.7 MB, of which about 3 KB is the
+argument: each comment carries seventy keys — awards, flair, `body_html`,
+moderation fields — and four are read. Slimmed, that thread is 8 KB, in
+Reddit's own shape, so `reply.py` cannot tell the difference. Nothing else in
+the pipeline is affected either way: the clutter never reached a model, which
+is handed the post and the comment bodies and nothing else.
 
 The local model is asked three questions about each item, not one:
 
@@ -111,6 +134,7 @@ Put these in the environment or in `plugins/outreach/.env` (gitignored):
 | `ANTHROPIC_API_KEY` | from `ant auth login` if unset | Anthropic credentials. |
 | `OUTREACH_DB` | `~/.koalitionsberegner-outreach/outreach.db` | What the scan found, and what has been answered. |
 | `OUTREACH_BLOBS` | `~/.koalitionsberegner-outreach/posts` | Where saved threads are kept. |
+| `OUTREACH_INBOX` | `plugins/outreach/inbox` | Where the scan looks when no file is named. |
 
 A default Ollama install serialises requests unless `OLLAMA_NUM_PARALLEL` is
 set; the scan is correct either way, just not faster.

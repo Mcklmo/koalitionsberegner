@@ -21,6 +21,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -31,6 +32,13 @@ DEFAULT_USER_AGENT = "koalitionsberegner-outreach/0.1"
 DEFAULT_HOME = "~/.koalitionsberegner-outreach"
 DEFAULT_DB = f"{DEFAULT_HOME}/outreach.db"
 DEFAULT_BLOBS = f"{DEFAULT_HOME}/posts"
+#: Where saved threads are dropped: `plugins/outreach/inbox`, beside the code
+#: rather than in the home directory, so the editor's file tree is where you
+#: drag the saved page and `scan.py` with no argument reads exactly that.
+#: Resolved from this module's own location, so it does not depend on the
+#: working directory the scan was started from. Its contents are gitignored —
+#: they are Reddit's text, not ours.
+DEFAULT_INBOX = str(Path(__file__).resolve().parents[1] / "inbox")
 
 #: Characters of a post handed to a model. Enough for any Reddit comment and
 #: most posts; a wall of text past this is cut, not summarised.
@@ -145,10 +153,32 @@ class Candidate:
     def thing_id(self) -> str:
         return ("t3_" if self.kind == "post" else "t1_") + self.id
 
+    @property
+    def posted_on(self) -> str:
+        return day(self.created_utc)
+
     def for_model(self) -> str:
-        head = f"Subreddit: r/{self.subreddit}\nPost title: {self.title}\n"
+        head = (f"Subreddit: r/{self.subreddit}\nPost title: {self.title}\n"
+                f"Posted: {self.posted_on}\n")
         body = self.text if self.kind == "post" else f"Comment on that post:\n{self.text}"
         return head + body
+
+
+def day(created_utc: float) -> str:
+    """`1758326400.0` -> `2026-09-20`, or "unknown" for a missing timestamp.
+
+    Every prompt carries this and today's date, because without them a model
+    reads a year as the future: a thread titled "Alle Ergebnisse der Wahl …
+    2026" was labelled an *upcoming* election the day after that election was
+    held, on the strength of the year alone.
+    """
+    if not created_utc:
+        return "unknown"
+    return datetime.fromtimestamp(created_utc, UTC).date().isoformat()
+
+
+def today() -> str:
+    return date.today().isoformat()
 
 
 def fenced(text: str) -> str:
@@ -267,6 +297,43 @@ def thread_from_blob(
             position=len(comments) + 1,
         ))
     return post, comments
+
+
+#: The only keys of Reddit's own JSON that :func:`thread_from_blob` reads. A
+#: saved thread carries about seventy per comment — awards, flair, body_html,
+#: moderation fields — and one real thread was 2.7 MB of them around 3 KB of
+#: argument. `scan.py --slim` keeps these and drops the rest.
+POST_KEYS = ("id", "subreddit", "title", "selftext", "permalink", "created_utc", "num_comments")
+COMMENT_KEYS = ("id", "body", "permalink", "created_utc")
+
+
+def slim_blob(raw: object) -> list:
+    """The same thread with nothing in it but what the pipeline reads.
+
+    The shape is Reddit's own, so a slimmed blob goes back through
+    :func:`thread_from_blob` and produces exactly the same post and comments —
+    that equality is what the test asserts, and what lets `reply.py` read
+    either kind without knowing which it got. Text is copied whole: the cut to
+    a model's limit happens at read time, and an archive should not decide it.
+
+    Rows the reader would drop anyway — Reddit's "load more", deleted and empty
+    comments — are dropped here too, so positions match either way.
+    """
+    post, comments = thread_from_blob(raw)  # validates, and tells us what survives
+    keep = {comment.id for comment in comments}
+    raw_post = raw[0]["data"]["children"][0]["data"]  # type: ignore[index]
+    raw_comments = raw[1]["data"]["children"] if len(raw) > 1 else []  # type: ignore[index]
+    return [
+        {"kind": "Listing", "data": {"children": [
+            {"kind": "t3", "data": {k: raw_post.get(k) for k in POST_KEYS}},
+        ]}},
+        {"kind": "Listing", "data": {"children": [
+            {"kind": "t1", "data": {k: child["data"].get(k) for k in COMMENT_KEYS}}
+            for child in raw_comments
+            if isinstance(child, dict) and child.get("kind") == COMMENT_KIND
+            and isinstance(child.get("data"), dict) and child["data"].get("id") in keep
+        ]}},
+    ]
 
 
 def _absolute(permalink: str, fallback: str) -> str:

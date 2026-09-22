@@ -16,18 +16,23 @@ any of `--rescan`, `--classifier`, `--db`, `--blobs`, `-v`.
 ## 1. Where the file comes from
 
 Reddit answers a scripted fetch of a thread with `403`, but serves the same JSON
-to a logged-in browser. The owner opens the post with `.json` appended
-(`https://www.reddit.com/r/de/comments/<id>/.json`) and saves the page. That
-saved file is what this command takes; nothing here reads Reddit.
+to a logged-in browser. The owner opens the post with `.json` appended and a
+couple of parameters —
+`https://www.reddit.com/r/de/comments/<id>/whatever/.json?limit=500&raw_json=1`
+— and saves the page into the inbox, `plugins/outreach/inbox/`.
+Nothing here reads Reddit.
 
-If `$ARGUMENTS` names no file, say so and explain the step above rather than
-guessing at a path.
+`$ARGUMENTS` may name files or directories; naming nothing scans the inbox,
+which is the usual run. If the inbox turns out to be empty, say so and explain
+the step above rather than guessing at a path.
 
 ## 2. Prerequisites
 
 Check and stop with a plain explanation if one fails:
 
-1. The file exists and is JSON (`ls -l`, and `head -c 200`).
+1. There is something to scan: the named file exists and is JSON
+   (`ls -l`, and `head -c 200`), or the inbox is not empty
+   (`ls plugins/outreach/inbox`).
 2. The local model answers: `curl -s http://localhost:11434/api/tags` lists the
    model named by `OUTREACH_LOCAL_MODEL` (default `qwen3:32b`). With
    `OUTREACH_LOCAL_API=openai` check `OUTREACH_LOCAL_URL/v1/models` instead.
@@ -41,6 +46,10 @@ No Anthropic key and no admin secret are needed here. Do not ask for them.
 ```sh
 uv run plugins/outreach/scripts/scan.py $ARGUMENTS
 ```
+
+`--slim` stores only the fields the pipeline reads — a 2.7 MB saved page
+becomes about 8 KB, in the same shape — and is worth passing unless the owner
+asked to keep the whole thing.
 
 Progress is on stderr, a JSON summary on stdout. The scan asks the local model
 three questions per item — recent election, upcoming election, a statement

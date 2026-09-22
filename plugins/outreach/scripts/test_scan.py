@@ -24,6 +24,7 @@ from scan import (  # noqa: E402
     OllamaClassifier,
     OpenAiCompatibleClassifier,
     classification_from,
+    expand_sources,
     ingest,
     scan_thread,
 )
@@ -118,6 +119,26 @@ def test_the_keyword_classifier_answers_all_three():
     label = KeywordClassifier().classify(comments[0])
     assert label.multi_party and label.positive
     assert not KeywordClassifier().classify(post).positive
+
+
+def test_the_model_is_told_when_it_was_posted_and_when_now_is():
+    """The bug this prevents: "Alle Ergebnisse der Wahl … 2026", posted the day
+    after that election, labelled upcoming on the strength of the year."""
+    seen = {}
+
+    def http(method, url, *, body=None, **kw):
+        seen.update(body=body)
+        return 200, {"message": {"content": json.dumps(
+            {"recent_election": True, "upcoming_election": False,
+             "multi_party": False, "reason": "results"})}}
+
+    post, _comments = thread_from_blob(thread([], title="Alle Ergebnisse der Wahl 2026"))
+    OllamaClassifier(url="http://x", model="m", http=http, now="2026-09-21").classify(post)
+    asked = seen["body"]["messages"][1]["content"]
+    assert asked.startswith("Today is 2026-09-21.")
+    assert "Posted: 1970-01-01" in asked  # created_utc 100, the fixture's own clock
+    # Ours is stated outside the markers; only Reddit's text goes inside them.
+    assert asked.index("Today is") < asked.index("<document>")
 
 
 def test_ollama_is_asked_with_the_schema():
@@ -275,3 +296,89 @@ def test_the_command_line_survives_a_bad_file(tmp_path, capsys):
                       "--db", str(tmp_path / "db.sqlite"), "--blobs", str(tmp_path / "blobs")])
     printed = json.loads(capsys.readouterr().out)
     assert code == 1 and printed["errors"]
+
+
+# --- where the files come from ------------------------------------------------------
+
+
+def test_a_directory_stands_for_the_json_files_in_it(tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    for name in ("b.json", "a.json", "notes.txt"):
+        (inbox / name).write_text("{}", encoding="utf-8")
+    found = expand_sources([str(inbox)], inbox=tmp_path / "unused")
+    assert [Path(f).name for f in found] == ["a.json", "b.json"]
+
+
+def test_naming_nothing_reads_the_inbox_and_makes_it(tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    write(inbox, thread(["one"]), "saved.json")
+    assert [Path(f).name for f in expand_sources([], inbox=inbox)] == ["saved.json"]
+
+    empty = tmp_path / "fresh"
+    assert expand_sources([], inbox=empty) == []
+    assert empty.is_dir()  # made, so there is somewhere to drop the next one
+
+
+def test_a_file_named_directly_is_left_alone(tmp_path):
+    path = write(tmp_path, thread(["one"]))
+    assert expand_sources([str(path), "-"], inbox=tmp_path) == [str(path), "-"]
+
+
+def test_the_command_line_with_no_file_scans_the_inbox(tmp_path, capsys, monkeypatch):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    write(inbox, thread(["food", POLITICS]), "saved.json")
+    monkeypatch.setenv("OUTREACH_INBOX", str(inbox))
+    code = scan.main(["--classifier", "keyword", "--db", str(tmp_path / "db.sqlite"),
+                      "--blobs", str(tmp_path / "blobs")])
+    printed = json.loads(capsys.readouterr().out)
+    assert code == 0 and printed["posts"][0]["post_id"] == "p1"
+
+
+# --- --slim ---------------------------------------------------------------------
+
+
+def cluttered() -> list:
+    """A thread as Reddit really serves it: the fields we read, buried."""
+    raw = thread(["kept", "[deleted]"])
+    raw[0]["data"]["children"][0]["data"].update(
+        all_awardings=[{"name": "Gold"}], body_html="<div>…</div>", author_flair_richtext=[],
+        mod_reports=[], gildings={"gid_1": 3}, selftext_html="<p>hvor?</p>")
+    for child in raw[1]["data"]["children"]:
+        if child["kind"] == "t1":
+            child["data"].update(all_awardings=[], body_html="<div>…</div>", ups=41,
+                                 author="someone", gildings={}, collapsed_reason_code=None)
+    return raw
+
+
+def test_slimming_keeps_only_what_the_pipeline_reads():
+    slim = scan.slim_blob(cluttered())
+    assert set(slim[0]["data"]["children"][0]["data"]) == set(
+        ("id", "subreddit", "title", "selftext", "permalink", "created_utc", "num_comments"))
+    comment = slim[1]["data"]["children"][0]["data"]
+    assert set(comment) == {"id", "body", "permalink", "created_utc"}
+    assert "author" not in comment and "ups" not in comment
+
+
+def test_a_slimmed_thread_reads_back_identically():
+    raw = cluttered()
+    # The point of the shape: reply.py cannot tell which kind of blob it got.
+    assert thread_from_blob(scan.slim_blob(raw)) == thread_from_blob(raw)
+
+
+def test_slimming_does_not_cut_a_long_comment():
+    raw = thread(["x" * 9000])
+    kept = scan.slim_blob(raw)[1]["data"]["children"][0]["data"]["body"]
+    assert len(kept) == 9000  # the cut belongs to whoever reads it, not to the archive
+
+
+def test_slim_writes_a_smaller_blob_that_still_scans(tmp_path):
+    path = write(tmp_path, cluttered())
+    store = Store(tmp_path / "db.sqlite")
+    result = ingest(str(path), blobs=tmp_path / "blobs", store=store,
+                    classifier=KeywordClassifier(), rescan=False, slim=True)
+    blob = Path(result["blob"])
+    assert blob.stat().st_size < path.stat().st_size
+    assert thread_from_blob(json.loads(blob.read_text(encoding="utf-8")))[1][0].text == "kept"

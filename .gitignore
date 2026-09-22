@@ -22,5 +22,9 @@ venv/
 *.local.sh
 # outreach plugin: local credentials
 plugins/outreach/.env
+# outreach plugin: threads saved from Reddit, not ours to keep
+plugins/outreach/inbox/*
+!plugins/outreach/inbox/.gitkeep
 
 .obsidian
+.debug.sh

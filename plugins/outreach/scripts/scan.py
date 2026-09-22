@@ -23,8 +23,9 @@ thread is enough, and every comment after that would be a local model call
 spent on a decision already made. `reply.py` reads the *whole* thread from the
 blob anyway, so nothing further down is lost to this.
 
-Output: the path of the post's JSON blob and the flagged item(s), on stdout and
-in the database.
+Run it on a file, on a directory of them, or on nothing at all — which reads
+the inbox, `~/.koalitionsberegner-outreach/inbox`. Output: the path of each
+post's JSON blob and the flagged item(s), on stdout and in the database.
 
 Reddit answers a scripted fetch of a thread with 403 but serves the same JSON
 to a logged-in browser, so the file arrives saved by hand — this script never
@@ -45,6 +46,7 @@ from pathlib import Path
 from common import (
     DEFAULT_BLOBS,
     DEFAULT_DB,
+    DEFAULT_INBOX,
     Candidate,
     HttpJson,
     NotAThread,
@@ -54,6 +56,8 @@ from common import (
     expand,
     fenced,
     http_json,
+    slim_blob,
+    today,
     thread_from_blob,
 )
 from store import Flag, Post, Store
@@ -118,6 +122,10 @@ CLASSIFIER_SYSTEM = (
     "multi_party: the text makes a statement involving two or more political "
     "parties — comparing them, adding their seats up, saying they would or "
     "would not govern together, or that one needs the other.\n"
+    "Each item says when it was posted, and today\'s date is given above it. "
+    "Use them: a text that reports how an election went is recent_election "
+    "however recent its year looks, and an election dated after today is "
+    "upcoming_election. Do not judge either from the year alone.\n"
     "Every language and every country counts, and asking counts as much as "
     "asserting. A party named only as an insult, and a single party discussed "
     "on its own, are not multi_party. Sports, culture, business and personal "
@@ -156,13 +164,21 @@ def classification_from(content: object) -> Classification:
     )
 
 
+def user_message(candidate: Candidate, now: str) -> str:
+    """Today's date, then the untrusted item. The date is ours, so it sits
+    outside the markers: nothing inside them is read as fact or as an order."""
+    return f"Today is {now}.\n" + fenced(candidate.for_model())
+
+
 class OllamaClassifier:
     """Ollama's /api/chat with a JSON schema as `format`: the answer is the object."""
 
-    def __init__(self, *, url: str, model: str, http: HttpJson = http_json):
+    def __init__(self, *, url: str, model: str, http: HttpJson = http_json,
+                 now: str | None = None):
         self._url = url.rstrip("/")
         self._model = model
         self._http = http
+        self._now = now or today()
 
     def classify(self, candidate: Candidate) -> Classification:
         status, body = self._http("POST", f"{self._url}/api/chat", body={
@@ -172,7 +188,7 @@ class OllamaClassifier:
             "options": {"temperature": 0},
             "messages": [
                 {"role": "system", "content": CLASSIFIER_SYSTEM},
-                {"role": "user", "content": fenced(candidate.for_model())},
+                {"role": "user", "content": user_message(candidate, self._now)},
             ],
         }, timeout=120)
         if status != 200:
@@ -183,10 +199,12 @@ class OllamaClassifier:
 class OpenAiCompatibleClassifier:
     """LM Studio, llama.cpp server, vLLM: /v1/chat/completions with a JSON schema."""
 
-    def __init__(self, *, url: str, model: str, http: HttpJson = http_json):
+    def __init__(self, *, url: str, model: str, http: HttpJson = http_json,
+                 now: str | None = None):
         self._url = url.rstrip("/")
         self._model = model
         self._http = http
+        self._now = now or today()
 
     def classify(self, candidate: Candidate) -> Classification:
         status, body = self._http("POST", f"{self._url}/v1/chat/completions", body={
@@ -198,7 +216,7 @@ class OpenAiCompatibleClassifier:
             },
             "messages": [
                 {"role": "system", "content": CLASSIFIER_SYSTEM},
-                {"role": "user", "content": fenced(candidate.for_model())},
+                {"role": "user", "content": user_message(candidate, self._now)},
             ],
         }, timeout=120)
         if status != 200:
@@ -314,11 +332,18 @@ def blob_path(blobs: Path, post: Candidate) -> Path:
     return blobs / (post.subreddit or "unknown") / f"{post.id}.json"
 
 
-def write_blob(blobs: Path, post: Candidate, raw_text: str) -> Path:
-    """The saved file, kept verbatim: `reply.py` reads the thread from here."""
+def write_blob(blobs: Path, post: Candidate, raw_text: str, *, raw: object = None) -> Path:
+    """The saved thread, where `reply.py` reads it from.
+
+    Verbatim by default: it is the archive, and a field nobody reads today is
+    still evidence. With `raw` given (`--slim`) only the keys the pipeline
+    reads are kept, which is about a thousandth of the file — and the page the
+    owner saved is still in the inbox if the rest is ever wanted.
+    """
     path = blob_path(blobs, post)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(raw_text, encoding="utf-8")
+    text = raw_text if raw is None else json.dumps(slim_blob(raw), ensure_ascii=False, indent=1)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -326,7 +351,35 @@ def read_source(name: str) -> str:
     return sys.stdin.read() if name == "-" else Path(name).expanduser().read_text(encoding="utf-8")
 
 
-def ingest(name: str, *, blobs: Path, store: Store, classifier, rescan: bool) -> dict:
+def expand_sources(names: list[str], *, inbox: Path) -> list[str]:
+    """Names on the command line to files to read, in a stable order.
+
+    A directory stands for the `.json` files in it, and naming nothing at all
+    stands for the inbox — so the usual run is `scan.py` with no arguments,
+    after dropping a saved page there. A thread already in the database is
+    skipped later, by id, so re-reading the same inbox costs one lookup.
+    """
+    if not names:
+        inbox.mkdir(parents=True, exist_ok=True)
+        names = [str(inbox)]
+    out: list[str] = []
+    for name in names:
+        if name == "-":
+            out.append(name)
+            continue
+        path = Path(name).expanduser()
+        if path.is_dir():
+            found = sorted(str(child) for child in path.glob("*.json"))
+            if not found:
+                log.info("nothing to scan in %s — save a thread's .json there", path)
+            out.extend(found)
+        else:
+            out.append(str(path))
+    return out
+
+
+def ingest(name: str, *, blobs: Path, store: Store, classifier, rescan: bool,
+           slim: bool = False) -> dict:
     """One saved thread: blob, local pass, row. Returns what to print."""
     text = read_source(name)
     try:
@@ -346,8 +399,10 @@ def ingest(name: str, *, blobs: Path, store: Store, classifier, rescan: bool) ->
         log.warning("%s was already answered (%s); reply.py will not take it again until "
                     "`reply.py reset %s`", post.id, existing.outcome, post.id)
 
-    path = write_blob(blobs, post, text)
-    log.info("r/%s %s: %s comment(s) saved to %s", post.subreddit, post.id, len(comments), path)
+    path = write_blob(blobs, post, text, raw=raw if slim else None)
+    log.info("r/%s %s: %s comment(s) saved to %s (%s)", post.subreddit, post.id, len(comments),
+             path, f"slimmed, {len(text):,} -> {path.stat().st_size:,} bytes" if slim
+             else f"{path.stat().st_size:,} bytes, verbatim")
 
     errors: list[str] = []
     gave_up = ""
@@ -386,8 +441,12 @@ def build_classifier(name: str, *, url: str, model: str):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("files", nargs="+", metavar="FILE",
-                        help="a thread saved from Reddit as <permalink>.json; - for stdin")
+    parser.add_argument("files", nargs="*", metavar="FILE",
+                        help="threads saved from Reddit as <permalink>.json, or directories of "
+                             f"them; - for stdin. Default: everything in {DEFAULT_INBOX}")
+    parser.add_argument("--slim", action="store_true",
+                        help="store only the fields the pipeline reads, not the whole saved "
+                             "page — about a thousandth of the size")
     parser.add_argument("--rescan", action="store_true",
                         help="scan a thread again that is already in the database")
     parser.add_argument("--classifier", choices=("ollama", "openai", "keyword"), default=None,
@@ -407,14 +466,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     blobs = expand(args.blobs or env.get("OUTREACH_BLOBS", DEFAULT_BLOBS))
     store = Store(args.db or env.get("OUTREACH_DB", DEFAULT_DB))
+    files = expand_sources(args.files, inbox=expand(env.get("OUTREACH_INBOX", DEFAULT_INBOX)))
 
     log.info("scanning %s file(s) with %s, three comments at a time",
-             len(args.files), type(classifier).__name__)
+             len(files), type(classifier).__name__)
     posts, failures = [], []
-    for name in args.files:
+    for name in files:
         try:
             posts.append(ingest(name, blobs=blobs, store=store, classifier=classifier,
-                                rescan=args.rescan))
+                                rescan=args.rescan, slim=args.slim))
         except (NotAThread, OSError) as exc:
             log.error("%s: %s", name, exc)
             failures.append(f"{name}: {exc}")
