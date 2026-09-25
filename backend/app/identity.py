@@ -156,8 +156,13 @@ def election_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def request_key(year: int | str, nation: str, subnation: str | None = None) -> str:
+def request_key(year: int | str | None, nation: str, subnation: str | None = None) -> str:
     """Identifier for *what was asked for*, used to key the work of answering it.
+
+    ``year`` may be ``None``: "the latest election there". That key is its own —
+    the payload says ``"year": null``, which no year-bearing payload does — so
+    asking for the latest never joins, or is answered by, a request for one
+    particular year, whatever that year turns out to be.
 
     Distinct from :func:`election_hash`, which identifies the election that was
     found: the day it was held is part of that identity and is not known until
@@ -174,7 +179,7 @@ def request_key(year: int | str, nation: str, subnation: str | None = None) -> s
     payload = json.dumps(
         {
             "version": HASH_VERSION,
-            "year": normalize_year(year),
+            "year": None if year is None else normalize_year(year),
             "nation": normalized_nation,
             "subnation": normalize_place(subnation),
         },

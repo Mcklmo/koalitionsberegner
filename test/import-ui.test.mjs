@@ -502,5 +502,6 @@ test('an incomplete form is not written down either', async () => {
   await el.form.dispatch('submit');
 
   assert.equal(calls.requestElection, 0);
-  assert.ok(el.fieldErrors.year.textContent);
+  assert.ok(el.fieldErrors.nation.textContent);
+  assert.equal(el.fieldErrors.year.textContent, '', 'an empty year is the latest, not a mistake');
 });

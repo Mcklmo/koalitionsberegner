@@ -28,6 +28,9 @@ export const ImportStatus = {
   PREVIEW: 'preview',
   // Not held yet: `forecasts` lists its polls, and one is confirmed by option.
   CHOOSE: 'choose',
+  // Asked for without a year: `candidates` names the previous election and,
+  // when it is near, the next one. Picking asks again with that one's year.
+  PICK: 'pick',
   FAILED: 'failed',
   UNKNOWN: 'unknown',
 };
@@ -150,6 +153,23 @@ function toFiledRequest(body) {
   };
 }
 
+/**
+ * One election a yearless request may mean. Model output, so anything not
+ * shaped like one is dropped rather than shown; the names still reach the page
+ * as text only.
+ */
+function toCandidate(candidate) {
+  if (!isObject(candidate)) return null;
+  const { which, year, election_date: electionDate, title, nation, state } = candidate;
+  const shaped = (which === 'previous' || which === 'upcoming')
+    && Number.isInteger(year)
+    && typeof electionDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(electionDate)
+    && typeof title === 'string'
+    && typeof nation === 'string' && nation !== ''
+    && (state === null || state === undefined || typeof state === 'string');
+  return shaped ? { which, year, electionDate, title, nation, state: state || null } : null;
+}
+
 /** `state` on the wire is the import state; renamed so it cannot be confused
  *  with an election's `state` (its region). */
 function toResult(body) {
@@ -163,6 +183,9 @@ function toResult(body) {
     duplicate: Boolean(body.duplicate),
     // Every forecast is an election like any other, and validated like one.
     forecasts: (body.forecasts ?? []).map(toElection),
+    candidates: (Array.isArray(body.candidates) ? body.candidates : [])
+      .map(toCandidate)
+      .filter(Boolean),
   };
 }
 

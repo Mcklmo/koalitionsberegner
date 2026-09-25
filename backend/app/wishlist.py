@@ -131,12 +131,18 @@ def build_issue(request: ImportRequest, *, marker: str) -> dict[str, object]:
     for the sake of a notification the person never asked for.
     """
     where = f"{request.nation} — {request.subnation}" if request.subnation else request.nation
+    # No year is "the latest election there", which the importer leaves the
+    # year box empty for, too.
+    year = "latest" if request.year is None else request.year
+    asked = (
+        f"the latest {where} election" if request.year is None else f"{request.year} {where}"
+    )
     lines = [
-        f"Someone asked for **{request.year} {where}**, which is not in the store.",
+        f"Someone asked for **{asked}**, which is not in the store.",
         "",
         "| | |",
         "| --- | --- |",
-        f"| Year | {_as_code(request.year)} |",
+        f"| Year | {_as_code(year)} |",
         f"| Nation | {_as_code(request.nation)} |",
     ]
     if request.subnation:
@@ -150,7 +156,7 @@ def build_issue(request: ImportRequest, *, marker: str) -> dict[str, object]:
     return {
         # Single-line by construction: a title is one line, and a pasted
         # multi-line place name would otherwise arrive with newlines in it.
-        "title": f"Election request: {request.year} {' '.join(where.split())}",
+        "title": f"Election request: {year} {' '.join(where.split())}",
         "body": "\n".join(lines),
         "labels": [LABEL],
     }
