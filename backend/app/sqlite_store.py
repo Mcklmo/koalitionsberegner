@@ -40,6 +40,7 @@ from .store import (
     Claim,
     ClaimOutcome,
     Confirmation,
+    ElectionCandidate,
     ImportRequest,
     Job,
     JobStatus,
@@ -75,7 +76,8 @@ CREATE TABLE IF NOT EXISTS import_jobs (
     error       TEXT,
     result      TEXT,
     forecasts   TEXT,
-    owner       TEXT
+    owner       TEXT,
+    candidates  TEXT
 );
 CREATE TABLE IF NOT EXISTS import_results (
     request_key   TEXT PRIMARY KEY,
@@ -144,6 +146,7 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         ("elections", "selected", "INTEGER NOT NULL DEFAULT 0"),
         ("import_jobs", "forecasts", "TEXT"),
         ("import_jobs", "owner", "TEXT"),
+        ("import_jobs", "candidates", "TEXT"),
         # Everything already in the table was confirmed by a person.
         ("elections", "provenance", "TEXT NOT NULL DEFAULT 'manual'"),
         ("tracked_elections", "first_result_at", "REAL"),
@@ -177,6 +180,9 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         forecasts=tuple(
             Election.model_validate(item) for item in json.loads(row["forecasts"])
         ) if row["forecasts"] else (),
+        candidates=tuple(
+            ElectionCandidate.model_validate(item) for item in json.loads(row["candidates"])
+        ) if row["candidates"] else (),
     )
 
 
@@ -381,6 +387,7 @@ class SqliteElectionStore:
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     " query=excluded.query, started_at=excluded.started_at,"
                     " attempt=excluded.attempt, error=NULL, result=NULL, forecasts=NULL,"
+                    " candidates=NULL,"
                     " owner=NULL",
                     (request_key, new_job.status.value, new_job.query,
                      new_job.started_at, new_job.attempt),
@@ -401,7 +408,7 @@ class SqliteElectionStore:
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     # Restart the lease so the user gets a full window to confirm.
                     " started_at=excluded.started_at, error=NULL, result=excluded.result,"
-                    " forecasts=NULL",
+                    " forecasts=NULL, candidates=NULL",
                     (request_key, JobStatus.AWAITING_CONFIRMATION.value,
                      row["query"] if row else "", self._clock(),
                      row["attempt"] if row else 1,
@@ -421,11 +428,32 @@ class SqliteElectionStore:
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
                     # Restart the lease so the user gets a full window to choose.
                     " started_at=excluded.started_at, error=NULL, result=NULL,"
-                    " forecasts=excluded.forecasts",
+                    " forecasts=excluded.forecasts, candidates=NULL",
                     (request_key, JobStatus.AWAITING_CHOICE.value,
                      row["query"] if row else "", self._clock(),
                      row["attempt"] if row else 1,
                      json.dumps([f.model_dump(mode="json") for f in forecasts])),
+                )
+
+    def offer_elections(self, request_key: str, candidates: list[ElectionCandidate]) -> None:
+        with io_span(log, "sqlite", "offer_elections", request=request_key[:12],
+                     candidates=len(candidates)):
+            with self._write() as conn:
+                row = conn.execute(
+                    "SELECT query, attempt FROM import_jobs WHERE request_key = ?", (request_key,)
+                ).fetchone()
+                conn.execute(
+                    "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
+                    " error, result, forecasts, candidates) VALUES (?, ?, ?, ?, ?, NULL, NULL,"
+                    " NULL, ?)"
+                    " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
+                    # Restart the lease so the user gets a full window to pick.
+                    " started_at=excluded.started_at, error=NULL, result=NULL,"
+                    " forecasts=NULL, candidates=excluded.candidates",
+                    (request_key, JobStatus.AWAITING_ELECTION.value,
+                     row["query"] if row else "", self._clock(),
+                     row["attempt"] if row else 1,
+                     json.dumps([c.model_dump(mode="json") for c in candidates])),
                 )
 
     def confirm_forecast(
@@ -518,7 +546,7 @@ class SqliteElectionStore:
                     "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, '', ?, 1, NULL, NULL)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status, result=NULL,"
-                    " forecasts=NULL, owner=NULL",
+                    " forecasts=NULL, candidates=NULL, owner=NULL",
                     (request_key, JobStatus.SUCCEEDED.value, now),
                 )
                 span["linked"] = True
@@ -527,7 +555,8 @@ class SqliteElectionStore:
         with io_span(log, "sqlite", "discard", request=request_key[:12]) as span:
             with self._write() as conn:
                 deleted = conn.execute(
-                    "DELETE FROM import_jobs WHERE request_key = ? AND status IN (?, ?)",
+                    "DELETE FROM import_jobs WHERE request_key = ? AND status IN"
+                    f" ({', '.join('?' for _ in DISCARDABLE_STATUSES)})",
                     (request_key, *(status.value for status in DISCARDABLE_STATUSES)),
                 ).rowcount
                 span["discarded"] = bool(deleted)
@@ -544,7 +573,8 @@ class SqliteElectionStore:
                     "INSERT INTO import_jobs (request_key, status, query, started_at, attempt,"
                     " error, result) VALUES (?, ?, ?, ?, ?, ?, NULL)"
                     " ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,"
-                    " error=excluded.error, result=NULL, forecasts=NULL, owner=NULL",
+                    " error=excluded.error, result=NULL, forecasts=NULL, candidates=NULL,"
+                    " owner=NULL",
                     (request_key, JobStatus.FAILED.value,
                      row["query"] if row else "",
                      row["started_at"] if row else self._clock(),

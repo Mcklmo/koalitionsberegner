@@ -92,7 +92,14 @@ from .schema import Election, Forecast, clean_text
 from .service import AmbiguousId, ImportRequest, ImportResult, ImportService, ImportState
 from .share import card as build_card
 from .share import image_etag, parse_seats, parse_selection, valid_id
-from .store import ElectionStore, StoredElection, TrackedElection, TrackedStatus, TrackedStore
+from .store import (
+    ElectionCandidate,
+    ElectionStore,
+    StoredElection,
+    TrackedElection,
+    TrackedStatus,
+    TrackedStore,
+)
 from .usage import (
     Period,
     UsageEvent,
@@ -328,23 +335,29 @@ MAX_PLACE_CHARS = 80
 
 
 class ImportBody(BaseModel):
-    """Which election to import: a year, a nation, and optionally a region.
+    """Which election to import: a nation, optionally a region, optionally a year.
 
     Spelling is the resolver's problem, not this model's — the only thing
-    checked here is that the values are short, printable text and a year that is
-    a year. Refusing "Germny" at the door would be refusing the request the
-    resolver exists to answer.
+    checked here is that the values are short, printable text and a year, if
+    one is given, that is a year. Refusing "Germny" at the door would be
+    refusing the request the resolver exists to answer.
+
+    No year means "the latest election there": the answer is the elections
+    that may mean (the ``pick`` state), and picking one asks again with its year.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    year: int
+    year: int | None = None
     nation: str = Field(max_length=MAX_PLACE_CHARS)
     subnation: str | None = Field(default=None, max_length=MAX_PLACE_CHARS)
 
     @field_validator("year", mode="before")
     @classmethod
-    def _year(cls, value) -> int:
+    def _year(cls, value) -> int | None:
+        # An empty year box means "the latest", not a year that is not one.
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
         # A mistyped digit row is read as what it means; anything else is
         # refused here rather than spent on a model call.
         return normalize_year(value)
@@ -379,6 +392,8 @@ class ImportResponse(BaseModel):
     duplicate: bool = False
     forecasts: list[Election] = Field(default_factory=list)
     """In the ``choose`` state: the forecasts to pick from, newest first."""
+    candidates: list[ElectionCandidate] = Field(default_factory=list)
+    """In the ``pick`` state: the elections a request without a year may mean."""
 
     @classmethod
     def of(cls, result: ImportResult) -> "ImportResponse":
@@ -392,6 +407,7 @@ class ImportResponse(BaseModel):
             reused=result.reused,
             duplicate=result.duplicate,
             forecasts=list(result.forecasts),
+            candidates=list(result.candidates),
         )
 
 
@@ -496,7 +512,7 @@ async def import_election(
     _admin: None = Depends(require_admin),
     usage: UsageRecorder = Depends(get_usage),
 ) -> ImportResponse:
-    """Import an election named by year, nation and — optionally — region.
+    """Import an election named by nation and — optionally — region and year.
 
     The owner's alone (:func:`require_admin`). The caller supplies no address:
     the resolver works out which election that is, and where its results are
@@ -563,8 +579,8 @@ async def list_elections(
 
 @app.get("/api/elections/lookup", response_model=ImportResponse)
 async def lookup_request(
-    year: int,
     nation: str,
+    year: int | None = None,
     subnation: str | None = None,
     service: ImportService = Depends(get_service),
 ) -> ImportResponse:
@@ -574,6 +590,8 @@ async def lookup_request(
     request — one running, one waiting to be confirmed, one that failed? Then:
     is the election itself already stored, whoever asked for it and however they
     spelled it, which the store can answer from the year and the place alone.
+    Without a year only the first is asked: which stored election is the latest
+    is not something the store can know without the resolver.
 
     Open to anyone: it is store reads behind the read cache, and nothing here
     searches, fetches or extracts.
@@ -588,6 +606,8 @@ async def lookup_request(
     if result.state is not ImportState.UNKNOWN:
         return ImportResponse.of(result)
 
+    if request.year is None:
+        return ImportResponse.of(result)
     stored = await service.find_by_place(request.year, request.nation, request.subnation)
     if stored is None:
         return ImportResponse.of(result)
@@ -627,10 +647,14 @@ async def request_election(
 
     An election already held in the store is never filed: it is handed back the
     way the lookup would, because asking for it was a mistake about what is
-    there, not a request for work.
+    there, not a request for work. Asking for the latest election is always
+    filed: the store cannot tell whether the one it holds still is.
     """
     request = body.to_request()
-    stored = await service.find_by_place(request.year, request.nation, request.subnation)
+    stored = (
+        None if request.year is None
+        else await service.find_by_place(request.year, request.nation, request.subnation)
+    )
     if stored is not None:
         await run_in_threadpool(usage.record, UsageEvent.REQUEST_ALREADY_IMPORTED)
         raise HTTPException(

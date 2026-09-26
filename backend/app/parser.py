@@ -1,6 +1,6 @@
 """The parsing seam.
 
-Turning a request — a year, a nation, maybe a region — into a validated election
+Turning a request — a nation, maybe a region, maybe a year — into a validated election
 is a separate concern (and a separate issue); the store only needs to know that
 *something* can do it. The default implementation refuses, so a deployment
 without a configured parser fails loudly instead of silently storing nothing.
@@ -9,7 +9,8 @@ without a configured parser fails loudly instead of silently storing nothing.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Literal, Protocol
 
 from pydantic import ValidationError
@@ -17,11 +18,11 @@ from pydantic import ValidationError
 from .extractor import MAX_POLLS_PER_PAGE
 from .fetcher import FetchedPage
 from .identity import normalize_date, place_token, same_place
-from .resolver import ResolvedElection, unresolved_message
+from .resolver import LatestElections, ResolvedElection, unresolved_message
 from .schema import Election
 from .search import DEFAULT_SEARCH_LIMIT, DisabledSearch
 from .seats import allocate
-from .store import ImportRequest
+from .store import MAX_CANDIDATE_TITLE_CHARS, ElectionCandidate, ImportRequest
 from .wikipedia import DEFAULT_ARTICLE_LIMIT
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,11 @@ RESULTS_GRACE_DAYS = 10
 #: a list longer than this is a table to read, not a choice to make.
 MAX_FORECASTS = 10
 
+#: How close the next election must be for a request without a year to offer
+#: its polls beside the previous election's result. Further off, a poll says
+#: little about the vote, and "the latest" means the one that was held.
+POLLS_WINDOW_DAYS = 365
+
 
 class ParseError(RuntimeError):
     """Raised when a request cannot be turned into a valid election.
@@ -53,13 +59,31 @@ class ParseError(RuntimeError):
 READ_FAILED = "reading it failed on our side"
 
 
+@dataclass(frozen=True)
+class ElectionChoice:
+    """What a request without a year comes back as: the elections it may mean.
+
+    Nothing has been fetched or read. Two candidates — the previous election
+    and the next — when the next is close enough for its polls to be worth
+    offering; otherwise the one "the latest" plainly means. Either way the user
+    (or, for a single one, the page) asks again with that election's year.
+    """
+
+    candidates: tuple[ElectionCandidate, ...]
+
+
 class ElectionParser(Protocol):
-    async def parse(self, request: ImportRequest) -> Election | list[Election]:
+    async def parse(
+        self, request: ImportRequest
+    ) -> Election | list[Election] | ElectionChoice:
         """Find the election ``request`` names and extract its results.
 
         An election that has not been held has none, and comes back as a list
         instead: its newest polls, each one a forecast (:class:`schema.Forecast`)
         for the user to choose from. Never an empty one — no polls is an error.
+
+        A request without a year names no one election yet, and comes back as
+        an :class:`ElectionChoice`, having read nothing.
         """
         ...
 
@@ -67,8 +91,55 @@ class ElectionParser(Protocol):
 class UnavailableParser:
     """Placeholder parser: every import fails until a real one is injected."""
 
-    async def parse(self, request: ImportRequest) -> Election | list[Election]:
+    async def parse(
+        self, request: ImportRequest
+    ) -> Election | list[Election] | ElectionChoice:
         raise ParseError("no election parser is configured")
+
+
+def choose_candidates(latest: LatestElections, *, today: date) -> tuple[ElectionCandidate, ...]:
+    """Which of the resolver's two elections to offer. Decided here, in code.
+
+    Both, when the next election is less than :data:`POLLS_WINDOW_DAYS` away —
+    whether its day has been set or is only the last one it can be held on —
+    and there is a previous one to set beside it. Otherwise the previous
+    election alone, or the next one when there has never been a previous one.
+
+    A "next" election dated before today is one the model has not caught up
+    with: it has been held, so it is offered as the previous one, and is
+    the only one offered — its successor is not known.
+    """
+    previous = _candidate("previous", latest.previous, latest)
+    upcoming = _candidate("upcoming", latest.upcoming, latest)
+
+    if upcoming is not None and upcoming.election_date < today:
+        previous = upcoming.model_copy(update={"which": "previous"})
+        upcoming = None
+    if upcoming is not None and previous is not None:
+        if upcoming.election_date < today + timedelta(days=POLLS_WINDOW_DAYS):
+            return (upcoming, previous)
+        return (previous,)
+    found = previous or upcoming
+    if found is None:
+        raise ParseError(unresolved_message("no_election"))
+    return (found,)
+
+
+def _candidate(which, entry, latest: LatestElections) -> ElectionCandidate | None:
+    if entry is None:
+        return None
+    try:
+        held = normalize_date(entry.election_date)
+    except (TypeError, ValueError):
+        raise ParseError("the election's date could not be read") from None
+    return ElectionCandidate(
+        which=which,
+        year=held.year,
+        election_date=held,
+        title=_clip(entry.title, MAX_CANDIDATE_TITLE_CHARS),
+        nation=latest.nation,
+        state=latest.state,
+    )
 
 
 class LlmElectionParser:
@@ -120,7 +191,11 @@ class LlmElectionParser:
         self._search_limit = search_limit
         self._article_limit = article_limit
 
-    async def parse(self, request: ImportRequest) -> Election | list[Election]:
+    async def parse(
+        self, request: ImportRequest
+    ) -> Election | list[Election] | ElectionChoice:
+        if request.year is None:
+            return await self._choose(request)
         resolved = await self._resolve(request)
         want: Literal["polls", "results"] = "polls" if self._upcoming(resolved) else "results"
         try:
@@ -215,6 +290,27 @@ class LlmElectionParser:
             if url not in candidates:
                 candidates.append(url)
         return candidates
+
+    async def _choose(self, request: ImportRequest) -> ElectionChoice:
+        """The elections a request without a year may mean, read from nowhere yet.
+
+        The resolver names them; which of them are offered is
+        :func:`choose_candidates`'s decision, not the model's. Picking one asks
+        again with its year, so every check below applies to what is read then.
+        """
+        latest = await self._resolver.resolve_latest(request)
+        if latest.unresolved_reason:
+            log.info("unresolved %r reason=%s", request.describe(), latest.unresolved_reason)
+            raise ParseError(unresolved_message(latest.unresolved_reason))
+        try:
+            candidates = choose_candidates(latest, today=self._clock())
+        except ValidationError:
+            raise ParseError("the election could not be identified") from None
+        log.info(
+            "resolved %r as %s", request.describe(),
+            ", ".join(f"{c.which} {c.election_date}" for c in candidates),
+        )
+        return ElectionChoice(candidates)
 
     async def _resolve(self, request: ImportRequest) -> ResolvedElection:
         """Work out which election this is, and refuse if it is not one.

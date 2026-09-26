@@ -250,6 +250,7 @@ importUi = mountImportUi({
     discard: byId('preview-discard'),
     choices: byId('choices'),
     choicesTitle: byId('choices-title'),
+    choicesHint: byId('choices-hint'),
     choicesList: byId('choices-list'),
     choicesDiscard: byId('choices-discard'),
   },

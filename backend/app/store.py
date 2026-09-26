@@ -20,10 +20,12 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from enum import Enum
 from threading import Lock
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .identity import same_place
-from .schema import Election
+from .schema import Election, clean_text
 
 # An import that has not reported back within this window is presumed dead and
 # may be reclaimed, so a crashed container cannot pin a request in "pending".
@@ -39,15 +41,24 @@ class JobStatus(str, Enum):
     # to save. Any number of them may be, so a choice does not end the job —
     # its lease does, after which asking again reads the polls afresh.
     AWAITING_CHOICE = "awaiting_choice"
+    # Asked for without a year, in a place whose next election is close: the
+    # previous election's result and the next one's polls are both "the latest",
+    # and the user says which. Nothing has been fetched or read yet.
+    AWAITING_ELECTION = "awaiting_election"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
 
 #: Statuses meaning "an import already ran, or is running, for this request".
-LIVE_STATUSES = (JobStatus.PENDING, JobStatus.AWAITING_CONFIRMATION, JobStatus.AWAITING_CHOICE)
+LIVE_STATUSES = (
+    JobStatus.PENDING, JobStatus.AWAITING_CONFIRMATION, JobStatus.AWAITING_CHOICE,
+    JobStatus.AWAITING_ELECTION,
+)
 
 #: Statuses holding something the user has not accepted yet, and may throw away.
-DISCARDABLE_STATUSES = (JobStatus.AWAITING_CONFIRMATION, JobStatus.AWAITING_CHOICE)
+DISCARDABLE_STATUSES = (
+    JobStatus.AWAITING_CONFIRMATION, JobStatus.AWAITING_CHOICE, JobStatus.AWAITING_ELECTION,
+)
 
 
 class ClaimOutcome(str, Enum):
@@ -62,12 +73,18 @@ class ClaimOutcome(str, Enum):
 class ImportRequest:
     """What a user supplies to import an election: which election, roughly.
 
-    A year, a nation, and — for a regional election — the region within it.
-    Spelling is not expected to be exact; resolving "Germny" and finding the
-    day the election was held is the resolver's job (see :mod:`app.resolver`).
+    A nation, and — for a regional election — the region within it, and
+    optionally the year. Spelling is not expected to be exact; resolving
+    "Germny" and finding the day the election was held is the resolver's job
+    (see :mod:`app.resolver`).
+
+    Without a year it means "the latest election there": the resolver names the
+    previous election and the next one, and the user picks between them when
+    both are worth offering (:class:`ElectionCandidate`). Picking asks again,
+    this time with the year.
     """
 
-    year: int
+    year: int | None
     nation: str
     subnation: str | None = None
 
@@ -78,7 +95,47 @@ class ImportRequest:
         import goes wrong this is the thing that needs to be recognisable.
         """
         where = f"{self.nation} — {self.subnation}" if self.subnation else self.nation
-        return f"{where} {self.year}"
+        return f"{where} {self.year if self.year is not None else '(latest)'}"
+
+
+#: A title is a few words; a longer one is not a name, it is a paragraph.
+MAX_CANDIDATE_TITLE_CHARS = 200
+#: The same cap the import form's place fields have (``main.MAX_PLACE_CHARS``):
+#: a candidate's place is sent back as one, when the user picks it.
+MAX_CANDIDATE_PLACE_CHARS = 80
+
+
+class ElectionCandidate(BaseModel):
+    """One election a yearless request may mean, as the resolver identified it.
+
+    Only an identity — no seats, no source. It is what the user picks between
+    ("the next election's polls" or "the previous election's result"), and what
+    picking turns into: a request with this year, for this place, which runs
+    through the ordinary import from the start.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    which: Literal["previous", "upcoming"]
+    year: int
+    election_date: date
+    title: str = Field(max_length=MAX_CANDIDATE_TITLE_CHARS)
+    nation: str = Field(max_length=MAX_CANDIDATE_PLACE_CHARS)
+    state: str | None = Field(default=None, max_length=MAX_CANDIDATE_PLACE_CHARS)
+
+    # Model output, shown in the page and sent back as a request: cleaned the
+    # way every stored name is.
+    @field_validator("title", "nation")
+    @classmethod
+    def _text(cls, value: str, info) -> str:
+        return clean_text(value, field=info.field_name)
+
+    @field_validator("state")
+    @classmethod
+    def _state(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return clean_text(value, field="state")
 
 
 @dataclass(frozen=True)
@@ -94,6 +151,8 @@ class Job:
     """The extracted election awaiting confirmation; never served as stored."""
     forecasts: tuple[Election, ...] = ()
     """The polls of an upcoming election, awaiting the user's choice; newest first."""
+    candidates: tuple[ElectionCandidate, ...] = ()
+    """For a yearless request: the elections it may mean, awaiting the user's pick."""
 
 
 @dataclass(frozen=True)
@@ -237,6 +296,14 @@ class ElectionStore(Protocol):
 
     def offer(self, request_key: str, forecasts: list[Election]) -> None:
         """Record the polls of an upcoming election as awaiting the user's choice."""
+        ...
+
+    def offer_elections(self, request_key: str, candidates: list[ElectionCandidate]) -> None:
+        """Record the elections a yearless request may mean, awaiting the user's pick.
+
+        On the same lease as :meth:`offer`: once it is up, asking for the latest
+        election again resolves afresh, which is what notices a new one.
+        """
         ...
 
     def confirm_forecast(
@@ -440,6 +507,19 @@ class InMemoryElectionStore:
                 started_at=self._clock(),
                 attempt=job.attempt if job else 1,
                 forecasts=tuple(forecasts),
+            )
+
+    def offer_elections(self, request_key: str, candidates: list[ElectionCandidate]) -> None:
+        with self._lock:
+            job = self._jobs.get(request_key)
+            self._jobs[request_key] = Job(
+                request_key=request_key,
+                status=JobStatus.AWAITING_ELECTION,
+                query=job.query if job else "",
+                # Restart the lease so the user gets a full window to pick.
+                started_at=self._clock(),
+                attempt=job.attempt if job else 1,
+                candidates=tuple(candidates),
             )
 
     def confirm_forecast(

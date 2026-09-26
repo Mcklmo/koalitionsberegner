@@ -46,12 +46,13 @@ calc.short,Mangler {missing},{missing} short,"{missing} {missing, plural, one {f
 seats,{count} mandater,"{count} {count, plural, one {seat} other {seats}}","{count} {count, plural, one {Sitz} other {Sitze}}"
 seats.computed,mandater beregnet ud fra stemmeandele,seats calculated from vote shares,Sitze aus Stimmenanteilen berechnet
 import.summary,Importér et valg,Import an election,Eine Wahl importieren
-import.year,Valgår,Election year,Wahljahr
+import.year,Valgår (valgfrit),Election year (optional),Wahljahr (optional)
+import.yearPlaceholder,seneste,latest,neueste
 import.nation,Land,Country,Land
 import.nationPlaceholder,Danmark,Denmark,Dänemark
 import.subnation,Region (kun ved regionale valg),Region (regional elections only),Region (nur bei Regionalwahlen)
 import.subnationPlaceholder,fx Sachsen-Anhalt,e.g. Saxony-Anhalt,z. B. Sachsen-Anhalt
-import.hint,"Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt endnu, kan du vælge mellem de seneste meningsmålinger.","Typos are fine. We find the election and show which one we found — and where the numbers come from — before anything is saved. If the election hasn't been held yet, you can choose from the latest opinion polls.","Tippfehler sind kein Problem. Wir finden die Wahl und zeigen, welche wir gefunden haben — und woher die Zahlen stammen —, bevor etwas gespeichert wird. Hat die Wahl noch nicht stattgefunden, kannst du aus den neuesten Umfragen wählen."
+import.hint,"Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt endnu, kan du vælge mellem de seneste meningsmålinger. Uden valgår finder vi det seneste valg.","Typos are fine. We find the election and show which one we found — and where the numbers come from — before anything is saved. If the election hasn't been held yet, you can choose from the latest opinion polls. Leave the year empty for the latest election.","Tippfehler sind kein Problem. Wir finden die Wahl und zeigen, welche wir gefunden haben — und woher die Zahlen stammen —, bevor etwas gespeichert wird. Hat die Wahl noch nicht stattgefunden, kannst du aus den neuesten Umfragen wählen. Ohne Wahljahr suchen wir die neueste Wahl."
 import.submit,Hent valgresultat,Get the results,Wahlergebnis holen
 request.submit,Ønsk valget,Request the election,Wahl anfragen
 import.unavailable,Her kan der hverken importeres eller ønskes valg lige nu.,Elections can't be imported or requested here right now.,Hier können derzeit weder Wahlen importiert noch angefragt werden.
@@ -62,7 +63,6 @@ admin.saved,"Nøglen er gemt, indtil fanen lukkes. Formularen importerer nu.",Th
 admin.forgotten,Nøglen er glemt. Formularen ønsker nu valg i stedet.,The secret is forgotten. The form now requests elections instead.,Der Schlüssel ist vergessen. Das Formular fragt Wahlen jetzt stattdessen an.
 admin.notSaved,Browseren vil ikke gemme nøglen. Tillad lagring for siden og prøv igen.,The browser won't keep the secret. Allow storage for this site and try again.,Der Browser will den Schlüssel nicht speichern. Erlaube Speicherung für diese Seite und versuche es erneut.
 admin.wrongSecret,Nøglen blev afvist og er glemt. Indtast den igen under #admin.,The secret was refused and has been forgotten. Enter it again under #admin.,Der Schlüssel wurde abgelehnt und ist vergessen. Gib ihn unter #admin erneut ein.
-form.yearMissing,Angiv valgåret.,Enter the election year.,Gib das Wahljahr an.
 form.yearInvalid,Året skal være et årstal mellem {min} og {max}.,The year must be between {min} and {max}.,Das Jahr muss zwischen {min} und {max} liegen.
 form.nationMissing,Angiv landet.,Enter the country.,Gib das Land an.
 import.requestNote,"Mangler dit valg? Vi skriver det op som et ønske, og det bliver importeret senere. Det kræver ingen konto.","Missing an election? We note it down as a request, and it is imported later. No account needed.","Fehlt deine Wahl? Wir notieren sie als Wunsch, und sie wird später importiert. Ein Konto ist nicht nötig."
@@ -94,6 +94,11 @@ discarded,Forkastet. Intet blev gemt.,Discarded. Nothing was saved.,Verworfen. E
 choices.hint,"Vælg en meningsmåling. Du ser tallene, før noget gemmes.",Pick an opinion poll. You'll see the numbers before anything is saved.,"Wähle eine Umfrage. Du siehst die Zahlen, bevor etwas gespeichert wird."
 choices.title,{where} · valget afholdes senest {date},{where} · election due by {date},{where} · Wahl spätestens am {date}
 choices.message,Valget er ikke afholdt endnu. Vælg en meningsmåling at regne på.,This election hasn't been held yet. Pick an opinion poll to work with.,Diese Wahl hat noch nicht stattgefunden. Wähle eine Umfrage zum Rechnen.
+pick.title,{where} · hvilket valg?,{where} · which election?,{where} · welche Wahl?
+pick.message,Næste valg er mindre end et år væk. Vælg meningsmålingerne til det eller resultatet af det forrige valg.,The next election is less than a year away. Pick its opinion polls or the previous election's result.,Die nächste Wahl ist weniger als ein Jahr entfernt. Wähle ihre Umfragen oder das Ergebnis der letzten Wahl.
+pick.next,Næste valg ({date}) — meningsmålinger,Next election ({date}) — opinion polls,Nächste Wahl ({date}) — Umfragen
+pick.previous,Forrige valg ({date}) — resultat,Previous election ({date}) — result,Letzte Wahl ({date}) — Ergebnis
+pick.none,der blev ikke fundet noget valg,no election was found,es wurde keine Wahl gefunden
 choices.check,"Kontrollér tallene, før du gemmer prognosen.",Check the numbers before you save the forecast.,"Prüfe die Zahlen, bevor du die Prognose speicherst."
 saved.election,Valget er gemt.,The election is saved.,Die Wahl ist gespeichert.
 saved.electionAlready,Valget var allerede gemt.,The election was already saved.,Die Wahl war bereits gespeichert.

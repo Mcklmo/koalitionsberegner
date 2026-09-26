@@ -661,9 +661,9 @@
     <form id="import-form" novalidate>
       <div class="row-2">
         <div class="field">
-          <label for="f-year" data-i18n="import.year">Valgår</label>
-          <input id="f-year" name="year" type="text" inputmode="numeric" placeholder="2026"
-            autocomplete="off">
+          <label for="f-year" data-i18n="import.year">Valgår (valgfrit)</label>
+          <input id="f-year" name="year" type="text" inputmode="numeric" placeholder="seneste"
+            data-i18n-placeholder="import.yearPlaceholder" autocomplete="off">
           <div class="field-error" id="e-year"></div>
         </div>
         <div class="field">
@@ -680,7 +680,8 @@
       </div>
       <p class="footer-note" data-i18n="import.hint">Stavefejl er i orden. Vi finder valget og viser, hvilket valg vi
         fandt — og hvor tallene kommer fra — før der gemmes noget. Er valget ikke afholdt
-        endnu, kan du vælge mellem de seneste meningsmålinger.</p>
+        endnu, kan du vælge mellem de seneste meningsmålinger. Uden valgår finder vi det
+        seneste valg.</p>
       <button class="primary" id="f-submit" type="submit" data-i18n="import.submit">Hent valgresultat</button>
       <p class="quota" id="import-availability"></p>
     </form>
@@ -689,7 +690,7 @@
 
     <div class="preview" id="choices" hidden>
       <h3 id="choices-title"></h3>
-      <div class="preview-meta" data-i18n="choices.hint">Vælg en meningsmåling. Du ser tallene, før noget gemmes.</div>
+      <div class="preview-meta" id="choices-hint" data-i18n="choices.hint">Vælg en meningsmåling. Du ser tallene, før noget gemmes.</div>
       <div class="choices" id="choices-list"></div>
       <div class="preview-actions">
         <button class="secondary" id="choices-discard" type="button" data-i18n="discard">Forkast</button>
