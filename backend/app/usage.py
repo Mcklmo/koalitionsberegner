@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from threading import Lock
@@ -96,6 +98,38 @@ def entry_key(source: str | None) -> str | None:
     return f"entry_{source}" if source in CAMPAIGN_SOURCES else None
 
 
+#: Searches that matched no election are counted per (place, year) per day.
+#: Free text from the open internet, so the key is cut down to ASCII letters
+#: and a year, and a day holds at most this many distinct ones.
+MISSED_PREFIX = "missed_"
+MISSED_DAILY_CAP = 200
+_MISSED_PLACE = re.compile(r"[a-z]+(?: [a-z]+){0,3}")
+#: Letters only, joined by spaces or name punctuation; an email, a number or a sentence fails.
+_PLAIN_NAME = re.compile(r"[^\W\d_]+(?:[ '.,-]+[^\W\d_]+)*")
+_FOLD = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "å": "a", "Å": "A", "ß": "ss"})
+
+
+def missed_key(nation: str, subnation: str | None, year: int | None) -> str | None:
+    """The counter for a search nobody could answer, or None if it is not a place."""
+    # ponytail: non-Latin scripts fold to nothing and are dropped; transliterate if they matter.
+    parts = []
+    for text in (nation, subnation or ""):
+        if text.strip() and not _PLAIN_NAME.fullmatch(text.strip()):
+            return None
+        ascii_text = unicodedata.normalize("NFKD", text.translate(_FOLD)).encode("ascii", "ignore").decode().lower()
+        ascii_text = " ".join(re.sub(r"[^a-z]+", " ", ascii_text).split())
+        if ascii_text and not _MISSED_PLACE.fullmatch(ascii_text):
+            return None
+        if ascii_text:
+            parts.append(ascii_text)
+    if not parts or len(" ".join(parts)) > 40:
+        return None
+    if year is not None and not 1900 <= year <= 2100:
+        return None
+    place = "__".join(part.replace(" ", "_") for part in parts)
+    return MISSED_PREFIX + (f"{place}_{year}" if year else place)
+
+
 class UsageStore(Protocol):
     """Storage seam for the counters. Ranges are ``[start, end)`` in UTC days."""
 
@@ -167,6 +201,20 @@ class UsageRecorder:
             self.store.increment(self.today(), key)
         except Exception as exc:  # noqa: BLE001 - statistics must not fail a request
             log.warning("usage %s not recorded: %s", scrub(key), scrub(exc))
+
+
+    def record_missed(self, key: str) -> bool:
+        """Count a missed search unless the day already holds the cap of distinct ones."""
+        try:
+            today = self.today()
+            known = self.store.daily(today, today + timedelta(days=1)).get(today, {})
+            if key not in known and sum(k.startswith(MISSED_PREFIX) for k in known) >= MISSED_DAILY_CAP:
+                return False
+            self.store.increment(today, key)
+            return True
+        except Exception as exc:  # noqa: BLE001 - statistics must not fail a request
+            log.warning("missed search not recorded: %s", scrub(exc))
+            return False
 
 
 # --- periods ----------------------------------------------------------------
@@ -312,6 +360,21 @@ def _line(label: str, now: int, before: int) -> str:
     return f"  {label:<{LABEL_WIDTH}}{now:>7}   ({sign}{abs(change)})"
 
 
+def _missed_lines(figures: UsageFigures, top: int = 15) -> list[str]:
+    totals: dict[str, int] = {}
+    for counts in figures.daily.values():
+        for key, count in counts.items():
+            if key.startswith(MISSED_PREFIX):
+                totals[key] = totals.get(key, 0) + count
+    if not totals:
+        return ["  Nothing."]
+    ranked = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+    return [
+        f"  {key[len(MISSED_PREFIX):].replace('__', ' / ').replace('_', ' '):<{LABEL_WIDTH}}{count:>7}"
+        for key, count in ranked
+    ]
+
+
 def build_report(
     period: Period,
     current: DateRange,
@@ -328,6 +391,9 @@ def build_report(
     for heading, rows in SECTIONS:
         lines += ["", heading]
         lines += [_line(label, figures.total(key), before.total(key)) for label, key in rows]
+
+    lines += ["", "Searched, not found (top 15)"]
+    lines += _missed_lines(figures)
 
     if period is not Period.DAILY:
         lines += ["", "Day by day", f"  {'Day':<12}{'Loads':>7}{'Picked':>8}{'Imports':>9}{'Requests':>10}"]

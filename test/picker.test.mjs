@@ -401,3 +401,29 @@ test('pressing the mouse on the list keeps the focus, so the blur cannot close i
   await el.results.dispatch('mousedown', { preventDefault() { prevented = true; } });
   assert.equal(prevented, true);
 });
+
+test('a search that matches nothing is reported once, after a pause or when the visitor leaves', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const missed = [];
+  const { el, api, picker } = harness({
+    summaries: [poll({ electionHash: 'a' })],
+    onMissed: (values) => missed.push(values),
+  });
+  await picker.refresh(api);
+
+  el.input.value = 'Fyn 2031';
+  await el.input.dispatch('input');
+  t.mock.timers.tick(599);
+  assert.equal(missed.length, 0);
+  t.mock.timers.tick(1);
+  assert.deepEqual(missed, [{ year: 2031, nation: 'fyn', subnation: null }]);
+
+  await el.input.dispatch('input');
+  await el.input.dispatch('blur');
+  assert.equal(missed.length, 1, 'the same query is not reported twice');
+
+  el.input.value = 'ab';
+  await el.input.dispatch('input');
+  await el.input.dispatch('blur');
+  assert.equal(missed.length, 1, 'too short to be a place');
+});

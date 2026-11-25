@@ -97,6 +97,7 @@ The owner gets a daily, weekly and monthly email about how the app is used:
 - elections picked
 - imports started, saved and discarded, and how many failed
 - requests filed
+- searches that matched no election, as place and year, top 15 (cut to ASCII letters and a year; at most 200 distinct a day)
 - shared-link previews built (`GET /api/elections/<id>/card`), at most once per link per hour, crawlers included — nothing about who opened it or which election
 
 Only counts are stored: a day is a handful of numbers, and nothing says who,

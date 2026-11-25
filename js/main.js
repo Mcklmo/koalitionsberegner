@@ -215,6 +215,7 @@ const picker = mountPicker({
   canImport: () => importUi.isImportAllowed(),
   canRequestElection: () => importUi.isRequestAllowed(),
   onAskForIt: (values) => importUi.requestOrImport(values),
+  onMissed: (values) => api.reportMissed(values),
   elements: {
     row: byId('picker-row'),
     input: byId('picker-search'),

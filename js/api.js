@@ -250,6 +250,19 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getAdminSecret
       );
     },
 
+    /** Tell the origin a search matched nothing. Silent: a failure must never reach the visitor. */
+    async reportMissed({ year, nation, subnation }) {
+      try {
+        await request('/api/elections/missed', {
+          method: 'POST',
+          keepalive: true,
+          body: JSON.stringify({ year, nation, subnation: subnation ?? null }),
+        });
+      } catch {
+        // Statistics only.
+      }
+    },
+
     /** How an import already under way is getting on. Free: it never starts one. */
     async getImport(requestKey, { waitSeconds = 25 } = {}) {
       return toResult(

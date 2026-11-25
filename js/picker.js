@@ -145,6 +145,8 @@ export function parseQueryAsRequest(query) {
  * @param {(values: {year: number|null, nation: string, subnation: string|null})
  *   => Promise<{valid: boolean}>} [onAskForIt] Files the request or runs the
  *   import — `js/import-ui.js`'s `requestOrImport`.
+ * @param {(values: {year: number|null, nation: string, subnation: string|null})
+ *   => void} [onMissed] Told, once per query, that a search matched nothing.
  */
 export function mountPicker({
   elements,
@@ -153,6 +155,7 @@ export function mountPicker({
   canImport = () => false,
   canRequestElection = () => false,
   onAskForIt = async () => ({ valid: false }),
+  onMissed = () => {},
 } = {}) {
   const el = elements;
   let api = null;
@@ -301,10 +304,25 @@ export function mountPicker({
     }
   }
 
+  /** A query nobody answered, reported once: after a short pause, or when the visitor moves on. */
+  const MISSED_PAUSE_MS = 600;
+  const reportedMisses = new Set();
+  let missedTimer = null;
+
+  function reportMiss() {
+    clearTimeout(missedTimer);
+    const query = el.input.value.trim().toLowerCase();
+    if (query.length < 3 || visible.length > 0 || reportedMisses.has(query)) return;
+    reportedMisses.add(query);
+    onMissed(parseQueryAsRequest(query));
+  }
+
   function onInput() {
     note = '';
     computeVisible();
     render();
+    clearTimeout(missedTimer);
+    if (visible.length === 0) missedTimer = setTimeout(reportMiss, MISSED_PAUSE_MS);
   }
 
   function onFocus() {
@@ -328,6 +346,7 @@ export function mountPicker({
       if (activeIndex >= 0 && visible[activeIndex]) choose(visible[activeIndex].primary);
       else if (showAskRow()) askForIt();
     } else if (event.key === 'Escape') {
+      reportMiss();
       close();
     }
   }
@@ -340,7 +359,11 @@ export function mountPicker({
   el.results.addEventListener('mousedown', (event) => event.preventDefault?.());
   // Anything else the visitor clicks or tabs to closes the list; without this
   // it stayed open over the page for good.
-  el.input.addEventListener('blur', close);
+  el.input.addEventListener('blur', () => {
+    reportMiss();
+    close();
+  });
+  globalThis.addEventListener?.('pagehide', reportMiss);
 
   return {
     /** Fetch the list from the API; failures leave the previous list in place. */

@@ -650,3 +650,36 @@ def test_an_administrator_can_read_a_report_without_it_being_sent(
     assert row(response.json()["body"], "Filed as a new issue") == ["1", "(+1)"]
     assert mailer.sent == []
     assert client.get("/api/admin/usage").status_code == 403
+
+
+def test_missed_searches_are_cut_down_capped_and_reported():
+    from app.usage import MISSED_DAILY_CAP, DateRange, Period, build_report, gather, missed_key
+
+    assert missed_key("København", None, 2027) == "missed_kobenhavn_2027"
+    assert missed_key("Germany", "Bavaria", None) == "missed_germany__bavaria"
+    assert missed_key("a@b.com", None, None) is None
+    assert missed_key("ring 0045", None, None) is None
+    assert missed_key("x" * 60, None, None) is None
+
+    recorder = UsageRecorder(InMemoryUsageStore())
+    for n in range(MISSED_DAILY_CAP):
+        assert recorder.record_missed(f"missed_k{n}")
+    assert not recorder.record_missed("missed_one_too_many")
+    assert recorder.record_missed("missed_k0"), "a key already on the day still counts"
+
+    store = InMemoryUsageStore()
+    recorder = UsageRecorder(store)
+    for key in ("missed_denmark_2022",) * 3 + ("missed_norway",):
+        recorder.record_missed(key)
+    today = recorder.today()
+    _, body = build_report(
+        Period.DAILY, DateRange(today, today + timedelta(days=1)), gather(store, DateRange(today, today + timedelta(days=1))),
+        DateRange(today - timedelta(days=1), today), gather(store, DateRange(today - timedelta(days=1), today)),
+    )
+    assert "denmark 2022" in body and "Searched, not found" in body
+
+
+def test_missed_search_endpoint_counts_a_place_and_ignores_anything_else(client, usage):
+    for body in ({"nation": "Fyn", "year": 2031}, {"nation": "Fyn", "year": 2031}, {"nation": "a@b.com"}):
+        assert client.post("/api/elections/missed", json=body).status_code == 204
+    assert {k: v for k, v in counted(usage).items() if k.startswith("missed_")} == {"missed_fyn_2031": 2}

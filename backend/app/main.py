@@ -99,6 +99,7 @@ from .usage import (
     UsageRecorder,
     build_report,
     due_periods,
+    missed_key,
     entry_key,
     gather,
     page_load_key,
@@ -599,6 +600,24 @@ async def lookup_request(
         election_hash=stored.election_hash,
         reused=True,
     )
+
+
+class MissedSearch(BaseModel):
+    nation: str = Field(max_length=80)
+    subnation: str | None = Field(None, max_length=80)
+    year: int | None = None
+
+
+@app.post("/api/elections/missed", status_code=status.HTTP_204_NO_CONTENT)
+async def missed_search(
+    body: MissedSearch,
+    usage: UsageRecorder = Depends(get_usage),
+) -> Response:
+    """Count a search that matched no election; see ``app.usage.missed_key`` for what is kept."""
+    key = missed_key(body.nation, body.subnation, body.year)
+    if key is not None:
+        await run_in_threadpool(usage.record_missed, key)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post(
