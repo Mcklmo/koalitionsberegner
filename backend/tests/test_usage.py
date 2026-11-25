@@ -682,3 +682,26 @@ def test_an_administrator_can_read_a_report_without_it_being_sent(
     assert row(response.json()["body"], "Filed as a new issue") == ["1", "(+1)"]
     assert mailer.sent == []
     assert client.get("/api/admin/usage").status_code == 403
+
+
+def test_the_freshness_list_covers_every_stored_election_once_tracked_or_not():
+    from app.main import _freshness
+    from app.store import InMemoryElectionStore, InMemoryTrackedStore, TrackedElection, TrackedStatus
+    from app.identity import request_key
+    from app.service import identity_of
+    from tests.factories import make_election
+
+    elections, tracked = InMemoryElectionStore(), InMemoryTrackedStore()
+    by_hand = make_election(nation="Danmark", election_date=date(2026, 3, 25))
+    done = make_election(nation="Sverige", election_date=date(2026, 3, 26))
+    for election in (by_hand, done):
+        elections.put_election(identity_of(election), election, provenance="manual")
+    tracked.add_tracked(TrackedElection(
+        request_key=request_key(2026, "Sverige"), year=2026, nation="Sverige",
+        status=TrackedStatus.FINAL,
+    ))
+
+    rows = _freshness(elections, tracked)
+
+    assert [row.label for row in rows] == ["Danmark 2026"], "final is left out; by hand is not"
+    assert rows[0].held == date(2026, 3, 25)

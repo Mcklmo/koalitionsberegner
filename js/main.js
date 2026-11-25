@@ -292,7 +292,7 @@ refetchButton.addEventListener('click', async () => {
     setRefetchNote(t(result.skippedUnchanged ? 'refetch.unchanged' : 'refetch.done'), 'ok');
   } catch (error) {
     if (error.status === 403) adminUi.forget();
-    const text = error.status === 404 ? t('refetch.untracked') : t('refetch.failed', { error: error.message });
+    const text = error.status === 409 ? t('refetch.untracked') : t('refetch.failed', { error: error.message });
     setRefetchNote(text, 'error');
   } finally {
     refetchButton.disabled = false;
