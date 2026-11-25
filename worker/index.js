@@ -54,20 +54,9 @@ export const ENTRY_SOURCE = /^[a-z0-9-]{1,16}$/;
 //: `controller.cron` is compared against these, not parsed, so a typo in
 //: either place shows up as the wrong branch running rather than a silent
 //: mismatch.
-//: Cloudflare crons are UTC only, and 05:00 in Copenhagen is 03:00 UTC in
-//: summer and 04:00 in winter. Both fire; only the one that lands on
-//: `REPORT_HOUR` there sends.
-export const DAILY_CRONS = ['0 3 * * *', '0 4 * * *'];
-export const REPORT_HOUR = 5;
+export const DAILY_CRON = '0 3 * * *';
 export const REFRESH_CRON = '*/30 * * * *';
 export const CALENDAR_SCAN_CRON = '0 5 1 * *';
-
-export function copenhagenHour(ms) {
-  const hour = new Intl.DateTimeFormat('en-GB', {
-    hour: 'numeric', hourCycle: 'h23', timeZone: 'Europe/Copenhagen',
-  }).format(ms);
-  return Number(hour);
-}
 
 /**
  * This year and the next two, comma-separated: the window
@@ -332,10 +321,8 @@ export default {
       ctx.waitUntil(callOrigin(env, `${CALENDAR_SCAN_PATH}?years=${calendarScanYears()}`));
       return;
     }
-    if (DAILY_CRONS.includes(controller.cron)) {
-      if (copenhagenHour(controller.scheduledTime) === REPORT_HOUR) {
-        ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
-      }
+    if (controller.cron === DAILY_CRON) {
+      ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
       return;
     }
     // A cron string matching none of the three configured here means

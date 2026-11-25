@@ -9,7 +9,7 @@ import worker, {
   REFRESH_PATH,
   CALENDAR_SCAN_PATH,
   ENTRY_PATH,
-  DAILY_CRONS,
+  DAILY_CRON,
   REFRESH_CRON,
   CALENDAR_SCAN_CRON,
   calendarScanYears,
@@ -461,29 +461,11 @@ function scheduledContext() {
   return { pending, waitUntil: (promise) => pending.push(promise) };
 }
 
-const SUMMER_5AM = Date.parse('2026-07-01T03:00:00Z');
-const WINTER_5AM = Date.parse('2026-12-01T04:00:00Z');
-
-test('only the daily cron that lands on 05:00 in Copenhagen sends', async () => {
-  for (const [cron, scheduledTime, sends] of [
-    [DAILY_CRONS[0], SUMMER_5AM, true],
-    [DAILY_CRONS[1], SUMMER_5AM + 3600e3, false],
-    [DAILY_CRONS[0], WINTER_5AM - 3600e3, false],
-    [DAILY_CRONS[1], WINTER_5AM, true],
-  ]) {
-    const calls = recordFetches();
-    const ctx = scheduledContext();
-    await worker.scheduled({ cron, scheduledTime }, REPORT_ENV, ctx);
-    await Promise.all(ctx.pending);
-    assert.equal(calls.length, sends ? 1 : 0, `${cron} at ${new Date(scheduledTime).toISOString()}`);
-  }
-});
-
 test('the daily cron asks the origin for the reports, carrying both secrets', async () => {
   const calls = recordFetches();
   const ctx = scheduledContext();
 
-  await worker.scheduled({ cron: DAILY_CRONS[0], scheduledTime: SUMMER_5AM }, REPORT_ENV, ctx);
+  await worker.scheduled({ cron: DAILY_CRON }, REPORT_ENV, ctx);
   await Promise.all(ctx.pending);
 
   assert.deepEqual(calls.map((call) => call.url), [`${ENV.ORIGIN_URL}${USAGE_REPORTS_PATH}`]);
@@ -546,7 +528,7 @@ test('a report run the origin refused shows as a failed cron', async () => {
   globalThis.fetch = async () => new Response('{}', { status: 502 });
   const ctx = scheduledContext();
 
-  await worker.scheduled({ cron: DAILY_CRONS[0], scheduledTime: SUMMER_5AM }, REPORT_ENV, ctx);
+  await worker.scheduled({ cron: DAILY_CRON }, REPORT_ENV, ctx);
 
   await assert.rejects(Promise.all(ctx.pending), /HTTP 502/);
 });
@@ -556,7 +538,7 @@ test('without a report secret no cron sends anything', async (t) => {
   t.mock.method(console, 'warn', () => {});
   const ctx = scheduledContext();
 
-  for (const cron of [DAILY_CRONS[0], REFRESH_CRON, CALENDAR_SCAN_CRON]) {
+  for (const cron of [DAILY_CRON, REFRESH_CRON, CALENDAR_SCAN_CRON]) {
     await worker.scheduled({ cron }, ENV, ctx);
   }
 

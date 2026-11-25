@@ -134,10 +134,10 @@ that mirrors the table above.
 ```
 
 `worker/index.js` `scheduled(controller, env, ctx)`: dispatch on
-`controller.cron`. `0 6 * * *` keeps calling `/api/internal/usage-reports`
+`controller.cron`. The daily cron keeps calling `/api/internal/usage-reports`
 (and, once a month, `/api/internal/calendar-scan`, see A5: trigger it on the
-1st by checking the date in the handler, or add a third cron `0 5 1 * *`).
-`*/30 * * * *` calls `POST /api/internal/refresh`. Both carry `x-report-secret`
+1st by checking the date in the handler, or add a third, monthly cron).
+The 30-minute cron calls `POST /api/internal/refresh`. Both carry `x-report-secret`
 as today; keep the secret's name to avoid rotating it, but rename the header
 constant in the Worker to `SCHEDULE_SECRET_HEADER` for honesty. Cloudflare's
 cron granularity and the YAML's smallest `every` should agree: 30 minutes

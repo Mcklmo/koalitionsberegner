@@ -22,15 +22,14 @@
   },
   // Three schedules (doc/plans/03-remaining-work.md, A3), dispatched in
   // worker/index.js's `scheduled` by which of these fired:
-  // - 03:00 and 04:00 UTC daily: email whichever usage reports are due (daily
-  //   always, weekly on Mondays, monthly on the 1st). Only the run that is
-  //   05:00 in Copenhagen sends, so the mail stays at 05:00 across DST.
+  // - daily: email whichever usage reports are due (daily always, weekly on
+  //   Mondays, monthly on the 1st).
   // - every 30 minutes: refresh whichever tracked elections are due. Matches
   //   backend/app/refresh.yaml's smallest `every` — tightening the schedule
   //   there needs this tightened too, or the extra reads are never taken.
-  // - 05:00 UTC on the 1st of the month: scan for new elections to track.
+  // - monthly, on the 1st: scan for new elections to track.
   "triggers": {
-    "crons": ["0 3 * * *", "0 4 * * *", "*/30 * * * *", "0 5 1 * *"]
+    "crons": ["0 3 * * *", "*/30 * * * *", "0 5 1 * *"]
   },
   "vars": {
     "ORIGIN_URL": "https://koalitionsberegner-711803377000.europe-north1.run.app"
