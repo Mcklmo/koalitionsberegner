@@ -170,6 +170,17 @@ test('discarding a preview tolerates a 204 with no body', async () => {
   assert.equal(calls[0].method, 'DELETE');
 });
 
+test('refetching posts to the admin route with the secret and reads the outcome', async () => {
+  const { fetchImpl, calls } = fakeFetch([
+    { status: 200, body: { failed: false, error: null, skipped_unchanged: true } },
+  ]);
+  const api = createApiClient({ fetch: fetchImpl, getAdminSecret: () => 's3cret' });
+  const result = await api.refetchElection('abc123');
+  assert.equal(calls[0].url, '/api/admin/elections/abc123/refetch');
+  assert.equal(calls[0].method, 'POST');
+  assert.deepEqual(result, { failed: false, error: null, skippedUnchanged: true });
+});
+
 test('an error response becomes an ApiError carrying the detail', async () => {
   const { fetchImpl } = fakeFetch([{ status: 409, body: { detail: 'nothing awaiting confirmation' } }]);
   await assert.rejects(() => createApiClient({ fetch: fetchImpl }).confirm('abc'), (error) => {

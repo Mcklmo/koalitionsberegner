@@ -305,6 +305,14 @@ refresh or calendar-scan cron, and each run below is a call you make. A tick
 takes up to `REFRESH_MAX_PER_TICK` due rows, so call it again until
 `refreshed` is 0.
 
+The daily usage mail ends with "Data freshness": every tracked election that
+is not final or untracked, with the day it was held and the day it was last
+fetched, oldest fetch first. `<- refetch?` marks one that was held and not
+read since (or is parked). To refetch one, open it on the page with the admin
+secret saved (`#admin`) and press **Refetch** in the footer — it calls
+`POST /api/admin/elections/{election_hash}/refetch`, which reads that election
+now and spends credit. Only a tracked election can be refetched.
+
 1. **Check the endpoint with no tracked rows.** A manual `curl -X POST -H "x-report-secret: $USAGE_REPORT_SECRET" -H
    "x-origin-secret: $ORIGIN_SECRET" $ORIGIN_URL/api/internal/refresh` answers
    `{"refreshed": 0, ...}` rather than `403` or `404` — either of those means a

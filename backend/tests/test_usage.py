@@ -23,6 +23,7 @@ from app.store import InMemoryElectionStore
 from app.usage import (
     CAMPAIGN_SOURCES,
     DateRange,
+    Freshness,
     InMemoryUsageStore,
     Period,
     UsageEvent,
@@ -195,6 +196,37 @@ def test_the_report_counts_every_section_and_says_how_it_changed():
     assert row(body, "Page loads, Danish") == ["9", "(±0)"]
     assert "Accounts" not in body and "Paywall" not in body, "there are none of either"
     assert "Day by day" not in body, "a single day needs no table of days"
+
+
+def test_the_freshness_section_flags_what_was_held_and_not_read_since():
+    current = period_range(Period.DAILY, MONDAY)
+    previous = previous_range(Period.DAILY, current)
+    held = date(2026, 9, 1)
+    rows = [
+        Freshness("Never read 2026", held, None),
+        Freshness("Read the day it was held 2026", held, held),
+        Freshness("Read later 2026", held, date(2026, 9, 10)),
+        Freshness("Parked 2026", held, date(2026, 9, 10), parked=True),
+        Freshness("Upcoming 2027", date(2027, 5, 1), None),
+    ]
+
+    _, body = build_report(
+        Period.DAILY, current, figures({}), previous, figures({}), rows, MONDAY
+    )
+
+    flagged = [line for line in body.splitlines() if "refetch?" in line]
+    assert [line.split(":")[0].strip() for line in flagged] == [
+        "Never read 2026", "Read the day it was held 2026", "Parked 2026",
+    ]
+    assert "Never read 2026: held 2026-09-01, fetched never" in body
+    assert "Upcoming 2027: held 2027-05-01, fetched never\n" in body, "not held yet, so no flag"
+
+
+def test_the_report_has_no_freshness_section_unless_it_is_given_rows():
+    current = period_range(Period.DAILY, MONDAY)
+    previous = previous_range(Period.DAILY, current)
+    _, body = build_report(Period.DAILY, current, figures({}), previous, figures({}))
+    assert "Data freshness" not in body
 
 
 def test_the_tracked_elections_section_counts_added_refreshed_parked_and_failed():

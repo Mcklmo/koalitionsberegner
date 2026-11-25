@@ -627,10 +627,13 @@
         <a class="reset-btn" id="support-link" href="#" target="_blank" rel="noopener noreferrer"
            data-i18n="footer.support" hidden>Støt projektet</a>
         <button class="reset-btn" id="share" data-i18n="share.button">Del</button>
+        <!-- Only for the owner (js/main.js): reads this election again, which spends API credit. -->
+        <button class="reset-btn" id="refetch" data-i18n="refetch.button" hidden>Hent igen</button>
         <button class="reset-btn" id="reset" data-i18n="reset">Ryd alle</button>
       </span>
     </div>
     <p class="msg msg-warn" id="share-note" hidden></p>
+    <p class="msg" id="refetch-note" hidden></p>
     <!-- Only for an election the scheduled refresh stored, which nobody read
          before it went up (doc/plans/03-remaining-work.md, A1). Worded by
          js/app.js, because it names the source it was read from. -->

@@ -130,8 +130,12 @@ class RefreshService:
         call = fn if not kwargs else partial(fn, **kwargs)
         return await anyio.to_thread.run_sync(call, *args)
 
-    async def run(self, tracked: TrackedElection) -> Outcome:
-        """Refresh one row. Never raises: every failure is reported in the ``Outcome``."""
+    async def run(self, tracked: TrackedElection, *, force: bool = False) -> Outcome:
+        """Refresh one row. Never raises: every failure is reported in the ``Outcome``.
+
+        ``force`` is the owner asking: read again whatever the page's digest says,
+        and replace the stored election even if a person confirmed it.
+        """
         now = self._clock()
         try:
             leased = await self._in_thread(
@@ -149,7 +153,7 @@ class RefreshService:
             return Outcome(tracked.request_key, tracked.status, leased=False)
         try:
             with io_span(log, "import", "refresh", request=tracked.request_key[:12]) as span:
-                outcome = await self._run_leased(leased, now)
+                outcome = await self._run_leased(leased, now, force)
                 span["status"] = outcome.status.value
                 span["stored_polls"] = outcome.stored_polls
                 span["stored_results"] = outcome.stored_results
@@ -171,7 +175,7 @@ class RefreshService:
                     tracked.request_key[:12], exc_info=True,
                 )
 
-    async def _run_leased(self, tracked: TrackedElection, now: datetime) -> Outcome:
+    async def _run_leased(self, tracked: TrackedElection, now: datetime, force: bool) -> Outcome:
         request = ImportRequest(tracked.year, tracked.nation, tracked.subnation)
         try:
             tracked, resolved = await self._resolved_for(tracked, request)
@@ -182,8 +186,8 @@ class RefreshService:
         want: Literal["polls", "results"] = "results" if now >= election_day_start(election_date) else "polls"
         try:
             if want == "polls":
-                return await self._refresh_polls(tracked, resolved, request, now)
-            return await self._refresh_results(tracked, resolved, request, now)
+                return await self._refresh_polls(tracked, resolved, request, now, force)
+            return await self._refresh_results(tracked, resolved, request, now, force)
         except Exception as exc:  # noqa: BLE001 - one election's failure is not the tick's
             return await self._fail(tracked, now, exc)
 
@@ -210,11 +214,12 @@ class RefreshService:
     # --- upcoming: polls ------------------------------------------------------
 
     async def _refresh_polls(
-        self, tracked: TrackedElection, resolved: ResolvedElection, request: ImportRequest, now: datetime
+        self, tracked: TrackedElection, resolved: ResolvedElection, request: ImportRequest, now: datetime,
+        force: bool = False,
     ) -> Outcome:
         page = await self._parser.peek_source(resolved, want="polls")
         digest = source_digest(page.text) if page is not None else None
-        if digest is not None and digest == tracked.source_digest:
+        if not force and digest is not None and digest == tracked.source_digest:
             return await self._reschedule(tracked, now, skipped_unchanged=True)
 
         forecasts = await self._parser.parse_resolved(resolved, request, want="polls")
@@ -232,14 +237,18 @@ class RefreshService:
     # --- held: results ----------------------------------------------------------
 
     async def _refresh_results(
-        self, tracked: TrackedElection, resolved: ResolvedElection, request: ImportRequest, now: datetime
+        self, tracked: TrackedElection, resolved: ResolvedElection, request: ImportRequest, now: datetime,
+        force: bool = False,
     ) -> Outcome:
         page = await self._parser.peek_source(resolved, want="results")
         digest = source_digest(page.text) if page is not None else None
         # An unchanged page only counts towards stability once a result exists to
         # be stable: the first read of a page that has not moved since the last
         # poll was fetched must still go on to extract, or nothing is ever stored.
-        if digest is not None and digest == tracked.source_digest and tracked.result_hash is not None:
+        if (
+            not force and digest is not None and digest == tracked.source_digest
+            and tracked.result_hash is not None
+        ):
             # The *source page* not moving is not the same as another read
             # agreeing with the stored result (plan 3 review, finding 5): this
             # is a fetch that was never even compared to what is stored, so it
@@ -257,6 +266,9 @@ class RefreshService:
                 self._elections.put_election, new_hash, election, provenance="auto"
             )
             extra["result_hash"] = new_hash
+            if not written and force:
+                await self._in_thread(self._elections.replace_election, new_hash, election)
+                written = True
             if not written:
                 # Somebody already confirmed this exact election by hand —
                 # imported and reviewed it before the refresh got here, most
@@ -273,7 +285,7 @@ class RefreshService:
             )
 
         stored = await self._in_thread(self._elections.get_stored, tracked.result_hash)
-        if stored is not None and stored.provenance == "manual":
+        if stored is not None and stored.provenance == "manual" and not force:
             # Never overwrite a manually confirmed election with unreviewed
             # data, however different the two now look.
             return await self._settle(
@@ -281,7 +293,7 @@ class RefreshService:
                 result_digest_value=result_digest(stored.election), extra_fields=extra,
             )
 
-        if tracked.result_digest != digest_of_result:
+        if force or tracked.result_digest != digest_of_result:
             await self._in_thread(self._elections.replace_election, tracked.result_hash, election)
             return await self._settle(
                 tracked, now, 1, result_digest_value=digest_of_result, stored_results=1, extra_fields=extra

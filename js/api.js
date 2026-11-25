@@ -269,6 +269,18 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getAdminSecret
       );
     },
 
+    /** Owner only: read a tracked election again now. Spends Anthropic credit. */
+    async refetchElection(electionHash) {
+      const body = await request(`/api/admin/elections/${encodeURIComponent(electionHash)}/refetch`, {
+        method: 'POST',
+      });
+      return {
+        failed: Boolean(body.failed),
+        error: body.error ?? null,
+        skippedUnchanged: Boolean(body.skipped_unchanged),
+      };
+    },
+
     async discardPreview(requestKey) {
       await request(`/api/elections/imports/${encodeURIComponent(requestKey)}/preview`, {
         method: 'DELETE',

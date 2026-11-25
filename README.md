@@ -98,6 +98,7 @@ The owner gets a daily, weekly and monthly email about how the app is used:
 - imports started, saved and discarded, and how many failed
 - requests filed
 - shared-link previews built (`GET /api/elections/<id>/card`), at most once per link per hour, crawlers included — nothing about who opened it or which election
+- in the daily one, each tracked election's date held and date last fetched, flagged `<- refetch?` when it was held and not read since (nothing refreshes on its own)
 
 Only counts are stored: a day is a handful of numbers, and nothing says who,
 which election, or from where. There are no accounts, so there is nothing per

@@ -86,7 +86,7 @@ from .outreach import (
     new_token,
 )
 from .reddit import RedditPoster, RedditUnavailable
-from .refresh import RefreshService
+from .refresh import Outcome, RefreshService
 from .refresh_config import RefreshConfig
 from .schema import Election, Forecast, clean_text
 from .service import AmbiguousId, ImportRequest, ImportResult, ImportService, ImportState
@@ -94,6 +94,7 @@ from .share import card as build_card
 from .share import image_etag, parse_seats, parse_selection, valid_id
 from .store import ElectionStore, StoredElection, TrackedElection, TrackedStatus, TrackedStore
 from .usage import (
+    Freshness,
     Period,
     UsageEvent,
     UsageRecorder,
@@ -875,7 +876,53 @@ class ReportRun(BaseModel):
     """Reports a previous run already sent."""
 
 
-def _usage_report(period: Period, today: date, usage: UsageRecorder) -> tuple[str, UsageReport]:
+def _election_label(election: Election) -> str:
+    return " ".join(
+        part for part in (election.nation, election.state, str(election.election_date.year)) if part
+    )
+
+
+def _tracked_by_key(tracked_store: TrackedStore) -> dict[str, TrackedElection]:
+    return {row.request_key: row for row in tracked_store.list_tracked()}
+
+
+def _tracked_key_of(election: Election) -> str:
+    return request_key(election.election_date.year, election.nation, election.state)
+
+
+def _freshness(store: ElectionStore, tracked_store: TrackedStore) -> list[Freshness]:
+    """Every stored election's age, tracked or imported by hand alike.
+
+    Fetched is the later of when it was stored and when it was last read again
+    (a refetch keeps ``stored_at``). One line per election however many polls
+    of it are stored; a final result is left out, since nothing is left to do.
+    """
+    tracked = _tracked_by_key(tracked_store)
+    seen: dict[tuple[str, date], Freshness] = {}
+    for stored in store.list_elections():
+        election = stored.election
+        row = tracked.get(_tracked_key_of(election))
+        if row is not None and row.status in (TrackedStatus.FINAL, TrackedStatus.UNTRACKED):
+            continue
+        fetched = date.fromtimestamp(stored.stored_at)
+        if row is not None and row.last_refresh_at is not None:
+            fetched = max(fetched, row.last_refresh_at.date())
+        entry = Freshness(
+            label=_election_label(election),
+            held=election.election_date,
+            fetched=fetched,
+            parked=row is not None and row.status is TrackedStatus.PARKED,
+        )
+        key = (entry.label, election.election_date)
+        if key not in seen or (seen[key].fetched or date.min) < fetched:
+            seen[key] = entry
+    return list(seen.values())
+
+
+def _usage_report(
+    period: Period, today: date, usage: UsageRecorder, store: ElectionStore,
+    tracked_store: TrackedStore,
+) -> tuple[str, UsageReport]:
     """The report for the last complete ``period`` before ``today``, and its key."""
     current = period_range(period, today)
     previous = previous_range(period, current)
@@ -885,6 +932,8 @@ def _usage_report(period: Period, today: date, usage: UsageRecorder) -> tuple[st
         gather(usage.store, current),
         previous,
         gather(usage.store, previous),
+        freshness=_freshness(store, tracked_store) if period is Period.DAILY else None,
+        today=today,
     )
     return report_key(period, current), UsageReport(subject=subject, body=body)
 
@@ -909,6 +958,8 @@ async def send_usage_reports(
     _schedule: None = Depends(require_schedule),
     usage: UsageRecorder = Depends(get_usage),
     mailer: Mailer = Depends(get_mailer_provider),
+    store: ElectionStore = Depends(get_store_provider),
+    tracked_store: TrackedStore = Depends(get_tracked_store_provider),
 ) -> ReportRun:
     """Email the usage reports that are due. Called once a day by the Worker's cron.
 
@@ -921,7 +972,7 @@ async def send_usage_reports(
     sent: list[str] = []
     skipped: list[str] = []
     for due in [period] if period else due_periods(today):
-        key, report = await run_in_threadpool(_usage_report, due, today, usage)
+        key, report = await run_in_threadpool(_usage_report, due, today, usage, store, tracked_store)
         if not await run_in_threadpool(usage.store.claim_report, key):
             skipped.append(key)
             continue
@@ -943,9 +994,13 @@ async def preview_usage_report(
     ),
     _admin: None = Depends(require_admin),
     usage: UsageRecorder = Depends(get_usage),
+    store: ElectionStore = Depends(get_store_provider),
+    tracked_store: TrackedStore = Depends(get_tracked_store_provider),
 ) -> UsageReport:
     """A usage report as it would be emailed, sent nowhere."""
-    _, report = await run_in_threadpool(_usage_report, period, before or usage.today(), usage)
+    _, report = await run_in_threadpool(
+        _usage_report, period, before or usage.today(), usage, store, tracked_store
+    )
     return report
 
 
@@ -1002,6 +1057,25 @@ class RefreshRun(BaseModel):
     skipped_unchanged: int
 
 
+async def _refresh_row(
+    service: RefreshService, tracked: TrackedElection, usage: UsageRecorder, *, force: bool = False
+) -> Outcome | None:
+    """Read one tracked election and count it; ``None`` when the run itself blew up."""
+    try:
+        outcome = await (service.run(tracked, force=True) if force else service.run(tracked))
+    except Exception:  # noqa: BLE001 - one row's surprise must not sink the tick or the route
+        log.exception("refresh %s raised outside RefreshService.run", tracked.request_key[:12])
+        await run_in_threadpool(usage.record, UsageEvent.TRACKED_REFRESHED)
+        await run_in_threadpool(usage.record, UsageEvent.TRACKED_FAILED)
+        return None
+    await run_in_threadpool(usage.record, UsageEvent.TRACKED_REFRESHED)
+    if outcome.failed:
+        await run_in_threadpool(usage.record, UsageEvent.TRACKED_FAILED)
+    if outcome.parked:
+        await run_in_threadpool(usage.record, UsageEvent.TRACKED_PARKED)
+    return outcome
+
+
 @app.post("/api/internal/refresh", response_model=RefreshRun)
 async def run_refresh(
     _schedule: None = Depends(require_schedule),
@@ -1030,24 +1104,15 @@ async def run_refresh(
         "stored_polls": 0, "stored_results": 0, "finalised": 0, "failed": 0, "skipped_unchanged": 0,
     }
     for tracked in due:
-        try:
-            outcome = await service.run(tracked)
-        except Exception:  # noqa: BLE001 - one row's surprise must not sink the tick or the route
-            log.exception("refresh %s raised outside RefreshService.run", tracked.request_key[:12])
+        outcome = await _refresh_row(service, tracked, usage)
+        if outcome is None:
             counts["failed"] += 1
-            await run_in_threadpool(usage.record, UsageEvent.TRACKED_REFRESHED)
-            await run_in_threadpool(usage.record, UsageEvent.TRACKED_FAILED)
             continue
         counts["stored_polls"] += outcome.stored_polls
         counts["stored_results"] += outcome.stored_results
         counts["finalised"] += int(outcome.finalised)
         counts["failed"] += int(outcome.failed)
         counts["skipped_unchanged"] += int(outcome.skipped_unchanged)
-        await run_in_threadpool(usage.record, UsageEvent.TRACKED_REFRESHED)
-        if outcome.failed:
-            await run_in_threadpool(usage.record, UsageEvent.TRACKED_FAILED)
-        if outcome.parked:
-            await run_in_threadpool(usage.record, UsageEvent.TRACKED_PARKED)
     return RefreshRun(refreshed=len(due), **counts)
 
 
@@ -1230,6 +1295,79 @@ async def update_tracked_election(
     if updated is None:
         raise HTTPException(404, detail="no such tracked election")
     return TrackedOut.of(updated)
+
+
+class RefetchOut(BaseModel):
+    """What one refetch did, in the words the admin's button shows."""
+
+    status: TrackedStatus
+    failed: bool
+    error: str | None
+    stored_polls: int
+    stored_results: int
+    skipped_unchanged: bool
+    last_refresh_at: datetime | None
+
+
+@app.post("/api/admin/elections/{election_hash}/refetch", response_model=RefetchOut)
+async def refetch_election(
+    election_hash: str,
+    _admin: None = Depends(require_admin),
+    tracked_store: TrackedStore = Depends(get_tracked_store_provider),
+    store: ElectionStore = Depends(get_store_provider),
+    parser=Depends(get_refresh_parser_provider),
+    config: RefreshConfig = Depends(get_refresh_config_provider),
+    usage: UsageRecorder = Depends(get_usage),
+) -> RefetchOut:
+    """Read a stored election again, now. This spends Anthropic credit, so only the owner asks.
+
+    Any stored election, tracked or imported by hand: one that nobody tracks
+    gets a row here, which is also what lets the refresh follow it from then on.
+    The read replaces what is stored, even an election a person confirmed — the
+    owner asking is the reason.
+    """
+    stored = await run_in_threadpool(store.get_stored, election_hash)
+    if stored is None:
+        raise HTTPException(404, detail="no such election")
+    election = stored.election
+    key = _tracked_key_of(election)
+    row = await run_in_threadpool(tracked_store.get_tracked, key)
+    if row is not None and row.status is TrackedStatus.UNTRACKED:
+        raise HTTPException(409, detail="this election was untracked")
+    held = election.election_date <= usage.today()
+    result_hash = election_hash if election.forecast is None else None
+    if row is None:
+        await run_in_threadpool(
+            tracked_store.add_tracked,
+            TrackedElection(
+                request_key=key, year=election.election_date.year, nation=election.nation,
+                subnation=election.state, election_date=election.election_date,
+                status=TrackedStatus.COUNTING if held else TrackedStatus.UPCOMING,
+                added_by="owner", result_hash=result_hash,
+            ),
+        )
+    ready = await run_in_threadpool(
+        tracked_store.update_tracked, key,
+        status=TrackedStatus.COUNTING if held else TrackedStatus.UPCOMING,
+        next_refresh_at=None, consecutive_failures=0, last_error=None,
+        **({"result_hash": result_hash} if result_hash else {}),
+    )
+    if ready is None:
+        raise HTTPException(404, detail="no such tracked election")
+    outcome = await _refresh_row(
+        RefreshService(tracked_store, store, parser, config), ready, usage, force=True
+    )
+    if outcome is None:
+        raise HTTPException(502, detail="the refetch failed")
+    if not outcome.leased:
+        raise HTTPException(409, detail="this election is being read right now")
+    after = await run_in_threadpool(tracked_store.get_tracked, key)
+    return RefetchOut(
+        status=outcome.status, failed=outcome.failed, error=outcome.error,
+        stored_polls=outcome.stored_polls, stored_results=outcome.stored_results,
+        skipped_unchanged=outcome.skipped_unchanged,
+        last_refresh_at=after.last_refresh_at if after else None,
+    )
 
 
 # --- outreach: the approval gate --------------------------------------------
