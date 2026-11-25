@@ -983,9 +983,10 @@ async def count_entry(
     return EntryCount(counted=True)
 
 
-# --- tracked elections and their scheduled refresh --------------------------
-# doc/plans/03-remaining-work.md, section A. The Worker's crons call the two
-# ``/api/internal`` routes with ``x-report-secret`` (`require_schedule`); the
+# --- tracked elections and their refresh ------------------------------------
+# doc/plans/03-remaining-work.md, section A. The two ``/api/internal`` routes
+# are called by hand (no cron: they spend Anthropic credit) with
+# ``x-report-secret`` (`require_schedule`); the
 # ``/api/admin`` routes are the owner's own table, reached from no page —
 # there is no admin UI for this yet, only `curl` and `x-admin-secret`.
 
@@ -1010,7 +1011,7 @@ async def run_refresh(
     config: RefreshConfig = Depends(get_refresh_config_provider),
     usage: UsageRecorder = Depends(get_usage),
 ) -> RefreshRun:
-    """Refresh the tracked elections that are due. Called every 30 minutes.
+    """Refresh the tracked elections that are due. Called by hand; no cron runs it, as reading a page spends Anthropic credit.
 
     Sequential and synchronous on purpose (plan 3, A3): Cloud Run throttles
     CPU after the response unless the service is set to always-on, and the
@@ -1069,7 +1070,7 @@ async def run_calendar_scan(
 ) -> CalendarScanOut:
     """Propose elections to track from Wikidata and Wikipedia's calendars.
 
-    Called once a month by the Worker's cron. Every proposal that survives
+    Called by hand; no cron runs it, as the fallback spends Anthropic credit. Every proposal that survives
     de-duplication is tracked at once, ``added_by="calendar"``: what needs a
     human is not whether it gets tracked but whether it should have been
     (plan 3, A5) — the owner reads the report and untracks what does not

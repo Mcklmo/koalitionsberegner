@@ -210,7 +210,7 @@ they are labelled in the list, the preview and the calculator's footer.
    transactions. The `elections`, `extraction_jobs`, `pages`, `usage_daily`
    and `usage_reports` collections are created on demand.
 3. Three composite indexes, before the first outreach send and before the
-   refresh cron starts finding due rows on this project — without them
+   refresh starts finding due rows on this project — without them
    `FirestoreOutreachStore.count_posted`, `count_posted_total` and
    `FirestoreTrackedStore.due_tracked` 500 with `FAILED_PRECONDITION`, and
    the etiquette caps in `doc/plans/04-reddit-outreach.md` and the schedule
@@ -273,9 +273,9 @@ happen; each step says what a wrong answer means.
    are ready.
 2. **Deploy the backend** with the `gcloud run deploy` line above. Then deploy
    the Worker (`npx wrangler deploy`), which owns `/api/*`, `/e/*` and
-   `/approve/*`, and carries the three crons in `wrangler.jsonc`: the daily
-   usage report, the 30-minute refresh tick and the monthly calendar scan.
-   Confirm all three under Workers & Pages → the Worker → Triggers.
+   `/approve/*`, and carries one cron in `wrangler.jsonc`: the daily usage
+   report. Confirm it under Workers & Pages → the Worker → Triggers. No cron
+   spends Anthropic credit; refreshing and scanning are run by hand (below).
 3. **Check the boot refuses a missing secret, on purpose, once.** Deploy a
    revision with no `ADMIN_SECRET` and read the revision log: it must refuse to
    start. `backend/tests/test_config.py` covers the code path, but only a real
@@ -296,19 +296,16 @@ happen; each step says what a wrong answer means.
    `SUPPORT_LINK`. `PUBLIC_BASE_URL` makes the approval email's link absolute.
    `IFES_ELECTIONGUIDE` stays `off` — see the end of the next section.
 
-### Rolling out tracked elections and the scheduled refresh
+### Tracked elections and the manual refresh
 
 [doc/plans/03-remaining-work.md](plans/03-remaining-work.md), section A: the
-app reading polls and results on a schedule instead of waiting for a person to
-import each one. Nothing in it spends anything on its own — deploy it cold and
-it does nothing — so the rollout is about watching it before it is trusted with
-the calendar scan's proposals.
+app reading polls and results for tracked elections. Reading a page costs
+Anthropic credit, so **nothing runs it on a schedule**: the Worker has no
+refresh or calendar-scan cron, and each run below is a call you make. A tick
+takes up to `REFRESH_MAX_PER_TICK` due rows, so call it again until
+`refreshed` is 0.
 
-1. **Deploy with the crons in place and no tracked rows.** The 30-minute tick
-   (`POST /api/internal/refresh`) answers all zeros; the monthly one has
-   nothing scheduled to fire yet. Confirm the crons registered in the
-   Cloudflare dashboard (Workers & Pages → the Worker → Triggers) and that a
-   manual `curl -X POST -H "x-report-secret: $USAGE_REPORT_SECRET" -H
+1. **Check the endpoint with no tracked rows.** A manual `curl -X POST -H "x-report-secret: $USAGE_REPORT_SECRET" -H
    "x-origin-secret: $ORIGIN_SECRET" $ORIGIN_URL/api/internal/refresh` answers
    `{"refreshed": 0, ...}` rather than `403` or `404` — either of those means a
    secret or `GOOGLE_CLOUD_PROJECT` (for the Firestore composite index above)
@@ -326,13 +323,11 @@ the calendar scan's proposals.
    /api/admin/tracked/{request_key}` with `{"refresh_now": true}` reactivates
    a parked row after the cause is fixed, without waiting for the backoff to
    expire on its own.
-3. **Run the calendar scan once by hand** before letting the monthly cron own
-   it: `POST /api/internal/calendar-scan?years=2026,2027` (same two secrets).
+3. **Run the calendar scan by hand**, e.g. once a month: `POST /api/internal/calendar-scan?years=2026,2027` (same two secrets).
    Read what it proposed and skipped in the response, `GET /api/admin/tracked`
    for what it tracked, and untrack (`PUT … {"status": "untracked"}`) whatever
    does not belong — a regional election outside the allowed federations that
-   slipped past the filter, say. Only once that first scan's proposals look
-   right is the monthly cron worth leaving unwatched.
+   slipped past the filter, say.
 
 IFES ElectionGuide is a third calendar source behind `IFES_ELECTIONGUIDE`,
 `off` by default. Its data use policy allows personal and non-commercial use
@@ -412,12 +407,12 @@ variables from `--set-env-vars` and Secret Manager.
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | with `SMTP_HOST` | — | The login. With Gmail, an app password. Put the password in Secret Manager. |
 | `REPORT_EMAIL_TO` | with `SMTP_HOST` | — | Comma-separated addresses the reports go to. |
 | `REPORT_EMAIL_FROM` | no | `SMTP_USERNAME` | The sender address, where the server allows a different one. |
-| `USAGE_REPORT_SECRET` | for scheduled usage reports | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret` — the same header now also guards `/api/internal/refresh` and `/api/internal/calendar-scan` ([03-remaining-work.md](plans/03-remaining-work.md), section A). If it is unset, none of the three `/api/internal/*` routes exist. |
+| `USAGE_REPORT_SECRET` | for scheduled usage reports | — | At least 32 characters. The Cloudflare Worker's cron presents it in `X-Report-Secret` — the same header also guards `/api/internal/refresh` and `/api/internal/calendar-scan` ([03-remaining-work.md](plans/03-remaining-work.md), section A). If it is unset, none of the `/api/internal/*` routes exist. |
 | `REFRESH_CONFIG` | no | the bundled `app/refresh.yaml` | A different schedule file — how often a tracked election is re-read, before and after election day. See the comments in `app/refresh.yaml` for the grammar. |
-| `REFRESH_TICK` | no | `30m` | How often the Worker's refresh cron actually fires; a schedule row asking to be read more often than this earns a startup warning, not an error, so tightening the cron does not require editing the schedule file first. Keep it equal to the cron's own period in `wrangler.jsonc`. |
+| `REFRESH_TICK` | no | `30m` | How often you expect to call `/api/internal/refresh`; a schedule row asking to be read more often than this earns a startup warning, not an error. |
 | `REFRESH_MAX_PER_TICK` | no | `5` | Tracked elections one call to `/api/internal/refresh` reads, oldest due first. The cap keeps one tick inside Cloud Run's request timeout — each row is a fetch and at most one model call, run one after another. |
-| `REFRESH_MODEL` | no | the extractor's own model | A cheaper model for scheduled refreshes only, tried first on the polls path: the strict schema and `app/refresh.py`'s own gates catch a weaker model's mistakes. Never used by an ordinary import. |
-| `IFES_ELECTIONGUIDE` | no | `off` | `on` lets the monthly calendar scan also read IFES ElectionGuide as a third source. Stays `off` until the owner has IFES's written confirmation that this project's use qualifies as non-commercial under their data use policy — see "Rolling out tracked elections" below and `app/calendar.py`'s module docstring, item 3. Unlike `WIKIPEDIA` and `SEARCH_MODE`, not tied to `LLM_MODE`: this source is deterministic, not model-backed. |
+| `REFRESH_MODEL` | no | the extractor's own model | A cheaper model for refreshes only, tried first on the polls path: the strict schema and `app/refresh.py`'s own gates catch a weaker model's mistakes. Never used by an ordinary import. |
+| `IFES_ELECTIONGUIDE` | no | `off` | `on` lets the calendar scan also read IFES ElectionGuide as a third source. Stays `off` until the owner has IFES's written confirmation that this project's use qualifies as non-commercial under their data use policy — see "Rolling out tracked elections" below and `app/calendar.py`'s module docstring, item 3. Unlike `WIKIPEDIA` and `SEARCH_MODE`, not tied to `LLM_MODE`: this source is deterministic, not model-backed. |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USERNAME` / `REDDIT_PASSWORD` / `REDDIT_USER_AGENT` | for posting approved outreach replies | — | A script-app OAuth login, all five or none ([04-reddit-outreach.md](plans/04-reddit-outreach.md)). Missing any one leaves the approval queue and email working; only `POST /api/outreach/approval/{token}/send` answers `503`. Never logged, never in a `repr`. |
 | `OUTREACH_ALLOWED_SUBREDDITS` | for posting | — (nothing is allowed) | Comma-separated subreddit names this deployment may post to. Its own list, not the scanner's `OUTREACH_SUBREDDITS`. |
 | `OUTREACH_SUBREDDIT_WEEKLY_CAP` | no | `2` | Posted replies per subreddit per rolling seven days, enforced server-side regardless of what the scanner queued. |

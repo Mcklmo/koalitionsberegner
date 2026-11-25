@@ -39,8 +39,6 @@
 export const ORIGIN_SECRET_HEADER = 'x-origin-secret';
 export const SCHEDULE_SECRET_HEADER = 'x-report-secret';
 export const USAGE_REPORTS_PATH = '/api/internal/usage-reports';
-export const REFRESH_PATH = '/api/internal/refresh';
-export const CALENDAR_SCAN_PATH = '/api/internal/calendar-scan';
 export const ENTRY_PATH = '/api/internal/entry';
 
 //: The shape a `?src=` tag must have before the Worker will spend a subrequest
@@ -50,24 +48,10 @@ export const ENTRY_PATH = '/api/internal/entry';
 //: that a link with junk on the end costs nothing.
 export const ENTRY_SOURCE = /^[a-z0-9-]{1,16}$/;
 
-//: The three crons, exactly as wrangler.jsonc's `triggers.crons` spells them —
-//: `controller.cron` is compared against these, not parsed, so a typo in
-//: either place shows up as the wrong branch running rather than a silent
-//: mismatch.
+//: The one cron, exactly as wrangler.jsonc's `triggers.crons` spells it.
+//: Nothing scheduled may call the Anthropic API: refreshing tracked elections
+//: and scanning the calendar read pages with it, so both are run by hand.
 export const DAILY_CRON = '0 3 * * *';
-export const REFRESH_CRON = '*/30 * * * *';
-export const CALENDAR_SCAN_CRON = '0 5 1 * *';
-
-/**
- * This year and the next two, comma-separated: the window
- * `app.calendar.CalendarScanner.scan` accepts (`MAX_YEARS_AHEAD`). Computed
- * here rather than pinned in wrangler.jsonc, so nobody has to remember to
- * bump it every December.
- */
-export function calendarScanYears(now = new Date()) {
-  const year = now.getUTCFullYear();
-  return `${year},${year + 1},${year + 2}`;
-}
 
 //: A shared link's id: a prefix of an election hash, 12 to 64 hex characters
 //: (see `backend/app/share.py`, `MIN_ID_LENGTH`/`ID_LENGTH`), with an optional
@@ -312,20 +296,12 @@ export default {
       console.warn('the schedule is not configured; skipping');
       return;
     }
-    // If it fails, the run is marked failed — for all three, alike.
-    if (controller.cron === REFRESH_CRON) {
-      ctx.waitUntil(callOrigin(env, REFRESH_PATH));
-      return;
-    }
-    if (controller.cron === CALENDAR_SCAN_CRON) {
-      ctx.waitUntil(callOrigin(env, `${CALENDAR_SCAN_PATH}?years=${calendarScanYears()}`));
-      return;
-    }
+    // If it fails, the run is marked failed.
     if (controller.cron === DAILY_CRON) {
       ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
       return;
     }
-    // A cron string matching none of the three configured here means
+    // A cron string matching none of the one configured here means
     // wrangler.toml's schedule and this file have drifted apart. Falling back
     // to the daily report would be worse than doing nothing: a typo'd cron
     // firing every few minutes would spam reports and the refresh would

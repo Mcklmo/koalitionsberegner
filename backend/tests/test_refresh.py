@@ -332,7 +332,7 @@ async def test_the_resolver_runs_once_then_never_again():
 
 
 async def test_a_leased_row_is_left_alone():
-    tracked_store = InMemoryTrackedStore()
+    tracked_store = InMemoryTrackedStore(clock=lambda: BEFORE)
     tracked_store.add_tracked(row())
     tracked_store.lease(REQUEST_KEY, until=BEFORE + timedelta(hours=1))
     parser = FakeRefreshParser()

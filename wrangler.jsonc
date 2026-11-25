@@ -20,16 +20,12 @@
     // counts against the Worker's request allowance.
     "run_worker_first": ["/api/*", "/e/*", "/approve/*"]
   },
-  // Three schedules (doc/plans/03-remaining-work.md, A3), dispatched in
-  // worker/index.js's `scheduled` by which of these fired:
-  // - daily: email whichever usage reports are due (daily always, weekly on
-  //   Mondays, monthly on the 1st).
-  // - every 30 minutes: refresh whichever tracked elections are due. Matches
-  //   backend/app/refresh.yaml's smallest `every` — tightening the schedule
-  //   there needs this tightened too, or the extra reads are never taken.
-  // - monthly, on the 1st: scan for new elections to track.
+  // One schedule, dispatched in worker/index.js's `scheduled`: daily, email
+  // whichever usage reports are due (daily always, weekly on Mondays, monthly
+  // on the 1st). Nothing scheduled may spend Anthropic credit, so refreshing
+  // tracked elections and scanning the calendar are run by hand.
   "triggers": {
-    "crons": ["0 3 * * *", "*/30 * * * *", "0 5 1 * *"]
+    "crons": ["0 3 * * *"]
   },
   "vars": {
     "ORIGIN_URL": "https://koalitionsberegner-711803377000.europe-north1.run.app"
