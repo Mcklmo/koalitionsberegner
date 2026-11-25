@@ -309,8 +309,9 @@ The daily usage mail ends with "Data freshness": every stored election that
 is not final or untracked — tracked or imported by hand, no difference — with
 the day it was held and the day it was last fetched, oldest fetch first.
 `<- refetch?` marks one that was held and not read since (or is parked). To
-refetch one, open it on the page with the admin secret saved (`#admin`) and
-press **Refetch** in the footer — it calls
+refetch one, click the link printed under its row (`/e/<id>#refetch`) in a
+browser where the admin secret is saved (`#admin`), or open it and press
+**Refetch** in the footer — it calls
 `POST /api/admin/elections/{election_hash}/refetch`, which reads that election
 now, replaces what is stored (even an election you confirmed) and spends
 credit. An election nobody tracked gets a tracked row the first time.

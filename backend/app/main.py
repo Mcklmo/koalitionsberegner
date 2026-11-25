@@ -91,7 +91,7 @@ from .refresh_config import RefreshConfig
 from .schema import Election, Forecast, clean_text
 from .service import AmbiguousId, ImportRequest, ImportResult, ImportService, ImportState
 from .share import card as build_card
-from .share import image_etag, parse_seats, parse_selection, valid_id
+from .share import image_etag, parse_seats, parse_selection, share_id, valid_id
 from .store import ElectionStore, StoredElection, TrackedElection, TrackedStatus, TrackedStore
 from .usage import (
     Freshness,
@@ -917,6 +917,7 @@ def _freshness(store: ElectionStore, tracked_store: TrackedStore) -> list[Freshn
     of it are stored; a final result is left out, since nothing is left to do.
     """
     tracked = _tracked_by_key(tracked_store)
+    base = public_base_url()
     seen: dict[tuple[str, date], Freshness] = {}
     for stored in store.list_elections():
         election = stored.election
@@ -931,6 +932,7 @@ def _freshness(store: ElectionStore, tracked_store: TrackedStore) -> list[Freshn
             held=election.election_date,
             fetched=fetched,
             parked=row is not None and row.status is TrackedStatus.PARKED,
+            link=f"{base}/e/{share_id(stored.election_hash)}#refetch" if base else "",
         )
         key = (entry.label, election.election_date)
         if key not in seen or (seen[key].fetched or date.min) < fetched:

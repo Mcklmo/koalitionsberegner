@@ -383,6 +383,8 @@ class Freshness:
     held: date | None
     fetched: date | None
     parked: bool = False
+    #: The page's own link that refetches this election, for an admin with the key saved.
+    link: str = ""
 
     def needs_refetch(self, today: date) -> bool:
         """Held, and not read since the day it was held (or never read at all)."""
@@ -395,14 +397,19 @@ def _freshness_lines(rows: Sequence[Freshness], today: date) -> list[str]:
     if not rows:
         return ["  Nothing tracked."]
     never = date.min
-    lines = []
-    for row in sorted(rows, key=lambda r: (r.fetched or never, r.label)):
-        flag = "   <- refetch?" if row.needs_refetch(today) else ""
-        note = " (parked)" if row.parked else ""
-        lines.append(
-            f"  {row.label}: held {row.held or 'date unknown'}, "
-            f"fetched {row.fetched or 'never'}{note}{flag}"
-        )
+    ordered = sorted(rows, key=lambda r: (r.fetched or never, r.label))
+    width = max(len(row.label) for row in ordered)
+    lines = [
+        f"  {'Election':<{width}}  {'Held':<10}  {'Fetched':<10}  {'Parked':<6}  Refetch?".rstrip(),
+        f"  {'':-<{width}}  {'':-<10}  {'':-<10}  {'':-<6}  --------",
+    ]
+    for row in ordered:
+        lines.append((
+            f"  {row.label:<{width}}  {str(row.held or 'unknown'):<10}  {str(row.fetched or 'never'):<10}"
+            f"  {'yes' if row.parked else '':<6}  {'<- refetch?' if row.needs_refetch(today) else ''}"
+        ).rstrip())
+        if row.link and row.needs_refetch(today):
+            lines.append(f"    {row.link}")
     return lines
 
 

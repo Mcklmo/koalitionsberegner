@@ -453,6 +453,50 @@
       color: #888
     }
 
+    dialog#refetch-dialog {
+      max-width: 380px;
+      padding: 18px;
+      border: 0.5px solid #888;
+      border-radius: 10px;
+      background: #fff;
+      color: #111
+    }
+
+    @media(prefers-color-scheme:dark) {
+      dialog#refetch-dialog {
+        background: #1a1a1a;
+        color: #eee
+      }
+    }
+
+    dialog#refetch-dialog::backdrop {
+      background: rgba(0, 0, 0, .5)
+    }
+
+    dialog#refetch-dialog h3 {
+      margin: 0 0 8px;
+      font-size: 15px
+    }
+
+    dialog#refetch-dialog p {
+      margin: 0;
+      font-size: 13px
+    }
+
+    dialog#refetch-dialog .msg {
+      font-size: 13px
+    }
+
+    dialog#refetch-dialog .actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px
+    }
+
+    dialog#refetch-dialog .actions button.primary {
+      margin-top: 0
+    }
+
     .preview {
       margin-top: 12px;
       padding: 12px;
@@ -645,6 +689,16 @@
          (plan 3, C4). Empty and hidden until the owner names a sponsor. -->
     <p class="footer-note" id="sponsor-note" hidden></p>
   </div>
+
+  <dialog id="refetch-dialog">
+    <h3 id="refetch-dialog-title"></h3>
+    <p id="refetch-dialog-body" data-i18n="refetch.dialogBody">Læser valget igen fra kilderne. Det bruger Anthropic-kredit.</p>
+    <p class="msg" id="refetch-dialog-status" role="status" hidden></p>
+    <div class="actions">
+      <button class="primary" id="refetch-dialog-go" type="button" data-i18n="refetch.confirm">Hent igen nu</button>
+      <button class="secondary" id="refetch-dialog-close" type="button" data-i18n="refetch.close">Luk</button>
+    </div>
+  </dialog>
 
   <details class="import" id="import">
     <summary data-i18n="import.summary">Importér et valg</summary>

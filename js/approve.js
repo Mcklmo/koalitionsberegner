@@ -4,7 +4,7 @@
  * Reached from an emailed link, on the owner's phone or laptop. Viewing needs
  * only the token in the URL; sending or rejecting needs `ADMIN_SECRET` as well,
  * read the same way the import panel reads it (`js/admin.js`) — pasted once,
- * kept in `sessionStorage` for the tab.
+ * kept in `localStorage` until forgotten.
  *
  * Everything from the server — the thread's title, its excerpt, the proposed
  * reply — is Reddit text, untrusted the same way an imported page's text is:

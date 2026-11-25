@@ -215,11 +215,12 @@ def test_the_freshness_section_flags_what_was_held_and_not_read_since():
     )
 
     flagged = [line for line in body.splitlines() if "refetch?" in line]
-    assert [line.split(":")[0].strip() for line in flagged] == [
+    assert [line.split("  ")[1] for line in flagged] == [
         "Never read 2026", "Read the day it was held 2026", "Parked 2026",
     ]
-    assert "Never read 2026: held 2026-09-01, fetched never" in body
-    assert "Upcoming 2027: held 2027-05-01, fetched never\n" in body, "not held yet, so no flag"
+    lines = [line.split() for line in body.splitlines()]
+    assert ["Never", "read", "2026", "2026-09-01", "never", "<-", "refetch?"] in lines
+    assert ["Upcoming", "2027", "2027-05-01", "never"] in lines, "not held yet, so no flag"
 
 
 def test_the_report_has_no_freshness_section_unless_it_is_given_rows():
@@ -738,3 +739,27 @@ def test_the_freshness_list_covers_every_stored_election_once_tracked_or_not():
 
     assert [row.label for row in rows] == ["Danmark 2026"], "final is left out; by hand is not"
     assert rows[0].held == date(2026, 3, 25)
+
+
+def test_a_refetch_row_carries_the_pages_own_link(monkeypatch):
+    from app.main import _freshness
+    from app.service import identity_of
+    from app.share import share_id
+    from app.store import InMemoryElectionStore, InMemoryTrackedStore
+    from tests.factories import make_election
+
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://example.test/")
+    elections = InMemoryElectionStore()
+    election = make_election(nation="Danmark", election_date=date(2026, 3, 25))
+    elections.put_election(identity_of(election), election, provenance="manual")
+
+    (row,) = _freshness(elections, InMemoryTrackedStore())
+    stored = elections.list_elections()[0]
+    assert row.link == f"https://example.test/e/{share_id(stored.election_hash)}#refetch"
+
+    _, body = build_report(
+        Period.DAILY, period_range(Period.DAILY, MONDAY), figures({}),
+        previous_range(Period.DAILY, period_range(Period.DAILY, MONDAY)), figures({}),
+        [row], date(2026, 9, 1),
+    )
+    assert f"    {row.link}" in body.splitlines(), "flagged rows list their link under them"

@@ -5,8 +5,9 @@
  * so it is the owner's alone, and the owner proves it by presenting
  * `ADMIN_SECRET` in the `x-admin-secret` header (js/api.js adds it). The secret
  * is pasted in once, into a form that only opens when the address ends in
- * `#admin`, and kept in `sessionStorage` — so it is gone when the tab closes,
- * and never leaves this browser except in that header.
+ * `#admin`, and kept in `localStorage` until it is forgotten, so a link in the
+ * usage mail (`#refetch`) works from a fresh tab. It never leaves this browser
+ * except in that header.
  *
  * Nothing here decides anything. A wrong secret is simply refused by the
  * server; the import panel then forgets it (see `onWrongSecret` there).
@@ -14,16 +15,16 @@
 
 import { t } from './i18n.js';
 
-/** Where the secret is kept for the life of the tab. */
+/** Where the secret is kept, until it is forgotten. */
 export const ADMIN_SECRET_KEY = 'koalitionsberegner.adminSecret';
 
 /** The address fragment that opens the form. */
 export const ADMIN_HASH = '#admin';
 
-/** The session's storage, or null where the browser will not give us one. */
+/** The browser's storage, or null where it will not give us one. */
 function sessionStore() {
   try {
-    return globalThis.sessionStorage ?? null;
+    return globalThis.localStorage ?? null;
   } catch {
     // Reading the property itself throws where storage is blocked.
     return null;
@@ -39,7 +40,7 @@ export function readSecret(storage = sessionStore()) {
   }
 }
 
-/** Keep the secret for this tab. False when storage would not take it. */
+/** Keep the secret in this browser. False when storage would not take it. */
 export function saveSecret(secret, storage = sessionStore()) {
   try {
     if (!storage) return false;

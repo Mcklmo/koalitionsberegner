@@ -46,6 +46,9 @@ const openPrivacy = () => {
 globalThis.addEventListener('hashchange', openPrivacy);
 openPrivacy();
 
+// Read now: loading an election rewrites the address and drops the fragment.
+const refetchLinkOpened = globalThis.location.hash === '#refetch';
+
 // One option per column of the sheet, each language named in itself.
 const languagePicker = byId('language');
 for (const locale of languages()) {
@@ -275,30 +278,64 @@ importUi = mountImportUi({
   },
 });
 
-refetchButton.addEventListener('click', async () => {
+/** Read the election on screen again. Reports each stage to `setStatus(text, kind)`; true on success. */
+async function runRefetch(setStatus) {
   const hash = currentHash;
-  refetchButton.disabled = true;
-  setRefetchNote(t('refetch.working'));
+  setStatus(t('refetch.working'));
   try {
     const result = await api.refetchElection(hash);
     if (result.failed) {
-      setRefetchNote(t('refetch.failed', { error: result.error ?? '' }), 'error');
-      return;
+      setStatus(t('refetch.failed', { error: result.error ?? '' }), 'error');
+      return false;
     }
     const fresh = await api.getElection(hash);
     if (fresh.election) {
       render(fresh.election, { initialSelection: calculator.selection(), electionHash: hash });
     }
     await picker.refresh(api).catch(() => {});
-    setRefetchNote(t(result.skippedUnchanged ? 'refetch.unchanged' : 'refetch.done'), 'ok');
+    setStatus(t(result.skippedUnchanged ? 'refetch.unchanged' : 'refetch.done'), 'ok');
+    return true;
   } catch (error) {
     if (error.status === 403) adminUi.forget();
-    const text = error.status === 409 ? t('refetch.untracked') : t('refetch.failed', { error: error.message });
-    setRefetchNote(text, 'error');
-  } finally {
-    refetchButton.disabled = false;
+    setStatus(error.status === 409 ? t('refetch.untracked') : t('refetch.failed', { error: error.message }), 'error');
+    return false;
   }
+}
+
+refetchButton.addEventListener('click', async () => {
+  refetchButton.disabled = true;
+  await runRefetch(setRefetchNote);
+  refetchButton.disabled = false;
 });
+
+// The refetch dialog, opened by the usage mail's `/e/<id>#refetch` link: it asks
+// before spending credit and shows how the read goes.
+const refetchDialog = byId('refetch-dialog');
+const refetchDialogStatus = byId('refetch-dialog-status');
+const refetchDialogGo = byId('refetch-dialog-go');
+
+function setDialogStatus(text, kind = 'info') {
+  refetchDialogStatus.textContent = text;
+  refetchDialogStatus.className = `msg msg-${kind}`;
+  refetchDialogStatus.hidden = !text;
+}
+
+function openRefetchDialog() {
+  byId('refetch-dialog-title').textContent = byId('title').textContent;
+  const blocked = !readSecret() ? 'refetch.noKey' : !currentHash ? 'refetch.notStored' : null;
+  setDialogStatus(blocked ? t(blocked) : '', 'error');
+  refetchDialogGo.hidden = Boolean(blocked);
+  refetchDialogGo.disabled = false;
+  refetchDialog.showModal();
+}
+
+refetchDialogGo.addEventListener('click', async () => {
+  refetchDialogGo.disabled = true;
+  const ok = await runRefetch(setDialogStatus);
+  refetchDialogGo.hidden = ok;
+  refetchDialogGo.disabled = false;
+});
+byId('refetch-dialog-close').addEventListener('click', () => refetchDialog.close());
 
 const adminUi = mountAdmin({
   onChange: (isAdmin) => {
@@ -355,3 +392,8 @@ if (link) {
   }
   if (!landed) enableShareForBundled();
 }
+
+// The usage mail's refetch link: `/e/<id>#refetch`. The fragment never reaches
+// a server, so a mail scanner opening the link triggers nothing; the refetch
+// itself waits for a click in the dialog.
+if (refetchLinkOpened) openRefetchDialog();
