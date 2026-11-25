@@ -21,6 +21,13 @@
  * schedule secret already guards them, and this keeps them off the internet
  * altogether.
  *
+ * A fourth `/api/internal/` endpoint is called from `fetch` rather than a
+ * cron: when a shared link carries a `?src=` tag, the Worker counts it at the
+ * origin (`countEntry`). The document request is the only place that tag is
+ * ever seen — the page's own `/api/config` call is same-origin — and the page
+ * runs no script of its own to report it. Untagged traffic, which is nearly
+ * all of it, costs no extra subrequest.
+ *
  * `ORIGIN_URL` is a plain var in wrangler.jsonc; `ORIGIN_SECRET` and
  * `USAGE_REPORT_SECRET` are set with `wrangler secret put` and must equal the
  * backend's. `USAGE_REPORT_SECRET` is kept as the variable's name to avoid
@@ -34,14 +41,33 @@ export const SCHEDULE_SECRET_HEADER = 'x-report-secret';
 export const USAGE_REPORTS_PATH = '/api/internal/usage-reports';
 export const REFRESH_PATH = '/api/internal/refresh';
 export const CALENDAR_SCAN_PATH = '/api/internal/calendar-scan';
+export const ENTRY_PATH = '/api/internal/entry';
+
+//: The shape a `?src=` tag must have before the Worker will spend a subrequest
+//: telling the origin about it. Which tags actually count is the origin's
+//: business alone (`app.usage.CAMPAIGN_SOURCES`) — keeping the list in one
+//: place means the two can never drift apart; this is only a cheap filter so
+//: that a link with junk on the end costs nothing.
+export const ENTRY_SOURCE = /^[a-z0-9-]{1,16}$/;
 
 //: The three crons, exactly as wrangler.jsonc's `triggers.crons` spells them —
 //: `controller.cron` is compared against these, not parsed, so a typo in
 //: either place shows up as the wrong branch running rather than a silent
 //: mismatch.
-export const DAILY_CRON = '0 6 * * *';
+//: Cloudflare crons are UTC only, and 05:00 in Copenhagen is 03:00 UTC in
+//: summer and 04:00 in winter. Both fire; only the one that lands on
+//: `REPORT_HOUR` there sends.
+export const DAILY_CRONS = ['0 3 * * *', '0 4 * * *'];
+export const REPORT_HOUR = 5;
 export const REFRESH_CRON = '*/30 * * * *';
 export const CALENDAR_SCAN_CRON = '0 5 1 * *';
+
+export function copenhagenHour(ms) {
+  const hour = new Intl.DateTimeFormat('en-GB', {
+    hour: 'numeric', hourCycle: 'h23', timeZone: 'Europe/Copenhagen',
+  }).format(ms);
+  return Number(hour);
+}
 
 /**
  * This year and the next two, comma-separated: the window
@@ -134,6 +160,10 @@ function shareTags(card, pageUrl) {
 async function fetchCard(env, request, id) {
   if (!env.ORIGIN_URL || !env.ORIGIN_SECRET) return null;
   const url = new URL(request.url);
+  // The card is worded from the coalition alone, so a channel tag must not
+  // fragment its cache: `/e/x?c=1,2&s=90&src=reddit` and the same link without
+  // the tag unfurl into one cached card, not two.
+  url.searchParams.delete('src');
   const cacheKey = new Request(new URL(`/api/elections/${id}/card${url.search}`, request.url));
   const cache = caches.default;
   const cached = await cache.match(cacheKey);
@@ -203,8 +233,34 @@ async function callOrigin(env, path) {
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
 }
 
+/**
+ * Tell the origin that a link tagged `?src=` was opened.
+ *
+ * The document request is the only place the tag is ever seen: the page's own
+ * `/api/config` call is same-origin, so its `Referer` says nothing, and
+ * counting it in the browser would mean adding a script to a page that
+ * deliberately has none. One counter per channel per day is all that is
+ * stored; the origin ignores a tag it does not know.
+ *
+ * Failure is silent on purpose. A visitor who came from a tagged link must get
+ * their page whether or not the beacon lands.
+ */
+async function countEntry(env, source) {
+  try {
+    await fetch(new URL(`${ENTRY_PATH}?src=${encodeURIComponent(source)}`, env.ORIGIN_URL), {
+      method: 'POST',
+      headers: {
+        [ORIGIN_SECRET_HEADER]: env.ORIGIN_SECRET,
+        [SCHEDULE_SECRET_HEADER]: env.USAGE_REPORT_SECRET,
+      },
+    });
+  } catch {
+    // The visitor's page does not depend on this.
+  }
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const method = request.method;
 
@@ -212,6 +268,14 @@ export default {
     // the Worker recognises — an unresolved id still gets the page, with the
     // generic card, rather than a bare 404 the frontend never runs against.
     if ((method === 'GET' || method === 'HEAD') && url.pathname.startsWith('/e/')) {
+      // A link the owner posted carries `?src=`; count it, then serve the page
+      // exactly as an untagged link (`fetchCard` drops the tag, so both share
+      // one cached card). GET only: a crawler's HEAD is not a visit.
+      const source = method === 'GET' ? url.searchParams.get('src') : null;
+      if (source && ENTRY_SOURCE.test(source) && env.ORIGIN_URL && env.ORIGIN_SECRET
+          && env.USAGE_REPORT_SECRET && ctx?.waitUntil) {
+        ctx.waitUntil(countEntry(env, source));
+      }
       const match = url.pathname.match(SHARE_PATH);
       return serveSharedLink(request, env, match ? match[1] : null);
     }
@@ -268,8 +332,10 @@ export default {
       ctx.waitUntil(callOrigin(env, `${CALENDAR_SCAN_PATH}?years=${calendarScanYears()}`));
       return;
     }
-    if (controller.cron === DAILY_CRON) {
-      ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
+    if (DAILY_CRONS.includes(controller.cron)) {
+      if (copenhagenHour(controller.scheduledTime) === REPORT_HOUR) {
+        ctx.waitUntil(callOrigin(env, USAGE_REPORTS_PATH));
+      }
       return;
     }
     // A cron string matching none of the three configured here means

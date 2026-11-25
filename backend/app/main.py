@@ -99,6 +99,7 @@ from .usage import (
     UsageRecorder,
     build_report,
     due_periods,
+    entry_key,
     gather,
     page_load_key,
     period_range,
@@ -946,6 +947,40 @@ async def preview_usage_report(
     """A usage report as it would be emailed, sent nowhere."""
     _, report = await run_in_threadpool(_usage_report, period, before or usage.today(), usage)
     return report
+
+
+class EntryCount(BaseModel):
+    """Whether a tagged entry was counted, or its `src` was one we never posted."""
+
+    counted: bool
+
+
+@app.post("/api/internal/entry", response_model=EntryCount)
+async def count_entry(
+    src: str = Query(..., max_length=32, description="The channel tag on the link that was opened"),
+    _schedule: None = Depends(require_schedule),
+    usage: UsageRecorder = Depends(get_usage),
+) -> EntryCount:
+    """Count one opening of a link the owner tagged with `?src=`.
+
+    Called by the Worker, which is the only place the real entry URL is ever
+    seen: the page's own request for `/api/config` is same-origin, so an
+    external referrer never reaches the origin, and counting it in the browser
+    would mean adding a script to the page — which this project's privacy
+    stance does not allow (see the module docstring in `app/usage.py`).
+
+    What is stored is a count per channel per day and nothing else: no
+    referrer, no election, no visitor. A `src` outside
+    :data:`app.usage.CAMPAIGN_SOURCES` is ignored rather than refused, because
+    anyone can put anything on a link they were given, and minting a counter
+    from the open internet is exactly what the allowlist is there to stop.
+    Which channels exist and why is `doc/research/launch-berlin-mv-2026.md`.
+    """
+    key = entry_key(src)
+    if key is None:
+        return EntryCount(counted=False)
+    await run_in_threadpool(usage.record, key)
+    return EntryCount(counted=True)
 
 
 # --- tracked elections and their scheduled refresh --------------------------

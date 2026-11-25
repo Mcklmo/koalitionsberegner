@@ -79,6 +79,23 @@ def page_load_key(accept_language: str | None) -> str:
     return f"page_load_{language_bucket(accept_language)}"
 
 
+#: Channels a link the owner posted may be tagged with, as `?src=` values on a
+#: shared-link URL. A fixed list for the same reason as :data:`PAGE_LANGUAGES`:
+#: the value arrives from the open internet, and anything not listed here must
+#: not be able to mint a counter of its own. Add a channel before using it in a
+#: post, not after. See `doc/research/launch-berlin-mv-2026.md`.
+CAMPAIGN_SOURCES = ("reddit", "press", "hn", "mastodon", "newsletter")
+
+
+def entry_key(source: str | None) -> str | None:
+    """The counter a tagged entry belongs to, or None for a source we do not know.
+
+    None is not an error: a stranger can put any `?src=` on a link they were
+    given, and the only right answer to one we never posted is to ignore it.
+    """
+    return f"entry_{source}" if source in CAMPAIGN_SOURCES else None
+
+
 class UsageStore(Protocol):
     """Storage seam for the counters. Ranges are ``[start, end)`` in UTC days."""
 
@@ -271,6 +288,9 @@ SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("Failed to post", E.OUTREACH_FAILED.value),
         ("Expired unapproved", E.OUTREACH_EXPIRED.value),
     )),
+    ("Tagged entry links", tuple(
+        (f"Opened from {source}", f"entry_{source}") for source in CAMPAIGN_SOURCES
+    )),
     ("Tracked elections", (
         ("Added by the calendar scan", E.TRACKED_ADDED.value),
         ("Refresh ticks run", E.TRACKED_REFRESHED.value),
@@ -278,6 +298,10 @@ SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("Parked after repeated failures", E.TRACKED_PARKED.value),
     )),
 )
+
+#: Every page-load counter, so a total over them cannot quietly miss a language
+#: the way the day-by-day table missed German until 2026-09-22.
+PAGE_LOAD_KEYS = tuple(f"page_load_{bucket}" for bucket in (*PAGE_LANGUAGES, "other"))
 
 LABEL_WIDTH = 34
 
@@ -310,7 +334,7 @@ def build_report(
         for day in current.days():
             lines.append(
                 f"  {day.isoformat():<12}"
-                f"{figures.on(day, 'page_load_da', 'page_load_en', 'page_load_other'):>7}"
+                f"{figures.on(day, *PAGE_LOAD_KEYS):>7}"
                 f"{figures.on(day, E.ELECTION_PICKED.value):>8}"
                 f"{figures.on(day, E.IMPORT_STARTED.value):>9}"
                 f"{figures.on(day, E.REQUEST_FILED.value, E.REQUEST_DUPLICATE.value):>10}"

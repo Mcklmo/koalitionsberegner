@@ -133,7 +133,7 @@ answer directly again.
 
 ## 6. Usage reports by email
 
-The Worker's cron (`triggers.crons` in `wrangler.jsonc`, 06:00 UTC daily) calls
+The Worker's cron (`triggers.crons` in `wrangler.jsonc`, 03:00 and 04:00 UTC; the one at 05:00 Copenhagen time sends) calls
 `POST /api/internal/usage-reports` on the origin. The backend emails yesterday's
 report, plus last week's on a Monday and last month's on the 1st. A report is
 sent once however often the cron fires. `/api/internal/*` is never forwarded
@@ -157,7 +157,7 @@ Grant the service account `roles/secretmanager.secretAccessor` on both, as for
   `SMTP_PASSWORD=smtp-password:latest`
 - plain variables `SMTP_HOST`, `SMTP_USERNAME` and `REPORT_EMAIL_TO`
 
-Redeploy the backend and the Worker. To try it without waiting for 06:00, make
+Redeploy the backend and the Worker. To try it without waiting for 05:00, make
 the call the cron makes, straight to Cloud Run. The secrets are piped in as
 headers, so they never appear in the command line or the shell history:
 
@@ -170,7 +170,7 @@ RUN=https://koalitionsberegner-711803377000.europe-north1.run.app
 # {"sent":["daily:…"],"skipped":[]} and an email; run it again and it is "skipped"
 ```
 
-A report sent this way is not sent again: the 06:00 run lists that day's daily
+A report sent this way is not sent again: the 05:00 run lists that day's daily
 report under `skipped`.
 
 What is counted, and why it is only counts, is in `backend/app/usage.py`.

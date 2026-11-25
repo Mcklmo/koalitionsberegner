@@ -8,7 +8,8 @@ import worker, {
   USAGE_REPORTS_PATH,
   REFRESH_PATH,
   CALENDAR_SCAN_PATH,
-  DAILY_CRON,
+  ENTRY_PATH,
+  DAILY_CRONS,
   REFRESH_CRON,
   CALENDAR_SCAN_CRON,
   calendarScanYears,
@@ -289,6 +290,126 @@ test('a second request for the same preview image is served from the cache', asy
   assert.equal(calls.length, 1, 'the second request never reached the origin');
 });
 
+// --- `?src=` on a link the owner posted -----------------------------------
+
+const REPORT_SECRET = 'r'.repeat(40);
+const TAGGED_ENV = { ...ENV, USAGE_REPORT_SECRET: REPORT_SECRET };
+
+/** A `ctx` stand-in: collects the promises `waitUntil` is handed. */
+function fetchContext() {
+  const pending = [];
+  return { pending, waitUntil: (promise) => pending.push(promise) };
+}
+
+test('a tagged link is counted at the origin, once, and still serves the page', async () => {
+  const calls = recordCardFetch({ title: 'A + F + B', description: '79 of 179 seats.', image_path: null });
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
+  const ctx = fetchContext();
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}?c=0&s=90&src=reddit`),
+    { ...TAGGED_ENV, ...assets },
+    ctx
+  );
+  await Promise.all(ctx.pending);
+
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /<title>A \+ F \+ B<\/title>/, 'the visitor gets the page');
+  const beacon = calls.find((call) => call.url.includes(ENTRY_PATH));
+  assert.ok(beacon, 'the origin was told');
+  assert.equal(beacon.url, `${ENV.ORIGIN_URL}${ENTRY_PATH}?src=reddit`);
+  assert.equal(beacon.init.method, 'POST');
+  assert.equal(beacon.init.headers[ORIGIN_SECRET_HEADER], ENV.ORIGIN_SECRET);
+  assert.equal(beacon.init.headers[SCHEDULE_SECRET_HEADER], REPORT_SECRET);
+});
+
+test('the tag never reaches the card, so a tagged link shares one cached card', async () => {
+  const calls = recordCardFetch({ title: 'A + F + B', description: '79 of 179 seats.', image_path: null });
+  const assets = recordAssets(PAGE_HTML);
+  const store = recordCache();
+  const ctx = fetchContext();
+
+  await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}?c=0&s=90&src=reddit`),
+    { ...TAGGED_ENV, ...assets },
+    ctx
+  );
+  await Promise.all(ctx.pending);
+  await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}?c=0&s=90`),
+    { ...TAGGED_ENV, ...assets },
+    fetchContext()
+  );
+
+  const cardCalls = calls.filter((call) => call.url.includes('/card'));
+  assert.equal(cardCalls.length, 1, 'the untagged link was served the tagged one\'s cached card');
+  assert.equal(cardCalls[0].url, `${ENV.ORIGIN_URL}/api/elections/${ID}/card?c=0&s=90`);
+  assert.equal(store.size, 1, 'one cache entry, not one per channel');
+});
+
+test('an untagged link, a junk tag and a HEAD cost no subrequest', async () => {
+  const assets = recordAssets(PAGE_HTML);
+  for (const [path, method] of [
+    [`/e/${ID}?c=0`, 'GET'],
+    [`/e/${ID}?c=0&src=${'x'.repeat(17)}`, 'GET'],
+    [`/e/${ID}?c=0&src=Reddit%20Post`, 'GET'],
+    [`/e/${ID}?c=0&src=reddit`, 'HEAD'],
+  ]) {
+    const calls = recordCardFetch({ title: 't', description: 'd', image_path: null });
+    recordCache();
+    const ctx = fetchContext();
+    await worker.fetch(
+      new Request(`https://koalitionsberegner.moritzmarcus.com${path}`, { method }),
+      { ...TAGGED_ENV, ...assets },
+      ctx
+    );
+    await Promise.all(ctx.pending);
+    assert.equal(
+      calls.filter((call) => call.url.includes(ENTRY_PATH)).length, 0,
+      `${method} ${path} should not have been counted`
+    );
+  }
+});
+
+test('with no schedule secret a tagged link is served but not counted', async () => {
+  const calls = recordCardFetch({ title: 't', description: 'd', image_path: null });
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
+  const ctx = fetchContext();
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}?src=reddit`),
+    { ...ENV, ...assets },
+    ctx
+  );
+  await Promise.all(ctx.pending);
+
+  assert.equal(response.status, 200, 'the page never depends on the beacon');
+  assert.equal(calls.filter((call) => call.url.includes(ENTRY_PATH)).length, 0);
+});
+
+test('an origin that refuses the beacon does not cost the visitor their page', async () => {
+  const assets = recordAssets(PAGE_HTML);
+  recordCache();
+  globalThis.fetch = async (url) => {
+    if (String(url).includes(ENTRY_PATH)) throw new Error('origin unreachable');
+    return new Response(JSON.stringify({ title: 't', description: 'd', image_path: null }), {
+      status: 200, headers: { 'cache-control': 'public, max-age=3600' },
+    });
+  };
+  const ctx = fetchContext();
+
+  const response = await worker.fetch(
+    new Request(`https://koalitionsberegner.moritzmarcus.com/e/${ID}?src=press`),
+    { ...TAGGED_ENV, ...assets },
+    ctx
+  );
+  await Promise.all(ctx.pending);
+
+  assert.equal(response.status, 200);
+});
+
 // --- the outreach approval page: /approve/* -------------------------------
 
 const APPROVE_HTML = '<!DOCTYPE html><html><head><title>Koalitionsberegner — outreach</title></head><body></body></html>';
@@ -340,11 +461,29 @@ function scheduledContext() {
   return { pending, waitUntil: (promise) => pending.push(promise) };
 }
 
+const SUMMER_5AM = Date.parse('2026-07-01T03:00:00Z');
+const WINTER_5AM = Date.parse('2026-12-01T04:00:00Z');
+
+test('only the daily cron that lands on 05:00 in Copenhagen sends', async () => {
+  for (const [cron, scheduledTime, sends] of [
+    [DAILY_CRONS[0], SUMMER_5AM, true],
+    [DAILY_CRONS[1], SUMMER_5AM + 3600e3, false],
+    [DAILY_CRONS[0], WINTER_5AM - 3600e3, false],
+    [DAILY_CRONS[1], WINTER_5AM, true],
+  ]) {
+    const calls = recordFetches();
+    const ctx = scheduledContext();
+    await worker.scheduled({ cron, scheduledTime }, REPORT_ENV, ctx);
+    await Promise.all(ctx.pending);
+    assert.equal(calls.length, sends ? 1 : 0, `${cron} at ${new Date(scheduledTime).toISOString()}`);
+  }
+});
+
 test('the daily cron asks the origin for the reports, carrying both secrets', async () => {
   const calls = recordFetches();
   const ctx = scheduledContext();
 
-  await worker.scheduled({ cron: DAILY_CRON }, REPORT_ENV, ctx);
+  await worker.scheduled({ cron: DAILY_CRONS[0], scheduledTime: SUMMER_5AM }, REPORT_ENV, ctx);
   await Promise.all(ctx.pending);
 
   assert.deepEqual(calls.map((call) => call.url), [`${ENV.ORIGIN_URL}${USAGE_REPORTS_PATH}`]);
@@ -407,7 +546,7 @@ test('a report run the origin refused shows as a failed cron', async () => {
   globalThis.fetch = async () => new Response('{}', { status: 502 });
   const ctx = scheduledContext();
 
-  await worker.scheduled({ cron: DAILY_CRON }, REPORT_ENV, ctx);
+  await worker.scheduled({ cron: DAILY_CRONS[0], scheduledTime: SUMMER_5AM }, REPORT_ENV, ctx);
 
   await assert.rejects(Promise.all(ctx.pending), /HTTP 502/);
 });
@@ -417,7 +556,7 @@ test('without a report secret no cron sends anything', async (t) => {
   t.mock.method(console, 'warn', () => {});
   const ctx = scheduledContext();
 
-  for (const cron of [DAILY_CRON, REFRESH_CRON, CALENDAR_SCAN_CRON]) {
+  for (const cron of [DAILY_CRONS[0], REFRESH_CRON, CALENDAR_SCAN_CRON]) {
     await worker.scheduled({ cron }, ENV, ctx);
   }
 

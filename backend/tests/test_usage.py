@@ -21,6 +21,7 @@ from app.service import ImportService
 from app.sqlite_usage import SqliteUsageStore
 from app.store import InMemoryElectionStore
 from app.usage import (
+    CAMPAIGN_SOURCES,
     DateRange,
     InMemoryUsageStore,
     Period,
@@ -29,6 +30,7 @@ from app.usage import (
     UsageRecorder,
     build_report,
     due_periods,
+    entry_key,
     language_bucket,
     period_range,
     previous_range,
@@ -232,6 +234,50 @@ def test_the_link_counter_is_labelled_by_what_it_actually_counts():
     assert row(body, "Shared-link previews built") == ["3", "(+3)"]
     assert "at most once per link per hour" in body
     assert "links opened" not in body.lower()
+
+
+def test_only_a_channel_we_posted_to_mints_a_counter():
+    """A `?src=` value arrives from the open internet, so the allowlist — not
+    the caller — decides whether there is a counter at all."""
+    assert entry_key("reddit") == "entry_reddit"
+    assert entry_key("REDDIT") is None, "the tag is matched exactly, not folded"
+    assert entry_key("not-a-channel-we-use") is None
+    assert entry_key(None) is None
+    assert set(CAMPAIGN_SOURCES) == {"reddit", "press", "hn", "mastodon", "newsletter"}
+
+
+def test_the_report_has_a_line_for_every_tagged_channel():
+    current = period_range(Period.DAILY, MONDAY)
+    _, body = build_report(
+        Period.DAILY,
+        current,
+        figures({SUNDAY: {"entry_reddit": 12, "entry_press": 1}}),
+        previous_range(Period.DAILY, current),
+        figures({previous_range(Period.DAILY, current).start: {"entry_reddit": 4}}),
+    )
+
+    assert row(body, "Opened from reddit") == ["12", "(+8)"]
+    assert row(body, "Opened from press") == ["1", "(+1)"]
+    for source in CAMPAIGN_SOURCES:
+        assert f"Opened from {source}" in body, "a silent channel still gets its line"
+
+
+def test_the_day_by_day_loads_column_counts_every_language():
+    """It counted Danish, English and 'other' but not German until 2026-09-22,
+    which is the language two thirds of the stored elections are read in."""
+    current = period_range(Period.WEEKLY, MONDAY)
+    _, body = build_report(
+        Period.WEEKLY,
+        current,
+        figures({date(2026, 9, 9): {
+            "page_load_da": 1, "page_load_en": 2, "page_load_de": 4, "page_load_other": 8,
+        }}),
+        previous_range(Period.WEEKLY, current),
+        figures(),
+    )
+
+    table = body.split("Day by day")[1]
+    assert next(line for line in table.splitlines() if "2026-09-09" in line).split()[1] == "15"
 
 
 def test_a_weekly_report_adds_a_line_per_day():
@@ -508,6 +554,47 @@ def test_what_a_visitor_asks_for_is_counted_by_what_came_of_it(client, usage, wi
         "request_duplicate": 1,
         "request_already_imported": 1,
     }
+
+
+ENTRY_URL = "/api/internal/entry"
+
+
+def test_a_tagged_link_is_counted_per_channel(client, usage, monkeypatch):
+    monkeypatch.setenv("USAGE_REPORT_SECRET", REPORT_SECRET)
+
+    assert client.post(f"{ENTRY_URL}?src=reddit", headers=REPORT).json() == {"counted": True}
+    assert client.post(f"{ENTRY_URL}?src=reddit", headers=REPORT).json() == {"counted": True}
+    assert client.post(f"{ENTRY_URL}?src=press", headers=REPORT).json() == {"counted": True}
+
+    assert counted(usage) == {"entry_reddit": 2, "entry_press": 1}
+
+
+def test_an_unknown_tag_is_ignored_rather_than_refused(client, usage, monkeypatch):
+    """A stranger can put any `?src=` on a link they were given. Refusing it
+    would make the Worker retry and log; counting it would let the open
+    internet mint a counter. Neither: it is dropped."""
+    monkeypatch.setenv("USAGE_REPORT_SECRET", REPORT_SECRET)
+
+    response = client.post(f"{ENTRY_URL}?src=whatever", headers=REPORT)
+
+    assert response.status_code == 200
+    assert response.json() == {"counted": False}
+    assert counted(usage) == {}
+
+
+def test_counting_an_entry_needs_the_schedule_secret(client, usage, monkeypatch):
+    monkeypatch.setenv("USAGE_REPORT_SECRET", REPORT_SECRET)
+
+    assert client.post(f"{ENTRY_URL}?src=reddit").status_code == 403
+    assert client.post(f"{ENTRY_URL}?src=reddit", headers={"x-report-secret": "r" * 39 + "x"}) \
+        .status_code == 403
+    assert counted(usage) == {}
+
+
+def test_an_entry_with_no_tag_at_all_is_a_bad_request(client, monkeypatch):
+    monkeypatch.setenv("USAGE_REPORT_SECRET", REPORT_SECRET)
+
+    assert client.post(ENTRY_URL, headers=REPORT).status_code == 422
 
 
 def test_without_a_report_secret_there_is_no_report_endpoint(client, monkeypatch):
