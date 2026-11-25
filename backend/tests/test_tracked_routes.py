@@ -12,9 +12,11 @@ from fastapi.testclient import TestClient
 from app import main
 from app.calendar import CalendarEntry, ScanResult
 from app.identity import request_key as compute_request_key
+from app.service import identity_of
 from app.refresh_config import AfterRow, BeforeRow, RefreshConfig
 from app.store import InMemoryElectionStore, InMemoryTrackedStore, TrackedElection, TrackedStatus
 from app.usage import InMemoryUsageStore, UsageRecorder
+from tests.factories import make_election
 
 ADMIN_SECRET = "a" * 40
 ADMIN = {"x-admin-secret": ADMIN_SECRET}
@@ -341,3 +343,71 @@ def test_an_empty_patch_is_rejected(client, monkeypatch, tracked_store):
     tracked_store.add_tracked(row())
     response = client.put(f"/api/admin/tracked/{REQUEST_KEY}", headers=ADMIN, json={})
     assert response.status_code == 422
+
+
+# --- POST /api/admin/elections/{hash}/refetch --------------------------------
+
+
+def stored(election_store, **overrides):
+    """Put an election in the store, the way an import by hand would, and return its hash."""
+    election = make_election(**overrides)
+    election_hash = identity_of(election)
+    election_store.put_election(election_hash, election, provenance="manual")
+    return election_hash
+
+
+def test_a_refetch_needs_the_admin_secret(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", ADMIN_SECRET)
+    assert client.post("/api/admin/elections/" + "h" * 64 + "/refetch").status_code == 403
+
+
+def test_refetching_an_election_nobody_stored_is_a_404(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", ADMIN_SECRET)
+    response = client.post("/api/admin/elections/" + "h" * 64 + "/refetch", headers=ADMIN)
+    assert response.status_code == 404
+
+
+def test_an_election_imported_by_hand_is_refetched_like_a_tracked_one(
+    client, monkeypatch, tracked_store, election_store, usage
+):
+    monkeypatch.setenv("ADMIN_SECRET", ADMIN_SECRET)
+    election_hash = stored(election_store)
+    assert tracked_store.list_tracked() == []
+
+    response = client.post(f"/api/admin/elections/{election_hash}/refetch", headers=ADMIN)
+
+    # The parser here is a stub that cannot read anything, so the read fails —
+    # what matters is that a row now follows the election and it was attempted.
+    assert response.status_code == 200
+    body = response.json()
+    assert body["failed"] is True and body["error"]
+    assert body["last_refresh_at"] is not None
+    (followed,) = tracked_store.list_tracked()
+    assert followed.result_hash == election_hash
+    assert counted(usage)["tracked_refreshed"] == 1
+
+
+def test_a_final_tracked_election_is_read_again_when_the_owner_asks(
+    client, monkeypatch, tracked_store, election_store
+):
+    monkeypatch.setenv("ADMIN_SECRET", ADMIN_SECRET)
+    election_hash = stored(election_store)
+    election = election_store.get_election(election_hash)
+    key = compute_request_key(election.election_date.year, election.nation, election.state)
+    tracked_store.add_tracked(row(request_key=key, status=TrackedStatus.FINAL, result_hash=election_hash))
+
+    response = client.post(f"/api/admin/elections/{election_hash}/refetch", headers=ADMIN)
+
+    assert response.status_code == 200
+    assert tracked_store.get_tracked(key).status is not TrackedStatus.FINAL
+
+
+def test_an_untracked_election_is_not_refetched(client, monkeypatch, tracked_store, election_store):
+    monkeypatch.setenv("ADMIN_SECRET", ADMIN_SECRET)
+    election_hash = stored(election_store)
+    election = election_store.get_election(election_hash)
+    key = compute_request_key(election.election_date.year, election.nation, election.state)
+    tracked_store.add_tracked(row(request_key=key, status=TrackedStatus.UNTRACKED))
+
+    response = client.post(f"/api/admin/elections/{election_hash}/refetch", headers=ADMIN)
+    assert response.status_code == 409

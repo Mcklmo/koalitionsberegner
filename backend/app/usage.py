@@ -21,7 +21,7 @@ what the owner reads can be asserted without a store, a clock or a mail server.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import re
 import unicodedata
@@ -375,14 +375,51 @@ def _missed_lines(figures: UsageFigures, top: int = 15) -> list[str]:
     ]
 
 
+@dataclass(frozen=True)
+class Freshness:
+    """One tracked election's age: what the owner reads to decide on a refetch."""
+
+    label: str
+    held: date | None
+    fetched: date | None
+    parked: bool = False
+
+    def needs_refetch(self, today: date) -> bool:
+        """Held, and not read since the day it was held (or never read at all)."""
+        if self.held is None or self.held > today:
+            return False
+        return self.parked or self.fetched is None or self.fetched <= self.held
+
+
+def _freshness_lines(rows: Sequence[Freshness], today: date) -> list[str]:
+    if not rows:
+        return ["  Nothing tracked."]
+    never = date.min
+    lines = []
+    for row in sorted(rows, key=lambda r: (r.fetched or never, r.label)):
+        flag = "   <- refetch?" if row.needs_refetch(today) else ""
+        note = " (parked)" if row.parked else ""
+        lines.append(
+            f"  {row.label}: held {row.held or 'date unknown'}, "
+            f"fetched {row.fetched or 'never'}{note}{flag}"
+        )
+    return lines
+
+
 def build_report(
     period: Period,
     current: DateRange,
     figures: UsageFigures,
     previous: DateRange,
     before: UsageFigures,
+    freshness: Sequence[Freshness] | None = None,
+    today: date | None = None,
 ) -> tuple[str, str]:
-    """The subject and plain-text body of one report."""
+    """The subject and plain-text body of one report.
+
+    ``freshness`` is given only to the report that should carry it; ``today``
+    is what "held" is judged against.
+    """
     subject = f"Koalitionsberegner {period.value} usage: {current.describe()}"
     lines = [
         f"Usage for {current.describe()} (UTC).",
@@ -406,8 +443,9 @@ def build_report(
                 f"{figures.on(day, E.REQUEST_FILED.value, E.REQUEST_DUPLICATE.value):>10}"
             )
 
-    lines += [
-        "",
-        "Counts only: nothing in this report identifies a person or an election.",
-    ]
+    if freshness is not None:
+        lines += ["", "Data freshness (oldest fetch first; nothing is refetched on its own)"]
+        lines += _freshness_lines(freshness, today or current.end)
+
+    lines += ["", "Nothing in this report identifies a person."]
     return subject, "\n".join(lines) + "\n"

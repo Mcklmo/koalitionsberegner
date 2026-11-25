@@ -86,8 +86,27 @@ function syncUrl(indices, total) {
   if (currentId) history.replaceState(null, '', buildPath({ id: currentId, indices, total }));
 }
 
+// The owner's "refetch" button: only with the secret saved and a stored
+// election on screen, because the backend finds the tracked row by its hash.
+let currentHash = null;
+const refetchButton = byId('refetch');
+const refetchNote = byId('refetch-note');
+
+function updateRefetchButton() {
+  refetchButton.hidden = !(currentHash && readSecret());
+  if (refetchButton.hidden) refetchNote.hidden = true;
+}
+
+function setRefetchNote(text, kind = 'info') {
+  refetchNote.textContent = text;
+  refetchNote.className = `msg msg-${kind}`;
+  refetchNote.hidden = !text;
+}
+
 /** `electionHash` is this election's stored hash, or null when it has none (the bundled one). */
 function setShareTarget(electionHash) {
+  currentHash = electionHash ?? null;
+  updateRefetchButton();
   currentId = electionHash ? shareId(electionHash) : null;
   shareButton.hidden = !currentId;
   // Nothing to share means nothing to link to: an old `/e/<id>?...` left in
@@ -256,8 +275,36 @@ importUi = mountImportUi({
   },
 });
 
+refetchButton.addEventListener('click', async () => {
+  const hash = currentHash;
+  refetchButton.disabled = true;
+  setRefetchNote(t('refetch.working'));
+  try {
+    const result = await api.refetchElection(hash);
+    if (result.failed) {
+      setRefetchNote(t('refetch.failed', { error: result.error ?? '' }), 'error');
+      return;
+    }
+    const fresh = await api.getElection(hash);
+    if (fresh.election) {
+      render(fresh.election, { initialSelection: calculator.selection(), electionHash: hash });
+    }
+    await picker.refresh(api).catch(() => {});
+    setRefetchNote(t(result.skippedUnchanged ? 'refetch.unchanged' : 'refetch.done'), 'ok');
+  } catch (error) {
+    if (error.status === 403) adminUi.forget();
+    const text = error.status === 409 ? t('refetch.untracked') : t('refetch.failed', { error: error.message });
+    setRefetchNote(text, 'error');
+  } finally {
+    refetchButton.disabled = false;
+  }
+});
+
 const adminUi = mountAdmin({
-  onChange: (isAdmin) => importUi.setAdmin(isAdmin),
+  onChange: (isAdmin) => {
+    importUi.setAdmin(isAdmin);
+    updateRefetchButton();
+  },
   elements: {
     panel: byId('import'),
     form: byId('admin-form'),
@@ -269,6 +316,7 @@ const adminUi = mountAdmin({
 
 await importUi.start();
 importUi.setAdmin(Boolean(readSecret()));
+updateRefetchButton();
 
 // A shared link names an election by a prefix of its hash. Resolved after the
 // picker's list is loaded, so its search already includes it.
