@@ -27,9 +27,11 @@ import re
 import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
+from html import escape
 from threading import Lock
 from typing import Protocol
 
+from .mailer import preformatted
 from .observability import scrub
 
 log = logging.getLogger(__name__)
@@ -400,14 +402,18 @@ class Freshness:
         return self.parked or self.fetched is None or self.fetched <= self.held
 
 
+def _by_urgency(rows: Sequence[Freshness], today: date) -> list[Freshness]:
+    """Refetch suggestions first, then the most picked, then the oldest fetch."""
+    return sorted(
+        rows,
+        key=lambda r: (not r.needs_refetch(today), -r.weekly_picks, r.fetched or date.min, r.label),
+    )
+
+
 def _freshness_lines(rows: Sequence[Freshness], today: date) -> list[str]:
     if not rows:
         return ["  Nothing tracked."]
-    never = date.min
-    ordered = sorted(
-        rows,
-        key=lambda r: (not r.needs_refetch(today), -r.weekly_picks, r.fetched or never, r.label),
-    )
+    ordered = _by_urgency(rows, today)
     width = max(len(row.label) for row in ordered)
     lines = [
         f"  {'Election':<{width}}  {'Held':<10}  {'Fetched':<10}  {'Picks/wk':>8}  {'Parked':<6}  Refetch?".rstrip(),
@@ -422,6 +428,50 @@ def _freshness_lines(rows: Sequence[Freshness], today: date) -> list[str]:
         if row.link and row.needs_refetch(today):
             lines.append(f"    {row.link}")
     return lines
+
+
+_FRESHNESS_HEADING = (
+    "Data freshness (refetch suggestions first, then most picked; nothing is refetched on its own)"
+)
+_FOOTER = "Nothing in this report identifies a person."
+_CELL = "padding: 6px 4px; border-bottom: 1px solid #8886; text-align: left; vertical-align: top"
+
+
+def _freshness_table(rows: Sequence[Freshness], today: date) -> str:
+    """A real table: a long name wraps inside its cell, so the columns hold on a phone."""
+    def tr(cells: Sequence[str], tag: str = "td") -> str:
+        return "<tr>" + "".join(
+            # The dates must not break at their hyphens.
+            f'<{tag} style="{_CELL}{"; white-space: nowrap" if n else ""}">{cell}</{tag}>'
+            for n, cell in enumerate(cells)
+        ) + "</tr>"
+
+    lines = [tr(("Election", "Held", "Fetched", "Picks/wk", "Refetch"), "th")]
+    for row in _by_urgency(rows, today):
+        action = ""
+        if row.needs_refetch(today):
+            action = f'<a href="{escape(row.link)}">refetch</a>' if row.link else "yes"
+        parked = "<br><small>parked</small>" if row.parked else ""
+        lines.append(tr((
+            escape(row.label) + parked, str(row.held or "unknown"), str(row.fetched or "never"),
+            f"{row.weekly_picks:.1f}", action,
+        )))
+    return (
+        '<table style="border-collapse: collapse; width: 100%; max-width: 640px; '
+        'font-family: system-ui, sans-serif; font-size: 12px">' + "".join(lines) + "</table>"
+    )
+
+
+def html_report(body: str, freshness: Sequence[Freshness] | None, today: date) -> str:
+    """The HTML twin of a report ``body``, with the freshness rows as a table."""
+    if not freshness:
+        return preformatted(body)
+    before, _, _ = body.partition(_FRESHNESS_HEADING)
+    return (
+        preformatted(before + _FRESHNESS_HEADING)
+        + _freshness_table(freshness, today)
+        + preformatted(_FOOTER)
+    )
 
 
 def build_report(
@@ -465,8 +515,8 @@ def build_report(
             )
 
     if freshness is not None:
-        lines += ["", "Data freshness (refetch suggestions first, then most picked; nothing is refetched on its own)"]
+        lines += ["", _FRESHNESS_HEADING]
         lines += _freshness_lines(freshness, today or current.end)
 
-    lines += ["", "Nothing in this report identifies a person."]
+    lines += ["", _FOOTER]
     return subject, "\n".join(lines) + "\n"

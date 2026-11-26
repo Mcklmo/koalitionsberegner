@@ -33,10 +33,18 @@ class MailUnavailable(Exception):
     """The report could not be sent. Never carries the mail server's own words."""
 
 
+def preformatted(text: str) -> str:
+    """``text`` as HTML that keeps columns laid out with spaces."""
+    return (
+        '<pre style="font-family: ui-monospace, Menlo, Consolas, monospace; '
+        f'font-size: 13px; line-height: 1.4">{html.escape(text)}</pre>'
+    )
+
+
 class Mailer(Protocol):
     enabled: bool
 
-    def send(self, subject: str, body: str) -> None: ...
+    def send(self, subject: str, body: str, html_body: str | None = None) -> None: ...
 
 
 class DisabledMailer:
@@ -44,7 +52,7 @@ class DisabledMailer:
 
     enabled = False
 
-    def send(self, subject: str, body: str) -> None:
+    def send(self, subject: str, body: str, html_body: str | None = None) -> None:
         raise MailUnavailable("usage reports are not configured")
 
 
@@ -72,7 +80,7 @@ class SmtpMailer:
         self._smtp = smtp
         self._smtp_ssl = smtp_ssl
 
-    def message(self, subject: str, body: str) -> EmailMessage:
+    def message(self, subject: str, body: str, html_body: str | None = None) -> EmailMessage:
         message = EmailMessage()
         message["Subject"] = subject
         message["From"] = self._sender
@@ -81,15 +89,11 @@ class SmtpMailer:
         # The report is a table laid out with spaces. Mail clients such as Gmail
         # show plain text in a proportional font, which squeezes the indentation
         # and breaks the columns apart; the same text in <pre> keeps them.
-        message.add_alternative(
-            f'<pre style="font-family: ui-monospace, Menlo, Consolas, monospace; '
-            f'font-size: 13px; line-height: 1.4">{html.escape(body)}</pre>',
-            subtype="html",
-        )
+        message.add_alternative(html_body or preformatted(body), subtype="html")
         return message
 
-    def send(self, subject: str, body: str) -> None:
-        message = self.message(subject, body)
+    def send(self, subject: str, body: str, html_body: str | None = None) -> None:
+        message = self.message(subject, body, html_body)
         context = ssl.create_default_context()
         try:
             with io_span(log, "smtp", "send", host=self._host, recipients=len(self._recipients)):

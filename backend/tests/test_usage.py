@@ -21,6 +21,7 @@ from app.service import ImportService
 from app.sqlite_usage import SqliteUsageStore
 from app.store import InMemoryElectionStore
 from app.usage import (
+    html_report,
     gather,
     CAMPAIGN_SOURCES,
     DateRange,
@@ -472,7 +473,7 @@ class FakeMailer:
         self.sent: list[tuple[str, str]] = []
         self.fail = False
 
-    def send(self, subject, body):
+    def send(self, subject, body, html_body=None):
         if self.fail:
             raise MailUnavailable("could not send the report")
         self.sent.append((subject, body))
@@ -849,3 +850,19 @@ def test_a_failed_refresh_does_not_count_as_fetched():
     (row,) = _freshness(elections, tracked)
 
     assert row.fetched == date(1970, 1, 1)
+
+def test_the_html_report_lays_freshness_out_as_a_table_with_the_refetch_link():
+    current = period_range(Period.DAILY, MONDAY)
+    previous = previous_range(Period.DAILY, current)
+    url = "https://example.test/e/0123456789abcdef#refetch"
+    rows = [Freshness("Latvia <2026>", date(2026, 9, 1), None, parked=True, link=url)]
+    _, body = build_report(Period.DAILY, current, figures({}), previous, figures({}), rows, MONDAY)
+
+    message = smtp_mailer()[0].message("Subject", body, html_report(body, rows, MONDAY))
+
+    assert message.get_body(preferencelist=("plain",)).get_content() == body
+    rich = message.get_body(preferencelist=("html",)).get_content()
+    assert "<table" in rich and f'<a href="{url}">refetch</a>' in rich
+    assert "Latvia &lt;2026&gt;<br><small>parked</small>" in rich
+    assert rich.count(url) == 1, "no URL line left in the preformatted part"
+    assert "Nothing in this report identifies a person." in rich

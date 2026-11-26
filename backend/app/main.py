@@ -107,6 +107,7 @@ from .usage import (
     missed_key,
     entry_key,
     gather,
+    html_report,
     page_load_key,
     period_range,
     previous_range,
@@ -894,6 +895,7 @@ REPORT_SECRET_HEADER = "x-report-secret"
 class UsageReport(BaseModel):
     subject: str
     body: str
+    html: str
 
 
 class ReportRun(BaseModel):
@@ -964,17 +966,23 @@ def _usage_report(
     """The report for the last complete ``period`` before ``today``, and its key."""
     current = period_range(period, today)
     previous = previous_range(period, current)
+    rows = (
+        _with_picks(_freshness(store, tracked_store), usage, current.end)
+        if period is Period.DAILY else None
+    )
+    held_by = min(today, usage.today())
     subject, body = build_report(
         period,
         current,
         gather(usage.store, current),
         previous,
         gather(usage.store, previous),
-        freshness=_with_picks(_freshness(store, tracked_store), usage, current.end)
-        if period is Period.DAILY else None,
-        today=min(today, usage.today()),
+        freshness=rows,
+        today=held_by,
     )
-    return report_key(period, current), UsageReport(subject=subject, body=body)
+    return report_key(period, current), UsageReport(
+        subject=subject, body=body, html=html_report(body, rows, held_by)
+    )
 
 
 def require_schedule(x_report_secret: str | None = Header(default=None)) -> None:
@@ -1016,7 +1024,7 @@ async def send_usage_reports(
             _usage_report, Period.DAILY, today + timedelta(days=1), usage, store, tracked_store
         )
         try:
-            await run_in_threadpool(mailer.send, f"{report.subject} (so far)", report.body)
+            await run_in_threadpool(mailer.send, f"{report.subject} (so far)", report.body, report.html)
         except MailUnavailable as exc:
             raise HTTPException(502, detail=str(exc)) from None
         return ReportRun(sent=[key], skipped=[])
@@ -1029,7 +1037,7 @@ async def send_usage_reports(
             skipped.append(key)
             continue
         try:
-            await run_in_threadpool(mailer.send, report.subject, report.body)
+            await run_in_threadpool(mailer.send, report.subject, report.body, report.html)
         except MailUnavailable as exc:
             await run_in_threadpool(usage.store.release_report, key)
             raise HTTPException(502, detail=str(exc)) from None
