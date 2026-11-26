@@ -50,9 +50,16 @@ test('a year typed with a slip of the finger is read as what it means', () => {
   }
 });
 
+for (const year of ['', '   ', undefined, null]) {
+  test(`an empty year asks for the latest election: ${JSON.stringify(year)}`, () => {
+    const { valid, values, errors } = validateImportForm({ year, nation: 'Danmark' });
+    assert.ok(valid);
+    assert.deepEqual(errors, {});
+    assert.equal(values.year, null);
+  });
+}
+
 for (const [name, year] of [
-  ['empty', ''],
-  ['whitespace only', '   '],
   ['words', 'sometime'],
   ['too many digits', '20226'],
   ['before the range', String(MIN_YEAR - 1)],

@@ -1,11 +1,11 @@
 /**
- * The import form: check the year and the country are there, ask whether that
+ * The import form: check the country is there, ask whether that
  * election has been imported before, show what the server found — which
  * election it decided was meant, and the seats it read — and save only when the
  * user confirms.
  *
- * The user types a year and a place, not an address, and need not spell it
- * correctly. So the preview carries two things worth checking rather than one:
+ * The user types a place and, if they like, a year — not an address — and need
+ * not spell it correctly. So the preview carries two things worth checking rather than one:
  * the numbers, and the *identity* — if "Sachen-Anhalt 2026" was read as some
  * other election, this is where that shows, and the page it was read from is
  * named so it can be opened. That confirmation is the only thing standing
@@ -29,6 +29,13 @@
  * (`POST /api/elections/requests`). The fields are the same either way; the
  * button says which of the two it will do.
  *
+ * Without a year the user means "the latest election there". The server
+ * answers with the elections that may mean — the previous one, and the next
+ * one when it is less than a year away — and the user picks between the next
+ * election's polls and the previous election's result. Picking fills in that
+ * election's year and runs the ordinary import; with only one to offer, the
+ * page picks it by itself.
+ *
  * The election *picker* — search, grouping, keyboard nav — lives in
  * `js/picker.js` (plan 3, Section B). This module no longer renders it, but
  * still owns the one thing that must happen after a change here: telling the
@@ -40,7 +47,7 @@
 import { ApiError, ImportStatus } from './api.js';
 import { validateImportForm } from './import-form.js';
 import { forecastLabel, placeOf } from './picker.js';
-import { t } from './i18n.js';
+import { formatDate, t } from './i18n.js';
 
 /**
  * Why the server turned an import down, as the texts that say so in the page's
@@ -58,6 +65,12 @@ const REFUSALS = {
 const REQUEST_REFUSALS = {
   503: 'request.refusal.unavailable',
 };
+
+/** `YYYY-MM-DD` in the page's own words for a date. */
+function formatIsoDate(iso) {
+  const [year, month, day] = iso.split('-');
+  return formatDate({ day: Number(day), month: Number(month), year });
+}
 
 export function mountImportUi({
   api,
@@ -191,8 +204,64 @@ export function mountImportUi({
     show(el.preview, false);
   }
 
+  /**
+   * The elections a yearless request may mean. Two buttons, or — when only the
+   * previous election is worth offering — no question at all: its year is
+   * filled in and the import carries on.
+   */
+  async function renderElectionPick(result) {
+    const candidates = result.candidates ?? [];
+    if (candidates.length === 0) {
+      setMessage(t('import.failed', { error: t('pick.none') }), 'error');
+      return;
+    }
+    if (candidates.length === 1) {
+      await pickElection(candidates[0]);
+      return;
+    }
+    // Discarding goes through the same button as a list of polls does.
+    offered = { requestKey: result.requestKey, forecasts: [] };
+    el.choicesTitle.textContent = t('pick.title', { where: placeOf(candidates[0]) });
+    if (el.choicesHint) show(el.choicesHint, false);
+    el.choicesList.innerHTML = '';
+    for (const candidate of candidates) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'choice';
+      const which = document.createElement('span');
+      const date = formatIsoDate(candidate.electionDate);
+      which.textContent = candidate.which === 'upcoming'
+        ? t('pick.next', { date })
+        : t('pick.previous', { date });
+      const what = document.createElement('span');
+      what.className = 'choice-note';
+      // The resolver's name for it, as text: model output never becomes markup.
+      what.textContent = candidate.title;
+      button.append(which, what);
+      button.addEventListener('click', () => pickElection(candidate));
+      el.choicesList.appendChild(button);
+    }
+    show(el.choices, true);
+    setMessage(t('pick.message'), 'info');
+  }
+
+  /** Ask again for the picked election, this time with its year. */
+  async function pickElection(candidate) {
+    // A second click while the first is importing would clear its preview.
+    if (submitting) return;
+    el.year.value = String(candidate.year);
+    el.nation.value = candidate.nation;
+    el.subnation.value = candidate.state ?? '';
+    await requestOrImport({
+      year: candidate.year,
+      nation: candidate.nation,
+      subnation: candidate.state ?? '',
+    });
+  }
+
   function renderChoices(result) {
     offered = { requestKey: result.requestKey, forecasts: result.forecasts };
+    if (el.choicesHint) show(el.choicesHint, true);
     const [first] = result.forecasts;
     el.choicesTitle.textContent = t('choices.title', { where: placeOf(first), date: first.electionDate });
     el.choicesList.innerHTML = '';
@@ -281,6 +350,12 @@ export function mountImportUi({
         renderChoices(existing);
         return { valid: true };
       }
+      if (existing.status === ImportStatus.PICK) {
+        // The latest there was looked up a moment ago; picking is free too.
+        busy(false);
+        await renderElectionPick(existing);
+        return { valid: true };
+      }
 
       // An import already running, or already read and waiting to be checked —
       // from an earlier click, a reload, another tab — is picked up where it
@@ -367,6 +442,11 @@ export function mountImportUi({
     }
     if (result.status === ImportStatus.CHOOSE) {
       renderChoices(result);
+      return;
+    }
+    if (result.status === ImportStatus.PICK) {
+      busy(false);
+      await renderElectionPick(result);
       return;
     }
     pending = result;

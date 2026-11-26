@@ -19,11 +19,12 @@ import anyio.to_thread
 
 from .identity import election_hash, request_key
 from .observability import io_span, scrub
-from .parser import ElectionParser, ParseError
+from .parser import ElectionChoice, ElectionParser, ParseError
 from .schema import Election
 from .store import (
     Claim,
     ClaimOutcome,
+    ElectionCandidate,
     ElectionStore,
     ImportRequest,
     Job,
@@ -67,13 +68,14 @@ class ImportState(str, Enum):
     PENDING = "pending"    # an import is running; poll or wait
     PREVIEW = "preview"    # found and shown for confirmation; not saved yet
     CHOOSE = "choose"      # not held yet: its forecasts are offered; none saved yet
+    PICK = "pick"          # no year given: the elections it may mean are offered
     FAILED = "failed"      # the last import failed; importing again retries
     UNKNOWN = "unknown"    # nothing stored and no job for this request
 
 
 #: States a caller can stop polling on.
 TERMINAL_STATES = (
-    ImportState.READY, ImportState.PREVIEW, ImportState.CHOOSE,
+    ImportState.READY, ImportState.PREVIEW, ImportState.CHOOSE, ImportState.PICK,
     ImportState.FAILED, ImportState.UNKNOWN,
 )
 
@@ -94,6 +96,8 @@ class ImportResult:
     """True when this request turned out to name an already-stored election."""
     forecasts: tuple[Election, ...] = ()
     """In the CHOOSE state: the upcoming election's forecasts, newest first."""
+    candidates: tuple[ElectionCandidate, ...] = ()
+    """In the PICK state: the elections a request without a year may mean."""
 
 
 def identity_of(election: Election) -> str:
@@ -152,6 +156,13 @@ class ImportService:
         :meth:`peek` and :meth:`submit`. Only :meth:`submit` may throw the
         offer away, because only it holds the claim.
         """
+        if job is not None and job.status is JobStatus.AWAITING_ELECTION:
+            # "The next election" has been held since it was offered as one:
+            # offering it as next, and its polls, would be wrong now.
+            return any(
+                candidate.which == "upcoming" and candidate.election_date < self._today()
+                for candidate in job.candidates
+            )
         if job is None or job.status is not JobStatus.AWAITING_CHOICE or not job.forecasts:
             return False
         return all(forecast.election_date < self._today() for forecast in job.forecasts)
@@ -177,6 +188,11 @@ class ImportService:
             if job is not None and job.status is JobStatus.AWAITING_CHOICE:
                 return ImportResult(
                     key, ImportState.CHOOSE, forecasts=job.forecasts,
+                    attempt=job.attempt, reused=True,
+                )
+            if job is not None and job.status is JobStatus.AWAITING_ELECTION:
+                return ImportResult(
+                    key, ImportState.PICK, candidates=job.candidates,
                     attempt=job.attempt, reused=True,
                 )
             return ImportResult(
@@ -244,7 +260,9 @@ class ImportService:
                 log, "import", "run", request=key[:12], query=request.describe()
             ) as span:
                 outcome = await self._parser.parse(request)
-                if isinstance(outcome, list):
+                if isinstance(outcome, ElectionChoice):
+                    span["candidates"] = len(outcome.candidates)
+                elif isinstance(outcome, list):
                     span["forecasts"] = len(outcome)
                 else:
                     span["identity"] = identity_of(outcome)[:12]
@@ -254,6 +272,9 @@ class ImportService:
             log.info("failed request=%s reason=%s", key[:12], scrub(exc))
             return
 
+        if isinstance(outcome, ElectionChoice):
+            await self._offer_elections(key, outcome, failed)
+            return
         if isinstance(outcome, list):
             await self._offer(key, outcome, failed)
             return
@@ -302,6 +323,23 @@ class ImportService:
             log.exception("offering %s failed", key)
             await failed(IMPORT_FAILED)
 
+    async def _offer_elections(self, key: str, choice: ElectionChoice, failed) -> None:
+        """Hold the elections a yearless request may mean, for the user to pick.
+
+        Even a single one is held rather than imported straight away: picking
+        is a request with a year, keyed as such, so what it imports is shared
+        with — and served from storage for — anyone who asks for that year.
+        """
+        try:
+            await self._in_thread(self._store.offer_elections, key, list(choice.candidates))
+            log.info(
+                "offered request=%s candidates=%s awaiting a pick",
+                key[:12], len(choice.candidates),
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("offering elections for %s failed", key)
+            await failed(IMPORT_FAILED)
+
     async def status(self, key: str) -> ImportResult:
         # The very read a claim decides on, so a poll and asking again cannot
         # disagree about whether an import is still alive.
@@ -334,6 +372,13 @@ class ImportService:
                 return ImportResult(key, ImportState.UNKNOWN)
             return ImportResult(
                 key, ImportState.CHOOSE, forecasts=job.forecasts, attempt=job.attempt
+            )
+        if job.status is JobStatus.AWAITING_ELECTION:
+            if self._offer_is_stale(job):
+                # The next election has been held since; asking again renames both.
+                return ImportResult(key, ImportState.UNKNOWN)
+            return ImportResult(
+                key, ImportState.PICK, candidates=job.candidates, attempt=job.attempt
             )
         return ImportResult(key, ImportState.PENDING, attempt=job.attempt)
 

@@ -1,14 +1,15 @@
 /**
  * Client-side validation of the import form.
  *
- * Three fields: the year, the nation, and — for a regional election — the
- * region within it. Spelling is deliberately *not* checked. The server's
+ * Three fields: the nation, the year, and — for a regional election — the
+ * region within it. The year may be left empty, which asks for the latest
+ * election there. Spelling is deliberately *not* checked. The server's
  * resolver is there to read "Sachen-Anhalt" as Saxony-Anhalt and to say so in
  * the preview, and a form that rejected it first would be refusing the one
  * thing that makes this worth typing instead of hunting for a results page.
  *
  * So this only catches what no amount of interpretation can fix: a missing
- * country, and a year that is not a year. The year is read the way the backend
+ * country, and a year, where one is given, that is not a year. The year is read the way the backend
  * reads it (app/identity.py), including the digits a hand misses on the number
  * row, so the two cannot disagree about what is acceptable.
  */
@@ -50,9 +51,8 @@ export function validateImportForm(input = {}) {
   const values = { year, nation, subnation: subnation || null };
   const errors = {};
 
-  if (!String(input.year ?? '').trim()) {
-    errors.year = t('form.yearMissing');
-  } else if (year === null) {
+  // An empty year is "the latest", and stays null; only a typed one is checked.
+  if (String(input.year ?? '').trim() && year === null) {
     errors.year = t('form.yearInvalid', { min: MIN_YEAR, max: MAX_YEAR });
   }
   if (!nation) {

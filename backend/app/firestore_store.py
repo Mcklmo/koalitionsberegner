@@ -29,6 +29,7 @@ from .store import (
     Claim,
     ClaimOutcome,
     Confirmation,
+    ElectionCandidate,
     ImportRequest,
     Job,
     JobStatus,
@@ -82,6 +83,9 @@ def _job_from_doc(request_key: str, data: dict) -> Job:
         # A staged draft is re-validated on read like anything else from storage.
         result=Election.model_validate(result) if result else None,
         forecasts=tuple(Election.model_validate(item) for item in data.get("forecasts") or ()),
+        candidates=tuple(
+            ElectionCandidate.model_validate(item) for item in data.get("candidates") or ()
+        ),
     )
 
 
@@ -263,6 +267,7 @@ class FirestoreElectionStore:
                     "error": None,
                     "result": None,
                     "forecasts": None,
+                    "candidates": None,
                 },
             )
             return Claim(ClaimOutcome.STARTED, request_key, job=new_job)
@@ -281,6 +286,7 @@ class FirestoreElectionStore:
                     "status": JobStatus.AWAITING_CONFIRMATION.value,
                     "result": election.model_dump(mode="json"),
                     "forecasts": None,
+                    "candidates": None,
                     "error": None,
                     # Restart the lease so the user gets a full window to confirm.
                     "started_at": self._clock(),
@@ -295,9 +301,26 @@ class FirestoreElectionStore:
                 {
                     "status": JobStatus.AWAITING_CHOICE.value,
                     "forecasts": [f.model_dump(mode="json") for f in forecasts],
+                    "candidates": None,
                     "result": None,
                     "error": None,
                     # Restart the lease so the user gets a full window to choose.
+                    "started_at": self._clock(),
+                },
+                merge=True,
+            )
+
+    def offer_elections(self, request_key: str, candidates: list[ElectionCandidate]) -> None:
+        with io_span(log, "firestore", "offer_elections", request=request_key[:12],
+                     candidates=len(candidates)):
+            self._job_ref(request_key).set(
+                {
+                    "status": JobStatus.AWAITING_ELECTION.value,
+                    "candidates": [c.model_dump(mode="json") for c in candidates],
+                    "forecasts": None,
+                    "result": None,
+                    "error": None,
+                    # Restart the lease so the user gets a full window to pick.
                     "started_at": self._clock(),
                 },
                 merge=True,
@@ -404,7 +427,7 @@ class FirestoreElectionStore:
             batch.set(
                 self._job_ref(request_key),
                 {"status": JobStatus.SUCCEEDED.value, "result": None, "forecasts": None,
-                 "owner": None, "finished_at": linked_at},
+                 "candidates": None, "owner": None, "finished_at": linked_at},
                 merge=True,
             )
             batch.commit()
@@ -436,6 +459,7 @@ class FirestoreElectionStore:
                     "error": error[:1000],
                     "result": None,
                     "forecasts": None,
+                    "candidates": None,
                     "owner": None,
                     "finished_at": self._clock(),
                 },

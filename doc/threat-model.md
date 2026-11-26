@@ -14,8 +14,13 @@ it is stored, and that renders as inert text either way.
 ## The pipeline
 
 ```
- user types year + place
+ user types place (+ year)
         │
+        ├─ no year ─▶ [0a] resolve_latest   resolver.py ── identities only: the
+        │               previous and next    parser.py     previous and the next
+        │               election; the user                 election, offered by a
+        │               picks one, and it                  rule in code; nothing is
+        │               comes back with a year             fetched or read
         ▼
  [0] resolver agent         resolver.py  ── the typed text and today's date, a
         │  one election,       search.py     hosted search, and an output of one
@@ -65,7 +70,7 @@ from, and the preview always names it.
 
 | Input | Trusted? | Notes |
 | --- | --- | --- |
-| What the user typed | Partly | A year and a place, from our own user. Length-capped and stripped of control and direction-changing characters, then passed on as typed — misspellings are the resolver's job. |
+| What the user typed | Partly | A place and, optionally, a year, from our own user. Length-capped and stripped of control and direction-changing characters, then passed on as typed — misspellings are the resolver's job. |
 | A URL from the resolver | No | Produced by a model that read search results. Only `http(s)` addresses survive `resolver.clean_sources`, and each is fetched under the same SSRF checks as anything else. |
 | The fetched page | No | Fully attacker-controlled bytes. Every field of an imported election ultimately derives from it. |
 | The model's output | No | It read untrusted input, so its answer is untrusted too. Constrained by the output schema, then re-validated. |
@@ -302,7 +307,12 @@ fetch, so the narrowing is where the safety is:
   refused — being named by a model earns an address nothing.
 - **A page that is not the election asked for is discarded in code.**
   `parser.is_wanted` requires the year to match the user's own input and the
-  nation and region to match the resolution. The neighbouring region and the
+  nation and region to match the resolution. Asked for without a year, the
+  year is instead one the user picked from the resolver's short list
+  (`parser.choose_candidates`, whose rule is code, not the model's): the
+  follow-up request carries it, and every check here applies to it unchanged.
+  That list is only names and dates — `resolver.LatestElections` has no field
+  for an address — and reaches the page as text. The neighbouring region and the
   previous election are the wrong answers that do not look wrong, so they are
   refused before anything is staged, however cleanly they extracted.
 - **Nothing is stored silently.** The election is attributed to the page it was

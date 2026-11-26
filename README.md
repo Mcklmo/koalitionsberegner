@@ -8,8 +8,8 @@ every number and name it shows comes from an election that passed the same
 schema check, whether it is the one bundled with the page, one a visitor
 asked for, or one the app went and read on its own.
 
-Elections get in three ways: a visitor names a year and a place and the
-server reads the official results itself; the owner imports one directly,
+Elections get in three ways: a visitor names a place — and a year, if they
+want a particular one — and the server reads the official results itself; the owner imports one directly,
 poll by poll; or the app tracks an election ahead of time from a public
 calendar and reads it on a schedule that tightens as the day approaches,
 without anyone asking (`doc/plans/03-remaining-work.md`, Section A). Nothing
@@ -28,6 +28,13 @@ extraction agent as fenced data, validated against the canonical schema, and
 shown to the user for confirmation before anything is stored — and every
 extracted string reaches the DOM as text, never as markup. See
 [doc/threat-model.md](doc/threat-model.md).
+
+Leave the year out and the server looks up the latest election there. When
+the next one is less than a year away, whether its day has been set or is only
+the last one it can legally be held on, the page asks which is wanted: the next
+election's newest polls, or the previous election's result. Otherwise it goes
+straight to the previous election's result. Either way the pick is imported
+exactly as if its year had been typed.
 
 An election that has not been held yet has no seats, so asking for one reads its
 opinion polls instead and offers the newest of them as a list. The user picks a

@@ -1,7 +1,11 @@
 """Turning "Sachen-Anhalt 2026" into one election, and into pages that report it.
 
-The user types a year, a nation, and — for a regional election — a region. That
-is all: no URL, nothing to look up, and no obligation to spell it correctly.
+The user types a nation, and — for a regional election — a region, and
+optionally a year. That is all: no URL, nothing to look up, and no obligation to
+spell it correctly. Without a year the question is a smaller one first — which
+elections could "the latest" mean there (:meth:`AnthropicResolver.resolve_latest`)
+— and the answer is only identities, which the user picks between before the
+ordinary resolution runs with the year they picked.
 Something has to turn that into *which election* they mean and *where its seats
 are published*, and this module is that something.
 
@@ -29,7 +33,7 @@ misreading gets caught — by the user, before anything is saved.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal, Protocol
 from urllib.parse import urlparse
 
@@ -60,19 +64,24 @@ MAX_SOURCE_CHARS = 2_000
 #: resolver's words, so they get a length like any other model output.
 MAX_TERMS_CHARS = 200
 
-SYSTEM_PROMPT = """\
+#: How to read a place someone typed from memory. Shared by both prompts, so
+#: the yearless question and the one that follows it understand a name alike.
+READING_RULES = """\
+- Correct misspellings and missing accents: "Germny" is Germany, "Sachen-Anhalt"
+  is Saxony-Anhalt, "Osterreich" is Austria.
+- Accept the name in any language, an abbreviation, an adjective, or a former
+  name: "Danmark", "DK", "Danish", "Holland" for the Netherlands.
+- A region may be given as its local or its English name, and may be a state,
+  province, Land, canton, or autonomous community."""
+
+SYSTEM_PROMPT = f"""\
 You work out which election a person is asking about, and where its results are
 published.
 
 You are given a year, a nation, and sometimes a region within that nation. This
 is what someone typed from memory, so read it generously:
 
-- Correct misspellings and missing accents: "Germny" is Germany, "Sachen-Anhalt"
-  is Saxony-Anhalt, "Osterreich" is Austria.
-- Accept the name in any language, an abbreviation, an adjective, or a former
-  name: "Danmark", "DK", "Danish", "Holland" for the Netherlands.
-- A region may be given as its local or its English name, and may be a state,
-  province, Land, canton, or autonomous community.
+{READING_RULES}
 
 Then identify the election:
 
@@ -120,6 +129,45 @@ the rest as your best guess:
 - "unknown_place" when the nation or region is not a place you can identify;
 - "no_election" when that place holds no such election in that year;
 - "ambiguous" when the request fits more than one election and nothing chooses
+  between them.\
+"""
+
+#: The yearless question only needs dates and names, not sources: a couple of
+#: searches to check what has happened since the model last read about it.
+LATEST_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
+
+LATEST_SYSTEM_PROMPT = f"""\
+You work out which elections a person could mean by "the latest election" in a
+place.
+
+You are given a nation, and sometimes a region within that nation, but no year.
+This is what someone typed from memory, so read it generously:
+
+{READING_RULES}
+
+If a region is named, the elections are those of that region's own assembly —
+the Landtag, parliament, or council elected in that region. If no region is
+named, they are those of the national parliament.
+
+Name two elections of that assembly:
+
+- previous: the most recent one whose seats have been allocated. Give the date
+  it was held as YYYY-MM-DD; for an election held over several days, the last of
+  them.
+- upcoming: the next one — one still to be held, one being held today, or one
+  whose votes are still being counted. Give the day it is held or scheduled for
+  or, when no day has been set, the last day on which it can be held. Null only
+  when no further election of that assembly is due at all.
+
+Today's date is given. Search to check both: an election you remember as
+upcoming may have been held since, and a snap election may have been called.
+Give each a human-readable title, and the nation and region in English, the
+region as null for a national election.
+
+If you cannot get there, fill in unresolved_reason instead:
+- "unknown_place" when the nation or region is not a place you can identify;
+- "no_election" when that place does not elect such an assembly;
+- "ambiguous" when the request fits more than one assembly and nothing chooses
   between them.\
 """
 
@@ -207,9 +255,44 @@ class ResolvedElection(BaseModel):
         return f"{where} {self.election_date}"
 
 
+class LatestEntry(BaseModel):
+    """One of the two elections "the latest" may mean: a date and a name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    election_date: str = Field(description="Date it is or was held, as YYYY-MM-DD.")
+    title: str = Field(description="Human-readable name of the election.")
+
+
+class LatestElections(BaseModel):
+    """Exactly what the resolver may say about a request without a year."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nation: str = Field(description="The nation, in English.")
+    state: str | None = Field(
+        default=None,
+        description="The region whose own assembly is elected, in English; null if national.",
+    )
+    previous: LatestEntry | None = Field(
+        default=None, description="The most recent election whose seats have been allocated."
+    )
+    upcoming: LatestEntry | None = Field(
+        default=None, description="The next election, not yet counted; null if none is due."
+    )
+    unresolved_reason: UnresolvedReason | None = Field(
+        default=None,
+        description="Why the request could not be resolved; null when it was.",
+    )
+
+
 class ElectionResolver(Protocol):
     async def resolve(self, request: ImportRequest) -> ResolvedElection:
         """Which election ``request`` means, and where its seats are published."""
+        ...
+
+    async def resolve_latest(self, request: ImportRequest) -> LatestElections:
+        """The previous and the next election ``request``'s place holds; no year given."""
         ...
 
 
@@ -242,10 +325,11 @@ def build_user_message(request: ImportRequest, today: date) -> str:
     The date matters: whether an election has happened yet is the difference
     between "here are the seats" and "that vote has not been held".
     """
+    year = request.year if request.year is not None else "(none given — the latest)"
     lines = [
         f"Today is {today.isoformat()}.",
         "",
-        f"Year: {request.year}",
+        f"Year: {year}",
         f"Nation: {request.nation}",
     ]
     if request.subnation:
@@ -270,6 +354,19 @@ def build_request(request: ImportRequest, *, model: str, today: date) -> dict:
         "tools": [SEARCH_TOOL],
         "messages": [{"role": "user", "content": build_user_message(request, today)}],
         "output_format": ResolvedElection,
+    }
+
+
+def build_latest_request(request: ImportRequest, *, model: str, today: date) -> dict:
+    """Every argument the yearless call is allowed to carry. Like :func:`build_request`,
+    with a smaller search budget and an answer that names no page at all."""
+    return {
+        "model": model,
+        "max_tokens": MAX_TOKENS,
+        "system": LATEST_SYSTEM_PROMPT,
+        "tools": [LATEST_SEARCH_TOOL],
+        "messages": [{"role": "user", "content": build_user_message(request, today)}],
+        "output_format": LatestElections,
     }
 
 
@@ -320,6 +417,27 @@ class AnthropicResolver:
             span["sources"] = len(resolved.sources)
         return resolved
 
+    async def resolve_latest(self, request: ImportRequest) -> LatestElections:
+        from .parser import ParseError
+
+        with io_span(log, "anthropic", "resolve_latest", model=self._model) as span:
+            response = await self._get_client().messages.parse(
+                **build_latest_request(request, model=self._model, today=self._clock())
+            )
+            span["stop_reason"] = getattr(response, "stop_reason", None)
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                span["input_tokens"] = getattr(usage, "input_tokens", None)
+                span["output_tokens"] = getattr(usage, "output_tokens", None)
+
+            if response.stop_reason == "refusal":
+                raise ParseError("the model declined to look this election up")
+            if response.parsed_output is None:
+                raise ParseError("the model returned no structured result")
+            latest = response.parsed_output
+            span["reason"] = latest.unresolved_reason or "resolved"
+        return latest
+
 
 class MockResolver:
     """Reads the request back, without calling the API. The default, for now.
@@ -363,13 +481,41 @@ class MockResolver:
             span["sources"] = len(resolved.sources)
         return resolved
 
+    async def resolve_latest(self, request: ImportRequest) -> LatestElections:
+        """One election held three years ago and one due in six months.
+
+        Near enough that mock mode offers the pick between the two, and each
+        lands in a year :meth:`resolve` will answer for in kind: the previous
+        one held, the next one upcoming.
+        """
+        self.calls.append(request)
+        today = self._clock()
+        held = date(today.year - 3, 6, 6)
+        due = today + timedelta(days=180)
+        where = f"{request.nation} — {request.subnation}" if request.subnation else request.nation
+        with io_span(log, "anthropic", "resolve_latest", model="mock") as span:
+            span["reason"] = "resolved"
+        return LatestElections(
+            nation=request.nation,
+            state=request.subnation,
+            previous=LatestEntry(election_date=held.isoformat(), title=f"{where} {held.year}"),
+            upcoming=LatestEntry(election_date=due.isoformat(), title=f"{where} {due.year}"),
+        )
+
 
 class StubResolver:
     """Returns what a test staged, and records what it was asked."""
 
-    def __init__(self, resolved: ResolvedElection | None = None, *, error: Exception | None = None):
+    def __init__(
+        self,
+        resolved: ResolvedElection | None = None,
+        *,
+        error: Exception | None = None,
+        latest: LatestElections | None = None,
+    ):
         self.resolved = resolved
         self.error = error
+        self.latest = latest
         self.calls: list[ImportRequest] = []
 
     async def resolve(self, request: ImportRequest) -> ResolvedElection:
@@ -379,3 +525,11 @@ class StubResolver:
         if self.resolved is None:
             raise AssertionError("StubResolver was not given anything to return")
         return self.resolved
+
+    async def resolve_latest(self, request: ImportRequest) -> LatestElections:
+        self.calls.append(request)
+        if self.error is not None:
+            raise self.error
+        if self.latest is None:
+            raise AssertionError("StubResolver was not given a latest answer to return")
+        return self.latest
