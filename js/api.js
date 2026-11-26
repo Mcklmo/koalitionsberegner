@@ -224,8 +224,10 @@ export function createApiClient({ baseUrl = '', fetch: fetchImpl, getAdminSecret
       );
     },
 
-    async getElection(electionHash) {
-      return toResult(await request(`/api/elections/${encodeURIComponent(electionHash)}`));
+    /** `picked`: the visitor chose it in the picker, which the origin counts. */
+    async getElection(electionHash, { picked = false } = {}) {
+      const suffix = picked ? '?picked=true' : '';
+      return toResult(await request(`/api/elections/${encodeURIComponent(electionHash)}${suffix}`));
     },
 
     /** The server finds the election; we send only which one is wanted. */

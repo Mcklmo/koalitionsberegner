@@ -170,7 +170,9 @@ RUN=https://koalitionsberegner-711803377000.europe-north1.run.app
 # {"sent":["daily:…"],"skipped":[]} and an email; run it again and it is "skipped"
 ```
 
-A report sent this way is not sent again: the next scheduled run lists that day's daily
+With `?today=true` instead, it mails today so far, any number of times.
+
+A report sent with `period` is not sent again: the next scheduled run lists that day's daily
 report under `skipped`.
 
 What is counted, and why it is only counts, is in `backend/app/usage.py`.

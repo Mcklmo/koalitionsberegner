@@ -307,7 +307,8 @@ takes up to `REFRESH_MAX_PER_TICK` due rows, so call it again until
 
 The daily usage mail ends with "Data freshness": every stored election that
 is not final or untracked — tracked or imported by hand, no difference — with
-the day it was held and the day it was last fetched, oldest fetch first.
+the day it was held and the day it was last fetched. Rows to refetch come
+first, then the most picked.
 `<- refetch?` marks one that was held and not read since (or is parked). To
 refetch one, click the link printed under its row (`/e/<id>#refetch`) in a
 browser where the admin secret is saved (`#admin`), or open it and press

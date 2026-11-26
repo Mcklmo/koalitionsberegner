@@ -94,15 +94,15 @@ language of their own.
 The owner gets a daily, weekly and monthly email about how the app is used:
 
 - page loads by language
-- elections picked
+- elections picked in the search list, in total and per election
 - imports started, saved and discarded, and how many failed
 - requests filed
 - searches that matched no election, as place and year, top 15 (cut to ASCII letters and a year; at most 200 distinct a day)
 - shared-link previews built (`GET /api/elections/<id>/card`), at most once per link per hour, crawlers included — nothing about who opened it or which election
-- in the daily one, each stored election's date held and date last fetched, flagged `<- refetch?` when it was held and not read since (nothing refreshes on its own)
+- in the daily one, each stored election's date held, date last fetched and average picks per week over the last 4 weeks, flagged `<- refetch?` when it was held and not read since (nothing refreshes on its own)
 
 Only counts are stored: a day is a handful of numbers, and nothing says who,
-which election, or from where. There are no accounts, so there is nothing per
+or from where. There are no accounts, so there is nothing per
 person to count either. Nothing new runs in the browser: page loads are
 counted from the config request the page already makes. The page's
 *Privacy* section says what is processed and why. See `backend/app/usage.py`,
@@ -112,20 +112,26 @@ schedule.
 When someone asks to see, correct or delete their data, follow
 [doc/privacy-requests.md](doc/privacy-requests.md).
 
-Try it locally. Ungated, so every caller is an administrator; add the four
-`SMTP_*`/`REPORT_EMAIL_TO` variables from `.env.example` to really send email:
+### Send a usage mail
+
+Mails today (UTC) up to now from the deployed app, as often as you call it,
+without affecting the scheduled mail. Needs `gcloud` access to the project.
 
 ```sh
-cd backend
-ELECTION_STORE=sqlite uv run uvicorn app.main:app --reload
-
-# in a second terminal: open http://localhost:8000 and click around, then
-TOMORROW=$(date -u -d tomorrow +%F 2>/dev/null || date -u -v+1d +%F)
-curl -s "localhost:8000/api/admin/usage?period=weekly&before=$TOMORROW" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"])'
-curl -s -X POST -H 'x-report-secret: local-report-secret-at-least-32-chars' 'localhost:8000/api/internal/usage-reports?period=daily'   # 502 until SMTP is set
-
-uv run pytest tests/test_usage.py       # the counting, the reports and the endpoints
+RUN=https://koalitionsberegner-711803377000.europe-north1.run.app
+secret() {
+  gcloud secrets versions access latest \
+    --secret "$1" --project koalitionsberegner
+}
+{
+  printf 'x-origin-secret: %s\n' "$(secret ORIGIN_SECRET)"
+  printf 'x-report-secret: %s\n' "$(secret USAGE_REPORT_SECRET)"
+} | curl -s -X POST -H @- \
+  "$RUN/api/internal/usage-reports?today=true"
 ```
+
+Instead of `today=true`, `period=daily`, `period=weekly` or `period=monthly`
+mails the last complete period, once.
 
 ## Licence
 

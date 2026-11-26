@@ -5,8 +5,8 @@ one, ask for one — without reading logs. What is kept for that is deliberately
 thin, because the code is public and the people using it are in the EU:
 
 * **Counters, not events.** A day is a handful of numbers: how many elections
-  were picked, how many imports started. Nothing says who, which election, or
-  from where, so the counters are not personal data once written. There are no
+  were picked (and how often each one), how many imports started. Nothing says
+  who or from where, so the counters are not personal data once written. There are no
   accounts, so there is nothing per person to count either.
 * **Nothing new in the browser.** Page loads are counted from the config
   request the page already makes, with the language the browser already sends.
@@ -128,6 +128,11 @@ def missed_key(nation: str, subnation: str | None, year: int | None) -> str | No
         return None
     place = "__".join(part.replace(" ", "_") for part in parts)
     return MISSED_PREFIX + (f"{place}_{year}" if year else place)
+
+
+#: One counter per election chosen in the picker, per day; the suffix is its label.
+PICKED_PREFIX = "picked_"
+PICKS_WEEKS = 4
 
 
 class UsageStore(Protocol):
@@ -360,19 +365,19 @@ def _line(label: str, now: int, before: int) -> str:
     return f"  {label:<{LABEL_WIDTH}}{now:>7}   ({sign}{abs(change)})"
 
 
-def _missed_lines(figures: UsageFigures, top: int = 15) -> list[str]:
+def _ranked_lines(figures: UsageFigures, prefix: str, top: int | None = None) -> list[str]:
+    """Every counter under ``prefix``, summed over the period, biggest first."""
     totals: dict[str, int] = {}
     for counts in figures.daily.values():
         for key, count in counts.items():
-            if key.startswith(MISSED_PREFIX):
+            if key.startswith(prefix):
                 totals[key] = totals.get(key, 0) + count
     if not totals:
         return ["  Nothing."]
     ranked = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
-    return [
-        f"  {key[len(MISSED_PREFIX):].replace('__', ' / ').replace('_', ' '):<{LABEL_WIDTH}}{count:>7}"
-        for key, count in ranked
-    ]
+    names = [(key[len(prefix):].replace("__", " / ").replace("_", " "), count) for key, count in ranked]
+    width = max(LABEL_WIDTH, *(len(name) + 2 for name, _ in names))
+    return [f"  {name:<{width}}{count:>7}" for name, count in names]
 
 
 @dataclass(frozen=True)
@@ -385,6 +390,8 @@ class Freshness:
     parked: bool = False
     #: The page's own link that refetches this election, for an admin with the key saved.
     link: str = ""
+    #: Picks in the search list per week, averaged over :data:`PICKS_WEEKS`.
+    weekly_picks: float = 0.0
 
     def needs_refetch(self, today: date) -> bool:
         """Held, and not read since the day it was held (or never read at all)."""
@@ -397,15 +404,19 @@ def _freshness_lines(rows: Sequence[Freshness], today: date) -> list[str]:
     if not rows:
         return ["  Nothing tracked."]
     never = date.min
-    ordered = sorted(rows, key=lambda r: (r.fetched or never, r.label))
+    ordered = sorted(
+        rows,
+        key=lambda r: (not r.needs_refetch(today), -r.weekly_picks, r.fetched or never, r.label),
+    )
     width = max(len(row.label) for row in ordered)
     lines = [
-        f"  {'Election':<{width}}  {'Held':<10}  {'Fetched':<10}  {'Parked':<6}  Refetch?".rstrip(),
-        f"  {'':-<{width}}  {'':-<10}  {'':-<10}  {'':-<6}  --------",
+        f"  {'Election':<{width}}  {'Held':<10}  {'Fetched':<10}  {'Picks/wk':>8}  {'Parked':<6}  Refetch?".rstrip(),
+        f"  {'':-<{width}}  {'':-<10}  {'':-<10}  {'':-<8}  {'':-<6}  --------",
     ]
     for row in ordered:
         lines.append((
             f"  {row.label:<{width}}  {str(row.held or 'unknown'):<10}  {str(row.fetched or 'never'):<10}"
+            f"  {row.weekly_picks:>8.1f}"
             f"  {'yes' if row.parked else '':<6}  {'<- refetch?' if row.needs_refetch(today) else ''}"
         ).rstrip())
         if row.link and row.needs_refetch(today):
@@ -436,8 +447,11 @@ def build_report(
         lines += ["", heading]
         lines += [_line(label, figures.total(key), before.total(key)) for label, key in rows]
 
+    lines += ["", "Picked elections"]
+    lines += _ranked_lines(figures, PICKED_PREFIX)
+
     lines += ["", "Searched, not found (top 15)"]
-    lines += _missed_lines(figures)
+    lines += _ranked_lines(figures, MISSED_PREFIX, 15)
 
     if period is not Period.DAILY:
         lines += ["", "Day by day", f"  {'Day':<12}{'Loads':>7}{'Picked':>8}{'Imports':>9}{'Requests':>10}"]
@@ -451,7 +465,7 @@ def build_report(
             )
 
     if freshness is not None:
-        lines += ["", "Data freshness (oldest fetch first; nothing is refetched on its own)"]
+        lines += ["", "Data freshness (refetch suggestions first, then most picked; nothing is refetched on its own)"]
         lines += _freshness_lines(freshness, today or current.end)
 
     lines += ["", "Nothing in this report identifies a person."]

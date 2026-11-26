@@ -21,6 +21,7 @@ from app.service import ImportService
 from app.sqlite_usage import SqliteUsageStore
 from app.store import InMemoryElectionStore
 from app.usage import (
+    gather,
     CAMPAIGN_SOURCES,
     DateRange,
     Freshness,
@@ -219,8 +220,8 @@ def test_the_freshness_section_flags_what_was_held_and_not_read_since():
         "Never read 2026", "Read the day it was held 2026", "Parked 2026",
     ]
     lines = [line.split() for line in body.splitlines()]
-    assert ["Never", "read", "2026", "2026-09-01", "never", "<-", "refetch?"] in lines
-    assert ["Upcoming", "2027", "2027-05-01", "never"] in lines, "not held yet, so no flag"
+    assert ["Never", "read", "2026", "2026-09-01", "never", "0.0", "<-", "refetch?"] in lines
+    assert ["Upcoming", "2027", "2027-05-01", "never", "0.0"] in lines, "not held yet, so no flag"
 
 
 def test_the_report_has_no_freshness_section_unless_it_is_given_rows():
@@ -551,9 +552,11 @@ def test_an_import_is_counted_from_its_start_to_it_being_saved_and_picked(client
     saved = save(client)
     again = client.post("/api/elections/import?wait_seconds=2", json=BODY)
     assert again.json()["state"] == "ready"
-    client.get(f"/api/elections/{saved['election_hash']}")
+    client.get(f"/api/elections/{saved['election_hash']}?picked=true")
 
-    assert counted(usage) == {
+    figures_now = counted(usage)
+    assert [k for k in figures_now if k.startswith("picked_")] != []
+    assert {k: v for k, v in figures_now.items() if not k.startswith("picked_")} == {
         "import_started": 1,
         "import_saved_result": 1,
         "election_picked": 1,
@@ -763,3 +766,86 @@ def test_a_refetch_row_carries_the_pages_own_link(monkeypatch):
         [row], date(2026, 9, 1),
     )
     assert f"    {row.link}" in body.splitlines(), "flagged rows list their link under them"
+
+
+def test_only_a_pick_in_the_picker_is_counted_and_listed_per_election(client, usage):
+    from tests.factories import make_election
+    from app.service import identity_of
+
+    store = main.app.dependency_overrides[main.get_service]()._store
+    election = make_election(nation="Danmark", election_date=date(2026, 3, 25))
+    store.put_election(identity_of(election), election, provenance="manual")
+    election_hash = store.list_elections()[0].election_hash
+
+    assert client.get(f"/api/elections/{election_hash}").status_code == 200
+    assert "election_picked" not in counted(usage), "a landing or shared link is not a pick"
+    for _ in range(2):
+        client.get(f"/api/elections/{election_hash}?picked=true")
+
+    assert counted(usage)["picked_Danmark 2026"] == 2
+    current = DateRange(MONDAY, MONDAY + timedelta(days=1))
+    _, body = build_report(Period.DAILY, current, gather(usage.store, current), current, figures({}))
+    assert ["Danmark", "2026", "2"] in [line.split() for line in body.splitlines()]
+
+
+def test_today_so_far_is_mailed_every_time_and_claims_nothing(client, usage, mailer, monkeypatch):
+    monkeypatch.setenv("USAGE_REPORT_SECRET", "r" * 64)
+    usage.store.increment(MONDAY, "election_picked")
+    headers = {"x-report-secret": "r" * 64}
+
+    for _ in range(2):
+        response = client.post("/api/internal/usage-reports?today=true", headers=headers)
+        assert response.json() == {"sent": [f"daily:{MONDAY.isoformat()}"], "skipped": []}
+
+    assert len(mailer.sent) == 2
+    assert usage.store.claim_report(f"daily:{MONDAY.isoformat()}"), "the real report is still due"
+
+
+def test_the_freshness_rows_carry_average_weekly_picks_over_four_weeks():
+    from app.main import _with_picks
+
+    store = InMemoryUsageStore()
+    for day in (MONDAY - timedelta(days=1), MONDAY - timedelta(days=28), MONDAY - timedelta(days=29), MONDAY):
+        store.increment(day, "picked_Danmark 2026")
+    row = Freshness("Danmark 2026", date(2026, 3, 25), None)
+
+    (counted_row,) = _with_picks([row], UsageRecorder(store), MONDAY)
+
+    assert counted_row.weekly_picks == 0.5, "two picks inside the 28 days before MONDAY"
+
+
+def test_freshness_rows_to_refetch_come_first_then_by_picks():
+    from app.usage import _freshness_lines
+
+    held, later = date(2026, 9, 1), date(2026, 9, 10)
+    rows = [
+        Freshness("Quiet", held, later, weekly_picks=0.0),
+        Freshness("Popular", held, later, weekly_picks=3.0),
+        Freshness("Stale quiet", held, None),
+        Freshness("Stale popular", held, None, weekly_picks=1.0),
+    ]
+
+    lines = _freshness_lines(rows, MONDAY)[2:]
+
+    assert [line.split("  ")[1] for line in lines] == ["Stale popular", "Stale quiet", "Popular", "Quiet"]
+
+
+def test_a_failed_refresh_does_not_count_as_fetched():
+    from app.identity import request_key
+    from app.main import _freshness
+    from app.service import identity_of
+    from app.store import InMemoryElectionStore, InMemoryTrackedStore, TrackedElection, TrackedStatus
+    from tests.factories import make_election
+
+    elections, tracked = InMemoryElectionStore(clock=lambda: 0.0), InMemoryTrackedStore()
+    election = make_election(nation="Sverige", election_date=date(2026, 3, 26))
+    elections.put_election(identity_of(election), election, provenance="manual")
+    tracked.add_tracked(TrackedElection(
+        request_key=request_key(2026, "Sverige"), year=2026, nation="Sverige",
+        status=TrackedStatus.COUNTING, consecutive_failures=1,
+        last_refresh_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+    ))
+
+    (row,) = _freshness(elections, tracked)
+
+    assert row.fetched == date(1970, 1, 1)

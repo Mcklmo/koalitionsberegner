@@ -18,7 +18,8 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -94,6 +95,9 @@ from .share import card as build_card
 from .share import image_etag, parse_seats, parse_selection, share_id, valid_id
 from .store import ElectionStore, StoredElection, TrackedElection, TrackedStatus, TrackedStore
 from .usage import (
+    PICKED_PREFIX,
+    PICKS_WEEKS,
+    DateRange,
     Freshness,
     Period,
     UsageEvent,
@@ -790,14 +794,17 @@ async def get_election(
     response: Response,
     service: ImportService = Depends(get_service),
     usage: UsageRecorder = Depends(get_usage),
+    picked: bool = Query(False, description="The visitor chose it in the picker; counted."),
 ) -> ImportResponse:
     """Fetch a stored election by its hash or a prefix of it. Open to anyone.
 
     Stable enough to embed (plan 3, C6), like ``GET /api/elections``.
     """
     stored = await _resolve_shared_id(election_hash, service)
-    # Only the picker asks for one election by hash, so this is a pick.
-    background.add_task(usage.record, UsageEvent.ELECTION_PICKED)
+    # The landing page and shared links fetch by hash too; only the picker says so.
+    if picked:
+        background.add_task(usage.record, UsageEvent.ELECTION_PICKED)
+        background.add_task(usage.record, PICKED_PREFIX + _election_label(stored.election))
     response.headers["Cache-Control"] = PUBLIC_LIST_CACHE_CONTROL
     return ImportResponse(
         request_key="",
@@ -913,7 +920,7 @@ def _freshness(store: ElectionStore, tracked_store: TrackedStore) -> list[Freshn
     """Every stored election's age, tracked or imported by hand alike.
 
     Fetched is the later of when it was stored and when it was last read again
-    (a refetch keeps ``stored_at``). One line per election however many polls
+    successfully (a refetch keeps ``stored_at``). One line per election however many polls
     of it are stored; a final result is left out, since nothing is left to do.
     """
     tracked = _tracked_by_key(tracked_store)
@@ -925,7 +932,8 @@ def _freshness(store: ElectionStore, tracked_store: TrackedStore) -> list[Freshn
         if row is not None and row.status in (TrackedStatus.FINAL, TrackedStatus.UNTRACKED):
             continue
         fetched = date.fromtimestamp(stored.stored_at)
-        if row is not None and row.last_refresh_at is not None:
+        # A failed run stamps `last_refresh_at` too, and read nothing.
+        if row is not None and row.last_refresh_at is not None and not row.consecutive_failures:
             fetched = max(fetched, row.last_refresh_at.date())
         entry = Freshness(
             label=_election_label(election),
@@ -938,6 +946,15 @@ def _freshness(store: ElectionStore, tracked_store: TrackedStore) -> list[Freshn
         if key not in seen or (seen[key].fetched or date.min) < fetched:
             seen[key] = entry
     return list(seen.values())
+
+
+def _with_picks(rows: list[Freshness], usage: UsageRecorder, end: date) -> list[Freshness]:
+    """Each row with its average weekly picks over the weeks before ``end``."""
+    recent = gather(usage.store, DateRange(end - timedelta(weeks=PICKS_WEEKS), end))
+    return [
+        replace(row, weekly_picks=recent.total(PICKED_PREFIX + row.label) / PICKS_WEEKS)
+        for row in rows
+    ]
 
 
 def _usage_report(
@@ -953,8 +970,9 @@ def _usage_report(
         gather(usage.store, current),
         previous,
         gather(usage.store, previous),
-        freshness=_freshness(store, tracked_store) if period is Period.DAILY else None,
-        today=today,
+        freshness=_with_picks(_freshness(store, tracked_store), usage, current.end)
+        if period is Period.DAILY else None,
+        today=min(today, usage.today()),
     )
     return report_key(period, current), UsageReport(subject=subject, body=body)
 
@@ -976,6 +994,10 @@ def require_schedule(x_report_secret: str | None = Header(default=None)) -> None
 @app.post("/api/internal/usage-reports", response_model=ReportRun)
 async def send_usage_reports(
     period: Period | None = Query(None, description="Send this report now instead of the due ones."),
+    today_so_far: bool = Query(
+        False, alias="today",
+        description="Send today up to now instead, as often as asked; no report is claimed.",
+    ),
     _schedule: None = Depends(require_schedule),
     usage: UsageRecorder = Depends(get_usage),
     mailer: Mailer = Depends(get_mailer_provider),
@@ -989,6 +1011,15 @@ async def send_usage_reports(
     gives its claim back for the next run.
     """
     today = usage.today()
+    if today_so_far:
+        key, report = await run_in_threadpool(
+            _usage_report, Period.DAILY, today + timedelta(days=1), usage, store, tracked_store
+        )
+        try:
+            await run_in_threadpool(mailer.send, f"{report.subject} (so far)", report.body)
+        except MailUnavailable as exc:
+            raise HTTPException(502, detail=str(exc)) from None
+        return ReportRun(sent=[key], skipped=[])
 
     sent: list[str] = []
     skipped: list[str] = []

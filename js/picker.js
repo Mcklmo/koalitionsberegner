@@ -287,7 +287,7 @@ export function mountPicker({
       return;
     }
     try {
-      const result = await api.getElection(entry.electionHash);
+      const result = await api.getElection(entry.electionHash, { picked: true });
       if (result.election) onSelect(result.election, result.electionHash);
     } catch (error) {
       note = t('select.failed', { message: error.message });
